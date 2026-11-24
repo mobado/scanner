@@ -859,6 +859,14 @@ impl ScannerApp {
                 let p = self.progress.lock().map(|p| p.clone()).unwrap_or_default();
                 ui.label(RichText::new(p).color(ACCENT));
             } else {
+                let ctx = ui.ctx().clone();
+                if ui
+                    .button("↻ Scan again")
+                    .on_hover_text("Runs the same scan again with the modules and tools chosen on the left – for example after fixing something.")
+                    .clicked()
+                {
+                    self.start_scan(&ctx);
+                }
                 ui.label(RichText::new(&self.status).color(MUTED));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
