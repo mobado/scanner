@@ -636,6 +636,17 @@ fn libvirt_dnsmasq_is_not_an_unknown_listener() {
 }
 
 #[test]
+fn lynis_suggestions_are_listed_and_many_debsums_docs_are_grouped() {
+    let f = parse_lynis("", "suggestion[]=AUTH-9286|Configure minimum password age|\nsuggestion[]=BOOT-5264|Harden the boot service|\n");
+    assert!(f[0].evidence.contains("AUTH-9286: Configure minimum password age"), "{}", f[0].evidence);
+    let g = parse_debsums("/usr/share/doc/a/x\n/usr/share/doc/b/y\n/usr/share/doc/c/z\n/usr/bin/ls\n", "");
+    assert_eq!(g.len(), 2, "one program finding + one grouped finding");
+    assert!(g.iter().any(|x| x.severity == Severity::Critical && x.title.contains("/usr/bin/ls")));
+    assert!(g.iter().any(|x| x.title.contains("3 documentation/data files")));
+    assert_eq!(parse_debsums("/usr/share/doc/a/x\n", "").len(), 1, "a single file stays as it is");
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});

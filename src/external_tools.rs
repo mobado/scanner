@@ -248,7 +248,21 @@ pub fn parse_debsums(stdout: &str, stderr: &str) -> Vec<Finding> {
             );
         }
     }
-    out
+    // Several changed documentation/theme files (Low, under /usr/share) become one finding.
+    let (low, mut rest): (Vec<Finding>, Vec<Finding>) = out.into_iter().partition(|f| f.rule == "EXT-DEBSUMS-CHANGED" && f.severity == Severity::Low);
+    if low.len() >= 3 {
+        let files: Vec<String> = low.iter().map(|f| f.title.trim_start_matches("Changed package file: ").to_string()).collect();
+        rest.push(
+            Finding::new(Severity::Low, &module, "EXT-DEBSUMS-CHANGED", format!("{} documentation/data files differ from their packages", files.len()))
+                .evidence(files.join("\n"))
+                .description("These files under /usr/share do not match their .deb packages. They are not programs, so this is usually a local edit or a package script that rewrote them. Programs and libraries that differ are reported separately and are far more serious.")
+                .verify("debsums -c")
+                .verify("dpkg -S <file>"),
+        );
+    } else {
+        rest.extend(low);
+    }
+    rest
 }
 
 /// chkrootkit -q only prints deviations.
@@ -462,8 +476,22 @@ pub fn parse_lynis(stdout: &str, report_dat: &str) -> Vec<Finding> {
     if suggestions > 0 {
         out.push(
             Finding::new(Severity::Low, &module, "EXT-LYNIS-SUGGEST", format!("Lynis has {suggestions} hardening suggestions"))
-                .evidence("/var/log/lynis-report.dat: suggestion[]")
-                .description("Hardening suggestions – no signs of intrusion in themselves.")
+                .evidence({
+                    let mut lines: Vec<String> = report_dat
+                        .lines()
+                        .filter_map(|l| l.strip_prefix("suggestion[]="))
+                        .map(|l| {
+                            let mut p = l.split('|');
+                            format!("{}: {}", p.next().unwrap_or(""), p.next().unwrap_or(""))
+                        })
+                        .take(15)
+                        .collect();
+                    if suggestions > 15 {
+                        lines.push(format!("… and {} more (see the verification command)", suggestions - 15));
+                    }
+                    lines.join("\n")
+                })
+                .description("Hardening suggestions – no signs of intrusion in themselves. The first ones are listed below; each ID can be looked up with lynis show details.")
                 .verify("grep suggestion /var/log/lynis-report.dat"),
         );
     }
