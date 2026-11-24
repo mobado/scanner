@@ -23,5 +23,16 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 gh auth setup-git
 
+# If something was added on github.com (e.g. a README or licence), merge it in first.
+git fetch origin
+if git rev-parse --verify -q origin/main >/dev/null && ! git merge-base --is-ancestor origin/main HEAD; then
+    echo "GitHub has changes that are not here yet – merging them in …"
+    if ! git merge --no-edit --allow-unrelated-histories origin/main; then
+        git merge --abort || true
+        echo "The changes on GitHub conflict with the local ones. Nothing was pushed."
+        exit 1
+    fi
+fi
+
 git push -u origin main
 echo "Done: https://github.com/mobado/scanner"
