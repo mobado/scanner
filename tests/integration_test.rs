@@ -620,6 +620,22 @@ fn files_an_older_version_did_not_track_are_not_high_and_get_added() {
 }
 
 #[test]
+fn libvirt_dnsmasq_is_not_an_unknown_listener() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let hdr = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+    write(root, "/proc/net/udp", &format!("{hdr}   0: 00000000:0043 00000000:0000 07 00000000:00000000 00:00000000 00000000 65534        0 800 1 0 100 0 0 10 0\n"));
+    write(root, "/proc/1621/stat", "1621 (dnsmasq) S 1 0 0 0 -1 4194560 0 0\n");
+    write(root, "/proc/1621/status", "Name:\tdnsmasq\nTgid:\t1621\nPPid:\t1\nUid:\t65534\t65534\t65534\t65534\n");
+    write(root, "/proc/1621/cmdline", "/usr/sbin/dnsmasq\0--conf-file=/var/lib/libvirt/dnsmasq/default.conf\0");
+    symlink("/usr/sbin/dnsmasq", root.join("proc/1621/exe")).expect("exe");
+    fs::create_dir_all(root.join("proc/1621/fd")).expect("fd");
+    symlink("socket:[800]", root.join("proc/1621/fd/4")).expect("sock");
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::NetProc]), &|_| {});
+    assert!(!report.has_rule("NET-LISTEN-UNKNOWN"), "{:?}", report.findings);
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});
