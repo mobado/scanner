@@ -489,6 +489,53 @@ fn many_ports_of_one_program_become_one_finding() {
 }
 
 #[test]
+fn random_ports_of_a_known_program_are_not_new_listeners() {
+    use scanner::baseline::ListenerKey;
+    use scanner::modules::net_proc::Connection;
+    let key = |proto: &str, port: u16, process: &str| ListenerKey { proto: proto.into(), port, process: process.into() };
+    let conn = |proto: &str, port: u16, process: &str| Connection {
+        proto: proto.into(),
+        local_addr: "0.0.0.0".into(),
+        local_port: port,
+        remote_addr: "0.0.0.0".into(),
+        remote_port: 0,
+        state: "UNCONN".into(),
+        listening: true,
+        uid: 1000,
+        inode: 1,
+        pid: Some(1),
+        process: Some(process.into()),
+        cmdline: None,
+        exe: None,
+    };
+    let base = Baseline {
+        format_version: 1,
+        created_at: "then".into(),
+        hostname: "h".into(),
+        kernel: "k".into(),
+        os: "o".into(),
+        scanner_version: "0".into(),
+        modules: vec!["net_proc".into()],
+        suid: vec![],
+        listeners: vec![key("udp", 1716, "kdeconnectd"), key("udp", 40000, "kdeconnectd")],
+        persistence_files: Default::default(),
+    };
+    let mut inv = scanner::modules::Inventory::default();
+    for p in [35622, 37707, 45314] {
+        inv.connections.push(conn("udp", p, "kdeconnectd"));
+    }
+    let (f, _) = baseline::compare(&base, &inv, &["net_proc".to_string()]);
+    assert!(f.is_empty(), "random ports of a known program: {f:?}");
+    // a fixed low port, or a program that was not there, is still news – one finding per program
+    inv.connections.push(conn("tcp", 4444, "mystery"));
+    inv.connections.push(conn("tcp", 50000, "mystery"));
+    let (f, _) = baseline::compare(&base, &inv, &["net_proc".to_string()]);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].severity, Severity::High);
+    assert!(f[0].title.contains("tcp/4444") && f[0].title.contains("tcp/50000"), "{}", f[0].title);
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});

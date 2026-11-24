@@ -137,15 +137,38 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
 
     if both("net_proc") {
         let old: BTreeSet<(String, u16)> = base.listeners.iter().map(|l| (l.proto.clone(), l.port)).collect();
+        // Programs such as KDE Connect, Tailscale or the NFS client pick a random (ephemeral)
+        // port at every start. A random port of a program that already listened at baseline
+        // time is not news; any other new port is, grouped per program.
+        let known: BTreeSet<(String, String)> = base.listeners.iter().map(|l| (l.proto.clone(), l.process.clone())).collect();
+        let mut fresh: BTreeMap<String, Vec<ListenerKey>> = BTreeMap::new();
         for l in listener_keys(inv) {
-            if !old.contains(&(l.proto.clone(), l.port)) {
-                out.push(
-                    Finding::new(Severity::High, MODULE, "BASE-LISTEN-NEW", format!("New listening port since the baseline: {}/{} ({})", l.proto, l.port, l.process))
-                        .evidence(format!("{}/{} owned by {}\n(missing from {src})", l.proto, l.port, l.process))
-                        .description("A service listens on a port that did not exist when the baseline was created.")
-                        .verify(format!("ss -tulpn | grep ':{} '", l.port)),
-                );
+            if old.contains(&(l.proto.clone(), l.port)) {
+                continue;
             }
+            if l.port >= 32768 && known.contains(&(l.proto.clone(), l.process.clone())) {
+                continue;
+            }
+            fresh.entry(l.process.clone()).or_default().push(l);
+        }
+        for (process, list) in fresh {
+            let fixed = list.iter().any(|l| l.port < 32768);
+            let ports: Vec<String> = list.iter().map(|l| format!("{}/{}", l.proto, l.port)).collect();
+            out.push(
+                Finding::new(
+                    if fixed { Severity::High } else { Severity::Medium },
+                    MODULE,
+                    "BASE-LISTEN-NEW",
+                    format!("New listening port(s) since the baseline: {} ({process})", ports.join(", ")),
+                )
+                .evidence(format!("{} owned by {process}\n(missing from {src})", ports.join(", ")))
+                .description(if fixed {
+                    "A service listens on a port that did not exist when the baseline was created."
+                } else {
+                    "A program that did not listen at baseline time now listens on random ports. Check that you know it."
+                })
+                .verify(format!("ss -tulpn | grep '{process}'")),
+            );
         }
     } else {
         notes.push("Listening ports were not compared with the baseline (net_proc did not run in both scans)".into());
