@@ -63,6 +63,10 @@ struct Cli {
     #[arg(long)]
     full: bool,
 
+    /// Write the report as a self-contained HTML page instead of text
+    #[arg(long)]
+    html: bool,
+
     /// Print only one summary line (OK/NOTICE/ATTENTION/ALARM) – handy for monitoring and cron
     #[arg(long)]
     summary: bool,
@@ -144,6 +148,7 @@ fn wants_cli(cli: &Cli) -> bool {
         || cli.deep_pid_scan
         || cli.full
         || cli.summary
+        || cli.html
         || cli.root.as_os_str() != "/"
 }
 
@@ -269,7 +274,7 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
     }
 
     let color = !cli.no_color && cli.output.is_none() && std::io::stdout().is_terminal();
-    let text = if cli.summary { report.summary_line() } else if cli.json { report.to_json()? } else { report.to_text(color) };
+    let text = if cli.summary { report.summary_line() } else if cli.html { report.to_html() } else if cli.json { report.to_json()? } else { report.to_text(color) };
     match &cli.output {
         Some(path) => {
             std::fs::write(path, &text).with_context(|| format!("could not write {}", path.display()))?;

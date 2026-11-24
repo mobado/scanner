@@ -874,6 +874,9 @@ impl ScannerApp {
                 if ui.add_enabled(has, egui::Button::new("Export text")).clicked() {
                     self.export(false);
                 }
+                if ui.add_enabled(has, egui::Button::new("Export HTML")).clicked() {
+                    self.export_html();
+                }
                 if ui.add_enabled(has, egui::Button::new("Export JSON")).clicked() {
                     self.export(true);
                 }
@@ -882,6 +885,19 @@ impl ScannerApp {
             });
         });
         ui.add_space(4.0);
+    }
+
+    fn export_html(&mut self) {
+        let Some(r) = &self.report else { return };
+        let mut path = PathBuf::from(self.export_path.trim());
+        path.set_extension("html");
+        self.status = match std::fs::write(&path, r.to_html()) {
+            Ok(()) => {
+                give_to_sudo_user(&path);
+                format!("The report was saved to {}", path.display())
+            }
+            Err(e) => format!("Could not save the report: {e}"),
+        };
     }
 
     fn export(&mut self, json: bool) {

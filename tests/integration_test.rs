@@ -363,6 +363,8 @@ fn verdict_follows_the_worst_finding() {
     let v = r.verdict();
     assert_eq!(v.level, VerdictLevel::Alarm);
     assert!(r.to_text(false).contains("VERDICT:"));
+    let html = r.to_html();
+    assert!(html.starts_with("<!doctype html>") && !html.contains("<script"));
     let line = r.summary_line();
     assert!(line.starts_with("ALARM ") && !line.contains('\n') && line.contains("1 critical"), "{line}");
 }

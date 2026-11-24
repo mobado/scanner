@@ -94,6 +94,7 @@ scanner --modules net_proc,persistence        # only some modules
 scanner --tools debsums,chkrootkit            # external tools too ("all" = all four)
 scanner --deep-pid-scan                       # walk the whole PID range for hidden processes
 scanner --min-severity high                   # hide low/medium
+scanner --html --output report.html          # a self-contained, colourful report page
 scanner --summary                             # one line: OK / NOTICE / ATTENTION / ALARM (for monitoring)
 scanner --full                                # everything: all modules, deep PID scan, all tools
 scanner --list-tools                          # which external tools are installed?
