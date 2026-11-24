@@ -205,5 +205,15 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
     } else {
         notes.push("Persistence files were not compared with the baseline (persistence did not run in both scans)".into());
     }
+    // A baseline made by an older version did not track every kind of file yet (the library
+    // path files /etc/ld.so.conf* were added later). Those are "newly tracked", not suspicious.
+    if base.scanner_version != env!("CARGO_PKG_VERSION") {
+        for f in out.iter_mut() {
+            if f.rule == "BASE-PERSIST-NEW" && f.evidence.starts_with("/etc/ld.so.conf") {
+                f.severity = Severity::Low;
+                f.description = "This kind of file was not tracked yet when the baseline was made by an older scanner version, so it is new to the baseline, not necessarily new on the machine. It is added to the baseline automatically after a clean scan as root.".into();
+            }
+        }
+    }
     (out, notes)
 }

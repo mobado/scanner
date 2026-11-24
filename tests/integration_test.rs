@@ -591,6 +591,34 @@ fn library_path_in_tmp_is_flagged_but_normal_ones_are_not() {
 }
 
 #[test]
+fn files_an_older_version_did_not_track_are_not_high_and_get_added() {
+    use scanner::autobaseline::{auto_save_to, AutoBaseline};
+    use scanner::report::Report;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("baseline.json");
+    let core: Vec<String> = ModuleId::CORE.iter().map(|m| m.id().to_string()).collect();
+    let mut old = Report { running_as_root: true, scan_root: "/".into(), version: "0.2.0".into(), modules: core.clone(), ..Report::default() };
+    old.finalize();
+    Baseline::from_report(&old).save(&path).expect("save");
+
+    let mut inv = scanner::modules::Inventory::default();
+    inv.persistence_files.insert("/etc/ld.so.conf".into(), "abc".into());
+    let mut base = Baseline::load(&path).expect("load");
+    base.scanner_version = "0.2.0".into();
+    let (f, _) = baseline::compare(&base, &inv, &core);
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].severity, Severity::Low, "new to the baseline, not suspicious");
+
+    let mut now = Report { running_as_root: true, scan_root: "/".into(), modules: core, inventory: inv, ..Report::default() };
+    now.finalize();
+    base.save(&path).expect("save");
+    assert!(matches!(auto_save_to(&now, &path), AutoBaseline::Completed(..)));
+    let after = Baseline::load(&path).expect("load");
+    assert!(after.persistence_files.contains_key("/etc/ld.so.conf"));
+    assert_eq!(after.scanner_version, env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});

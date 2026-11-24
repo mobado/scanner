@@ -116,6 +116,23 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
         base.modules.push(id.to_string());
         added.push(id.to_string());
     }
+    // Kinds of files that later versions started to track.
+    if base.scanner_version != env!("CARGO_PKG_VERSION") && report.modules.iter().any(|m| m == "persistence") {
+        let mut new_files = 0;
+        for (path, hash) in &report.inventory.persistence_files {
+            if path.starts_with("/etc/ld.so.conf") && !base.persistence_files.contains_key(path) {
+                base.persistence_files.insert(path.clone(), hash.clone());
+                new_files += 1;
+            }
+        }
+        if new_files > 0 {
+            added.push(format!("{new_files} library path file(s)"));
+        }
+        base.scanner_version = env!("CARGO_PKG_VERSION").to_string();
+        if added.is_empty() && base.save(path).is_ok() {
+            return AutoBaseline::NotNeeded;
+        }
+    }
     if added.is_empty() {
         return AutoBaseline::NotNeeded;
     }

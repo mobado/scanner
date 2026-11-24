@@ -1,6 +1,6 @@
 [package]
 name = "scanner"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Read-only intrusion and backdoor scanner for Debian 13 (Trixie)"
 license = "GPL-3.0-only"
