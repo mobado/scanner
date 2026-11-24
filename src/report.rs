@@ -100,6 +100,19 @@ impl Report {
         self.findings.iter().any(|f| f.rule == rule)
     }
 
+    /// One line for monitoring: `OK|NOTICE|ATTENTION|ALARM host: headline (counts)`.
+    pub fn summary_line(&self) -> String {
+        let v = self.verdict();
+        let tag = match v.level {
+            VerdictLevel::Clean => "OK",
+            VerdictLevel::Minor => "NOTICE",
+            VerdictLevel::Attention => "ATTENTION",
+            VerdictLevel::Alarm => "ALARM",
+        };
+        let s = &self.summary;
+        format!("{tag} {}: {} ({} critical, {} high, {} medium, {} low)", self.hostname, v.headline, s.critical, s.high, s.medium, s.low)
+    }
+
     /// A plain-language conclusion for people who do not read every finding.
     pub fn verdict(&self) -> Verdict {
         let s = &self.summary;
