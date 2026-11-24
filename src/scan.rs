@@ -107,6 +107,9 @@ pub fn run_scan_auto(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, auto: bool
                 report.notes.push(format!("A baseline of this machine was saved automatically: {}. Later scans compare against it.", p.display()));
                 report.baseline_auto_saved = Some(p.display().to_string());
             }
+            crate::autobaseline::AutoBaseline::Completed(p, parts) => {
+                report.notes.push(format!("The baseline {} was missing {}; it was added from this clean scan, so everything is compared from now on.", p.display(), parts.join(", ")));
+            }
             crate::autobaseline::AutoBaseline::Skipped(why) => report.notes.push(why),
             crate::autobaseline::AutoBaseline::NotNeeded => {}
         }

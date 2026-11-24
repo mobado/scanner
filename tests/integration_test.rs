@@ -536,6 +536,25 @@ fn random_ports_of_a_known_program_are_not_new_listeners() {
 }
 
 #[test]
+fn an_incomplete_baseline_is_completed_after_a_clean_root_scan() {
+    use scanner::autobaseline::{auto_save_to, AutoBaseline};
+    use scanner::report::Report;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("baseline.json");
+    let mut quick = Report { running_as_root: true, scan_root: "/".into(), modules: vec!["net_proc".into(), "persistence".into()], ..Report::default() };
+    quick.finalize();
+    Baseline::from_report(&quick).save(&path).expect("save");
+    let mut full = Report { running_as_root: true, scan_root: "/".into(), modules: ModuleId::CORE.iter().map(|m| m.id().to_string()).collect(), ..Report::default() };
+    full.finalize();
+    match auto_save_to(&full, &path) {
+        AutoBaseline::Completed(_, parts) => assert_eq!(parts, vec!["proc_audit".to_string(), "fs_perms".to_string()]),
+        other => panic!("{other:?}"),
+    }
+    assert!(Baseline::load(&path).expect("load").modules.iter().any(|m| m == "fs_perms"));
+    assert_eq!(auto_save_to(&full, &path), AutoBaseline::NotNeeded, "complete now");
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});

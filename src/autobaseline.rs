@@ -27,6 +27,8 @@ pub enum AutoBaseline {
     NotNeeded,
     /// A new baseline was saved here.
     Saved(PathBuf),
+    /// An existing baseline lacked these parts and they were added from this scan.
+    Completed(PathBuf, Vec<String>),
     /// Not saved, and why (shown to the person).
     Skipped(String),
 }
@@ -39,8 +41,11 @@ pub fn auto_save(report: &Report) -> AutoBaseline {
 }
 
 pub fn auto_save_to(report: &Report, path: &std::path::Path) -> AutoBaseline {
-    if report.scan_root != "/" || path.exists() {
+    if report.scan_root != "/" {
         return AutoBaseline::NotNeeded;
+    }
+    if path.exists() {
+        return complete_existing(report, path);
     }
     if !report.running_as_root {
         return AutoBaseline::Skipped("No baseline yet – run the scanner as root once and it saves one by itself.".into());
@@ -86,5 +91,36 @@ pub fn soften_after_updates(findings: &mut [Finding], baseline_created: &str, dp
             f.description.push_str(" Packages were installed or updated after the baseline was saved, so this is probably the update itself: confirm with debsums (it compares against the package), then save a fresh baseline.");
             f.verify.push("debsums -s".into());
         }
+    }
+}
+
+/// An old baseline may lack a part (made by a quick scan without the file system walk). After a
+/// clean scan as root that did run the part, add it, so everything is compared from now on.
+fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
+    if !report.running_as_root || report.summary.critical > 0 || report.summary.high > 0 {
+        return AutoBaseline::NotNeeded;
+    }
+    let Ok(mut base) = Baseline::load(path) else { return AutoBaseline::NotNeeded };
+    let mut added = Vec::new();
+    for m in ModuleId::CORE {
+        let id = m.id();
+        if base.modules.iter().any(|x| x == id) || !report.modules.iter().any(|x| x == id) {
+            continue;
+        }
+        match m {
+            ModuleId::FsPerms => base.suid = report.inventory.suid.clone(),
+            ModuleId::NetProc => base.listeners = crate::baseline::listener_keys(&report.inventory),
+            ModuleId::Persistence => base.persistence_files = report.inventory.persistence_files.clone(),
+            _ => {}
+        }
+        base.modules.push(id.to_string());
+        added.push(id.to_string());
+    }
+    if added.is_empty() {
+        return AutoBaseline::NotNeeded;
+    }
+    match base.save(path) {
+        Ok(()) => AutoBaseline::Completed(path.to_path_buf(), added),
+        Err(_) => AutoBaseline::NotNeeded,
     }
 }
