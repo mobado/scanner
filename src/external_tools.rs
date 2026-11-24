@@ -294,7 +294,31 @@ pub fn parse_chkrootkit(stdout: &str) -> Vec<Finding> {
             kept.push(l.clone());
         }
     }
-    let other = kept;
+    // chkwtmp: a gap in the login records is common (crashes, power cuts, the move to wtmpdb) – keep it apart and Low
+    let mut wtmp: Vec<String> = Vec::new();
+    let mut other: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < kept.len() {
+        if kept[i].to_lowercase().contains("chkwtmp") {
+            wtmp.push(kept[i].clone());
+            while i + 1 < kept.len() && kept[i + 1].contains("deletion") {
+                wtmp.push(kept[i + 1].clone());
+                i += 1;
+            }
+        } else {
+            other.push(kept[i].clone());
+        }
+        i += 1;
+    }
+    if wtmp.iter().any(|l| l.contains("deletion")) {
+        out.push(
+            Finding::new(Severity::Low, &module, "EXT-CHKROOTKIT-WTMP", "chkrootkit: a gap in the login records (wtmp)")
+                .evidence(wtmp.join("\n"))
+                .description("chkwtmp found zeroed entries in the login history. That usually comes from a crash, a power cut or a reboot while the file was written (Debian 13 is also moving from wtmp to wtmpdb). It is only worth a closer look if the time matches a moment you were logged in and did not crash anything.")
+                .verify("last -x | head -40")
+                .verify("chkrootkit chkwtmp"),
+        );
+    }
     if ignored > 0 && other.is_empty() && out.is_empty() {
         return out;
     }
@@ -321,6 +345,30 @@ const RKHUNTER_KNOWN_DEBIAN: [(&str, &str); 4] = [
     ("/etc/.resolv.conf.systemd-resolved.bak", "Backup copy that systemd-resolved creates at installation."),
     ("/dev/shm/PostgreSQL", "Shared memory used by PostgreSQL."),
 ];
+
+/// A known false alarm: (why it is harmless, command that silences it).
+fn rkhunter_known(g: &[String], text: &str) -> Option<(String, String)> {
+    if g.first().map(|l| l.starts_with("Suspicious file types found in /dev")).unwrap_or(false) {
+        let paths: Vec<String> = g[1..].iter().map(|l| l.split(": ").next().unwrap_or(l).trim().to_string()).collect();
+        if !paths.is_empty() && paths.iter().all(|p| p.starts_with("/dev/shm/")) {
+            let args: Vec<String> = paths.iter().map(|p| format!("'ALLOWDEVFILE={p}'")).collect();
+            return Some((
+                "These are shared-memory files that desktop programs (audio plug-ins, browsers, Wine …) create in /dev/shm.".into(),
+                format!("printf '%s\\n' {} | sudo tee -a /etc/rkhunter.conf.local", args.join(" ")),
+            ));
+        }
+    }
+    if text.contains("'PermitRootLogin' has not been set") {
+        return Some((
+            "Debian 13's sshd defaults to PermitRootLogin prohibit-password, so root cannot log in with a password; rkhunter only wants the setting written down explicitly.".into(),
+            "echo 'PermitRootLogin prohibit-password' | sudo tee /etc/ssh/sshd_config.d/10-permit-root-login.conf".into(),
+        ));
+    }
+    RKHUNTER_KNOWN_DEBIAN
+        .iter()
+        .find(|(needle, _)| text.contains(needle))
+        .map(|(n, why)| (why.to_string(), rkhunter_silence(n)))
+}
 
 fn rkhunter_silence(needle: &str) -> String {
     if needle.contains("lwp-request") {
@@ -350,12 +398,12 @@ pub fn parse_rkhunter(stdout: &str) -> Vec<Finding> {
         .map(|g| {
             let text = g.join("\n");
             let lower = text.to_lowercase();
-            if let Some((_, why)) = RKHUNTER_KNOWN_DEBIAN.iter().find(|(needle, _)| text.contains(needle)) {
+            if let Some((why, fix)) = rkhunter_known(&g, &text) {
                 return Finding::new(Severity::Low, &module, "EXT-RKHUNTER-KNOWN", format!("rkhunter (known Debian false alarm): {}", clip(g.first().map(|s| s.as_str()).unwrap_or(""), 100)))
                     .evidence(clip(&text, 1500))
-                    .description(format!("{why} Silence the warning with a line in /etc/rkhunter.conf.local (see the verification command)."))
+                    .description(format!("{why} If you agree, the last command below silences the warning."))
                     .verify("grep -A5 Warning /var/log/rkhunter.log")
-                    .verify(RKHUNTER_KNOWN_DEBIAN.iter().find(|(n, _)| text.contains(n)).map(|(n, _)| rkhunter_silence(n)).unwrap_or_default());
+                    .verify(fix);
             }
             let sev = if lower.contains("rootkit") || lower.contains("possible") || lower.contains("hidden") {
                 Severity::High
@@ -368,6 +416,15 @@ pub fn parse_rkhunter(stdout: &str) -> Vec<Finding> {
                 .verify("grep -A5 Warning /var/log/rkhunter.log")
         })
         .collect()
+}
+
+/// What a Lynis warning id means in plain words.
+fn lynis_note(id: &str) -> String {
+    match id {
+        "PKGS-7392" => "Lynis found installed packages with known vulnerabilities, which usually means security updates are waiting. The \"updates\" check of this scanner lists them; install them with: apt update && apt upgrade (as root).".into(),
+        "TIME-3185" => "systemd-timesyncd has not synchronised the clock recently (for example because the computer was offline). A wrong clock breaks logs and certificates. Check: timedatectl timesync-status.".into(),
+        _ => "Lynis reports a warning in the security audit. Run the command below for Lynis's own explanation.".into(),
+    }
 }
 
 /// Lynis: warnings from the report file (warning[]=ID|text|…) or from the output ("! text [ID]").
@@ -398,8 +455,8 @@ pub fn parse_lynis(stdout: &str, report_dat: &str) -> Vec<Finding> {
         .map(|(id, text)| {
             Finding::new(Severity::Medium, &module, "EXT-LYNIS-WARN", format!("Lynis: {}", clip(&text, 120)))
                 .evidence(format!("{id}: {text}"))
-                .description("Lynis reports a warning in the security audit.")
-                .verify(format!("lynis show details {}", shq(&id)))
+                .description(lynis_note(&id))
+                .verify(format!("sudo lynis show details {}", shq(&id)))
         })
         .collect();
     if suggestions > 0 {

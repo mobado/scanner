@@ -5,7 +5,7 @@ use crate::baseline::{self, Baseline};
 use crate::config::Config;
 use crate::external_tools::{self, Tool};
 use crate::finding::{Finding, Severity};
-use crate::modules::{fs_perms, net_proc, persistence, proc_audit, Collector, ScanCtx};
+use crate::modules::{fs_perms, net_proc, persistence, proc_audit, updates, Collector, ScanCtx};
 use crate::procinfo;
 use crate::report::Report;
 use crate::sys::{self, SysRoot};
@@ -20,10 +20,13 @@ pub enum ModuleId {
     ProcAudit,
     FsPerms,
     Persistence,
+    Updates,
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 4] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence];
+    pub const ALL: [ModuleId; 5] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence, ModuleId::Updates];
+    /// The modules a baseline needs (the updates check says nothing about changes).
+    pub const CORE: [ModuleId; 4] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence];
 
     pub fn id(&self) -> &'static str {
         match self {
@@ -31,6 +34,7 @@ impl ModuleId {
             ModuleId::ProcAudit => "proc_audit",
             ModuleId::FsPerms => "fs_perms",
             ModuleId::Persistence => "persistence",
+            ModuleId::Updates => "updates",
         }
     }
 
@@ -40,6 +44,7 @@ impl ModuleId {
             ModuleId::ProcAudit => "Processes and run paths",
             ModuleId::FsPerms => "File permissions and SUID/SGID",
             ModuleId::Persistence => "Persistence (systemd, cron, SSH, PAM)",
+            ModuleId::Updates => "Pending updates",
         }
     }
 
@@ -49,6 +54,7 @@ impl ModuleId {
             ModuleId::ProcAudit => "Programs from /tmp or /dev/shm, deleted binaries, LD_PRELOAD",
             ModuleId::FsPerms => "Walks local file systems (takes the longest)",
             ModuleId::Persistence => "Services, scheduled jobs, keys and login",
+            ModuleId::Updates => "Security updates and reboot needed (apt simulation, installs nothing)",
         }
     }
 }
@@ -60,7 +66,7 @@ impl std::str::FromStr for ModuleId {
             .iter()
             .find(|m| m.id().eq_ignore_ascii_case(s.trim()))
             .copied()
-            .ok_or_else(|| format!("unknown module '{s}' (net_proc, proc_audit, fs_perms, persistence)"))
+            .ok_or_else(|| format!("unknown module '{s}' (net_proc, proc_audit, fs_perms, persistence, updates)"))
     }
 }
 
@@ -83,6 +89,29 @@ impl Default for ScanOptions {
             min_severity: Severity::Low,
         }
     }
+}
+
+/// Like [`run_scan`], plus the automatic baseline: when no baseline file is given and the
+/// automatic one exists, compare against it; when it does not exist yet, save it after
+/// a clean, complete scan as root (see [`crate::autobaseline`]). The result is noted in the report.
+pub fn run_scan_auto(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, auto: bool, progress: &dyn Fn(&str)) -> Report {
+    let mut opts = opts.clone();
+    let live = sys.is_live();
+    if auto && live && opts.baseline_compare.is_none() {
+        opts.baseline_compare = crate::autobaseline::default_if_exists();
+    }
+    let mut report = run_scan(sys, cfg, &opts, progress);
+    if auto && live {
+        match crate::autobaseline::auto_save(&report) {
+            crate::autobaseline::AutoBaseline::Saved(p) => {
+                report.notes.push(format!("A baseline of this machine was saved automatically: {}. Later scans compare against it.", p.display()));
+                report.baseline_auto_saved = Some(p.display().to_string());
+            }
+            crate::autobaseline::AutoBaseline::Skipped(why) => report.notes.push(why),
+            crate::autobaseline::AutoBaseline::NotNeeded => {}
+        }
+    }
+    report
 }
 
 /// Run a whole scan. Never panics because of system data; everything that
@@ -117,6 +146,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
             ModuleId::ProcAudit => proc_audit::run(&ctx, &mut col),
             ModuleId::FsPerms => fs_perms::run(&ctx, &mut col),
             ModuleId::Persistence => persistence::run(&ctx, &mut col),
+            ModuleId::Updates => updates::run(&ctx, &mut col),
         }
         modules_run.push(m.id().to_string());
     }
@@ -139,7 +169,9 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         progress("Comparing against the baseline …");
         match Baseline::load(path) {
             Ok(b) => {
-                let (f, notes) = baseline::compare(&b, &col.inventory, &modules_run);
+                let (mut f, notes) = baseline::compare(&b, &col.inventory, &modules_run);
+                let dpkg_modified = std::fs::metadata(sys.path("/var/lib/dpkg/status")).and_then(|m| m.modified()).ok();
+                crate::autobaseline::soften_after_updates(&mut f, &b.created_at, dpkg_modified);
                 col.findings.extend(f);
                 col.notes.extend(notes);
                 baseline_compared = Some(format!("{} (created {} on {})", path.display(), b.created_at, b.hostname));
@@ -155,6 +187,13 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         .into_iter()
         .filter(|f| f.severity >= opts.min_severity && !cfg.suppresses(f))
         .filter(|f| seen.insert((f.rule.clone(), f.title.clone(), f.evidence.clone())))
+        .collect();
+    let findings: Vec<Finding> = findings
+        .into_iter()
+        .map(|mut f| {
+            f.verify = f.verify.iter().map(|c| crate::finding::sudoize(c)).collect();
+            f
+        })
         .collect();
     let hidden = suppressed_before - findings.len();
     if hidden > 0 {
@@ -174,6 +213,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         modules: modules_run,
         tools_run,
         baseline_compared,
+        baseline_auto_saved: None,
         summary: Default::default(),
         findings,
         notes: col.notes,

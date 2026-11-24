@@ -9,11 +9,17 @@
 Description=Scanner – read-only intrusion and backdoor check against the baseline
 Documentation=man:systemd.exec(5)
 After=local-fs.target network-online.target
-ConditionPathExists=/var/lib/scanner/baseline.json
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'exec /usr/local/sbin/scanner --cli --no-sudo --config /etc/scanner/whitelist.toml --baseline-compare /var/lib/scanner/baseline.json --json --output /var/log/scanner/report-$(date +%%Y%%m%%d-%%H%%M).json'
+# The first run saves the baseline by itself (/var/lib/scanner/baseline.json) when the scan is
+# clean; every later run compares against it. No manual baseline step is needed.
+ExecStart=/bin/sh -c 'exec /usr/local/sbin/scanner --cli --no-sudo --deep-pid-scan --config /etc/scanner/whitelist.toml --json --output /var/log/scanner/report-$(date +%%Y%%m%%d-%%H%%M).json'
+# systemd creates these folders (root only) and keeps them writable below.
+StateDirectory=scanner
+StateDirectoryMode=0700
+LogsDirectory=scanner
+LogsDirectoryMode=0700
 SuccessExitStatus=1
 Nice=10
 IOSchedulingClass=idle
@@ -21,7 +27,6 @@ IOSchedulingClass=idle
 # --- Read-only: the whole system is read-only for the service, except the report directory.
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/log/scanner
 # /tmp and /dev/shm must be the real ones so programs there can be detected.
 PrivateTmp=no
 NoNewPrivileges=yes

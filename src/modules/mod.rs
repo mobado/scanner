@@ -2,9 +2,11 @@
 
 pub mod common;
 pub mod fs_perms;
+pub mod net_group;
 pub mod net_proc;
 pub mod persistence;
 pub mod proc_audit;
+pub mod updates;
 
 use crate::config::Config;
 use crate::finding::Finding;

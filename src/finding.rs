@@ -141,6 +141,54 @@ impl Finding {
     }
 }
 
+/// Commands that only work (or only show everything) as root.
+const ROOT_COMMANDS: [&str; 26] = [
+    "lynis", "chkrootkit", "rkhunter", "sshd ", "visudo", "passwd ", "dmesg", "debsums", "unhide",
+    "cat /proc/", "ls -l /proc/", "sha256sum /proc/", "cp /proc/", "find /proc/", "ss -tulp", "ss -tunap",
+    "crontab -l -u", "cat /var/spool", "cat /root", "ssh-keygen -lf /root", "stat /root",
+    "grep -A5 Warning /var/log/rkhunter.log", "grep suggestion /var/log/lynis-report.dat", "grep -c warning /var/log/lynis",
+    "cat /var/log/lynis", "ls -l /var/spool/cron",
+];
+
+fn sudo_segment(seg: &str) -> String {
+    let t = seg.trim_start();
+    let lead = &seg[..seg.len() - t.len()];
+    if ROOT_COMMANDS.iter().any(|p| t.starts_with(p)) {
+        format!("{lead}sudo {t}")
+    } else {
+        seg.to_string()
+    }
+}
+
+/// Put `sudo` in front of the commands that need root, so a copied command just works:
+/// `lynis show details X` becomes `sudo lynis show details X`. Commands chained with
+/// `;` or `&&` are handled one by one; a command that already uses sudo is left alone.
+pub fn sudoize(cmd: &str) -> String {
+    if cmd.contains("sudo") {
+        return cmd.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = cmd;
+    loop {
+        let next = [("; ", rest.find("; ")), (" && ", rest.find(" && "))]
+            .into_iter()
+            .filter_map(|(sep, i)| i.map(|i| (i, sep)))
+            .min();
+        match next {
+            Some((i, sep)) => {
+                out.push_str(&sudo_segment(&rest[..i]));
+                out.push_str(sep);
+                rest = &rest[i + sep.len()..];
+            }
+            None => {
+                out.push_str(&sudo_segment(rest));
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Sort: most severe first, then module and title for a stable order.
 pub fn sort_findings(findings: &mut [Finding]) {
     findings.sort_by(|a, b| {

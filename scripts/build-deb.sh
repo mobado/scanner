@@ -12,7 +12,7 @@
 #   /usr/share/applications/scanner.desktop            menu entry
 #   /usr/share/icons/hicolor/scalable/apps/scanner.svg icon
 #   /etc/scanner/whitelist.toml                        whitelist (kept on upgrade)
-#   /usr/lib/systemd/system/scanner-diff.{service,timer} nightly check (not enabled)
+#   /usr/lib/systemd/system/scanner-diff.{service,timer} nightly check (enabled on install; saves the baseline itself)
 #   /usr/share/doc/scanner/                            README, copyright, changelog, VM test script
 set -eu
 cd "$(dirname "$0")/.."

@@ -61,12 +61,9 @@ sudo apt install ./scanner_0.2.0-1_amd64.deb
 
 You then find **Scanner** in the application menu, and `scanner` works in the terminal.
 The package installs the whitelist in `/etc/scanner/whitelist.toml` (kept on upgrades) and
-the nightly timer, which stays off until you have saved a baseline:
-
-```sh
-sudo scanner --cli --baseline-save /var/lib/scanner/baseline.json
-sudo systemctl enable --now scanner-diff.timer
-```
+the nightly timer. On first installation the timer is switched on and runs once right
+away: that first scan saves the **baseline of the machine by itself** (`/var/lib/scanner/baseline.json`),
+and every later scan compares against it. You do not have to do anything.
 
 Remove with `sudo apt remove scanner` (`sudo apt purge scanner` also removes baselines and reports).
 
@@ -151,9 +148,23 @@ and `ignore_evidence_containing`.
 On GitHub, every push runs the tests, builds the static binary and runs the self-test;
 the static binary can be downloaded from the run's *Artifacts*.
 
-## A clean baseline on a freshly installed Debian 13 machine
+## The automatic baseline
 
-Do this **right after installation**, before the machine is exposed to the network:
+The scanner makes the baseline itself: the first complete scan **as root** (all four core
+modules) saves `/var/lib/scanner/baseline.json` (folder mode 0700), and every later scan,
+in the window, on the command line and from the nightly timer, compares against it
+automatically. New SUID/SGID files since then are *Critical*.
+
+* It is **not** saved when the first scan has critical or high findings – a baseline taken
+  on a compromised system would make the intrusion look normal. Check the findings, then
+  use *Save baseline* in the window (or `--baseline-save`).
+* After package updates, changed SUID/persistence files are lowered to *Medium* with a note
+  (the update itself is the likely reason); confirm with `debsums -s` and save a fresh
+  baseline (*Save baseline*).
+* `--no-auto-baseline` turns the automatic baseline off; `--baseline-compare FILE` compares
+  with another file.
+
+The steps below are the manual way, for a machine you want to verify more strictly:
 
 ```sh
 # 1. Install the program and (optionally) the external tools
@@ -176,6 +187,18 @@ sha256sum /var/lib/scanner/baseline.json   # write the sum down somewhere else
 
 After `apt upgrade`, SUID binaries and configuration change legitimately. Then run
 `sudo debsums -c` (should be empty) and save a **new** baseline.
+
+## Updates
+
+The *Pending updates* check runs `apt-get -s upgrade` (a simulation – nothing is installed)
+and reports **security updates** (Medium), other updates (Low), a needed **reboot**, and
+package lists that are more than a week old. Install updates with
+`sudo apt update && sudo apt upgrade`.
+
+## Full scan
+
+`scanner --full` (the window's *Full scan + save report* button) runs everything: all modules,
+the deep PID scan and every installed external tool.
 
 ## Regular diff runs with a read-only systemd timer
 

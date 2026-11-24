@@ -54,6 +54,9 @@ pub struct Report {
     pub modules: Vec<String>,
     pub tools_run: Vec<String>,
     pub baseline_compared: Option<String>,
+    /// Set when the scanner saved a baseline by itself during this scan.
+    #[serde(default)]
+    pub baseline_auto_saved: Option<String>,
     pub summary: Summary,
     pub findings: Vec<Finding>,
     /// What was skipped or could not be read.
@@ -120,17 +123,34 @@ impl Report {
         } else if s.medium > 0 {
             (
                 VerdictLevel::Minor,
-                "No signs of intrusion – a few things are worth a look".to_string(),
-                "The medium findings are mostly exposure or settings (open services, configuration), not intrusion.".to_string(),
+                if self.has_rule("UPD-SECURITY") {
+                    "No signs of intrusion – but security updates are waiting".to_string()
+                } else {
+                    "No signs of intrusion – a few things are worth a look".to_string()
+                },
+                "The medium findings are mostly exposure, settings or missing updates, not intrusion.".to_string(),
             )
         } else {
             (
                 VerdictLevel::Clean,
                 "No signs of intrusion found".to_string(),
-                "Save a baseline now so later scans show exactly what changes.".to_string(),
+                if self.baseline_compared.is_some() {
+                    "Compared with the saved baseline, nothing suspicious changed.".to_string()
+                } else {
+                    "Later scans are compared with a baseline that is saved automatically after the first clean scan as root.".to_string()
+                },
             )
         };
-        Verdict { level, headline, detail: format!("{detail}{not_root}") }
+        let updates = if self.has_rule("UPD-SECURITY") {
+            " Security updates are available – install them with: sudo apt update && sudo apt upgrade."
+        } else if self.has_rule("UPD-AVAILABLE") {
+            " Package updates are available – sudo apt update && sudo apt upgrade."
+        } else if self.has_rule("UPD-REBOOT") {
+            " A reboot is needed to finish installed updates."
+        } else {
+            ""
+        };
+        Verdict { level, headline, detail: format!("{detail}{updates}{not_root}") }
     }
 
     /// Readable terminal report. `color` turns on ANSI colours.
@@ -180,13 +200,13 @@ impl Report {
                     let _ = writeln!(o, "   {}", f.description);
                 }
                 if !f.evidence.is_empty() {
-                    let _ = writeln!(o, "   Bevis:");
+                    let _ = writeln!(o, "   Evidence:");
                     for l in f.evidence.lines() {
                         let _ = writeln!(o, "     {l}");
                     }
                 }
                 if !f.verify.is_empty() {
-                    let _ = writeln!(o, "   Verifiera manuellt:");
+                    let _ = writeln!(o, "   Verify manually:");
                     for v in &f.verify {
                         let _ = writeln!(o, "     $ {v}");
                     }

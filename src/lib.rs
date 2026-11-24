@@ -11,6 +11,7 @@
 //! * All modules read through [`sys::SysRoot`], so the same code can run against a
 //!   made-up file system in a temporary directory (tests and self-test).
 
+pub mod autobaseline;
 pub mod baseline;
 pub mod config;
 pub mod error;

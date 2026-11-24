@@ -365,6 +365,144 @@ fn verdict_follows_the_worst_finding() {
     assert!(r.to_text(false).contains("VERDICT:"));
 }
 
+#[test]
+fn commands_that_need_root_get_sudo() {
+    use scanner::finding::sudoize;
+    assert_eq!(sudoize("lynis show details PKGS-7392"), "sudo lynis show details PKGS-7392");
+    assert_eq!(sudoize("ls -l /proc/12/exe /proc/12/cwd"), "sudo ls -l /proc/12/exe /proc/12/cwd");
+    assert_eq!(sudoize("ss -tulpn | grep ':111 '"), "sudo ss -tulpn | grep ':111 '");
+    assert_eq!(sudoize("cat /sys/module/x; rpcinfo -p"), "cat /sys/module/x; rpcinfo -p");
+    assert_eq!(sudoize("cat /sys/module/x; chkrootkit chkwtmp"), "cat /sys/module/x; sudo chkrootkit chkwtmp");
+    assert_eq!(sudoize("echo x | sudo tee /etc/f"), "echo x | sudo tee /etc/f", "already sudo");
+    assert_eq!(sudoize("dpkg -S /usr/bin/ls"), "dpkg -S /usr/bin/ls");
+}
+
+#[test]
+fn lynis_warnings_explain_and_use_sudo() {
+    let f = parse_lynis("", "warning[]=PKGS-7392|Found one or more vulnerable packages.|\n");
+    assert_eq!(f[0].verify[0], "sudo lynis show details PKGS-7392");
+    assert!(f[0].description.contains("updates"), "{}", f[0].description);
+}
+
+#[test]
+fn rkhunter_dev_shm_and_permitrootlogin_are_known() {
+    let out = "Warning: Suspicious file types found in /dev:\n         /dev/shm/lsp-catalog-malte.shm: data\n         /dev/shm/lsp-catalog-malte.lock: data\nWarning: The SSH configuration option 'PermitRootLogin' has not been set.\n         The default value may be 'yes', to allow root access.\nWarning: Something really odd in /dev/shm/x\n";
+    let f = parse_rkhunter(out);
+    assert_eq!(f.len(), 3);
+    assert_eq!(f[0].rule, "EXT-RKHUNTER-KNOWN");
+    assert!(f[0].verify.last().expect("fix").contains("ALLOWDEVFILE=/dev/shm/lsp-catalog-malte.shm"), "{:?}", f[0].verify);
+    assert_eq!(f[1].rule, "EXT-RKHUNTER-KNOWN");
+    assert_eq!(f[2].rule, "EXT-RKHUNTER-WARN");
+}
+
+#[test]
+fn chkrootkit_wtmp_gap_is_low() {
+    let f = parse_chkrootkit("WARNING: output from chkwtmp:\n1 deletion(s) between Fri Nov  6 08:53:56 2026 and Fri Nov  6 08:55:52 2026\n");
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].rule, "EXT-CHKROOTKIT-WTMP");
+    assert_eq!(f[0].severity, Severity::Low);
+}
+
+#[test]
+fn parses_apt_simulation_and_marks_security_updates() {
+    use scanner::modules::updates::parse_apt_simulation;
+    let out = "Reading package lists...\nInst libssl3t64 [3.5.1-1] (3.5.1-1+deb13u1 Debian-Security:13/stable-security [amd64])\nInst htop [3.4.0-1] (3.4.1-1 Debian:13.1/stable [amd64])\nInst newdep (1.0 Debian:13.1/stable [amd64])\nConf libssl3t64 (3.5.1-1+deb13u1 Debian-Security:13/stable-security [amd64])\n";
+    let p = parse_apt_simulation(out);
+    assert_eq!(p.len(), 3);
+    assert!(p[0].security && !p[1].security);
+    assert_eq!(p[0].old.as_deref(), Some("3.5.1-1"));
+    assert_eq!(p[0].new, "3.5.1-1+deb13u1");
+    assert_eq!(p[2].old, None);
+}
+
+#[test]
+fn automatic_baseline_is_saved_once_and_not_on_a_dirty_scan() {
+    use scanner::autobaseline::{auto_save_to, AutoBaseline};
+    use scanner::report::Report;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("state/baseline.json");
+    let mut r = Report {
+        running_as_root: true,
+        scan_root: "/".into(),
+        modules: ModuleId::CORE.iter().map(|m| m.id().to_string()).collect(),
+        ..Report::default()
+    };
+    r.finalize();
+
+    // not root → nothing saved, with a reason
+    let mut user = r.clone();
+    user.running_as_root = false;
+    assert!(matches!(auto_save_to(&user, &target), AutoBaseline::Skipped(_)));
+    // incomplete scan
+    let mut partial = r.clone();
+    partial.modules.pop();
+    assert!(matches!(auto_save_to(&partial, &target), AutoBaseline::Skipped(_)));
+    // serious findings → no baseline of a possibly compromised system
+    let mut dirty = r.clone();
+    dirty.findings.push(scanner::Finding::new(Severity::Critical, "m", "X", "t"));
+    dirty.finalize();
+    assert!(matches!(auto_save_to(&dirty, &target), AutoBaseline::Skipped(_)));
+    assert!(!target.exists());
+    // clean, complete, root → saved; a second time nothing is needed
+    assert_eq!(auto_save_to(&r, &target), AutoBaseline::Saved(target.clone()));
+    assert!(Baseline::load(&target).is_ok());
+    assert_eq!(auto_save_to(&r, &target), AutoBaseline::NotNeeded);
+}
+
+#[test]
+fn baseline_changes_after_package_updates_are_softened() {
+    use std::time::{Duration, SystemTime};
+    let mut f = vec![
+        scanner::Finding::new(Severity::Critical, "baseline", "BASE-SUID-CHANGED", "t"),
+        scanner::Finding::new(Severity::Critical, "baseline", "BASE-SUID-NEW", "t"),
+    ];
+    let created = "2026-01-01 00:00:00 +0000";
+    scanner::autobaseline::soften_after_updates(&mut f, created, Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_900_000_000)));
+    assert_eq!(f[0].severity, Severity::Medium, "update changed the file");
+    assert_eq!(f[1].severity, Severity::Critical, "a new SUID file stays critical");
+    let mut g = vec![scanner::Finding::new(Severity::Critical, "baseline", "BASE-SUID-CHANGED", "t")];
+    scanner::autobaseline::soften_after_updates(&mut g, created, Some(SystemTime::UNIX_EPOCH));
+    assert_eq!(g[0].severity, Severity::Critical, "no package activity after the baseline");
+}
+
+#[test]
+fn many_ports_of_one_program_become_one_finding() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let hdr = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+    let line = |i: u32, port: u16, inode: u32| format!("   {i}: 00000000:{port:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000   113        0 {inode} 1 0 100 0 0 10 0\n");
+    write(root, "/proc/net/tcp", &format!("{hdr}{}{}{}", line(0, 53489, 701), line(1, 53711, 702), line(2, 40000, 703)));
+    write(root, "/proc/1965/stat", "1965 (rpc.statd) S 1 0 0 0 -1 4194560 0 0\n");
+    write(root, "/proc/1965/status", "Name:\trpc.statd\nTgid:\t1965\nPPid:\t1\nUid:\t113\t113\t113\t113\n");
+    write(root, "/proc/1965/cmdline", "/usr/sbin/rpc.statd\0");
+    symlink("/usr/sbin/rpc.statd", root.join("proc/1965/exe")).expect("exe");
+    fs::create_dir_all(root.join("proc/1965/fd")).expect("fd");
+    for (n, inode) in [(5, 701), (6, 702), (7, 703)] {
+        symlink(format!("socket:[{inode}]"), root.join(format!("proc/1965/fd/{n}"))).expect("sock");
+    }
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::NetProc]), &|_| {});
+    let f: Vec<_> = report.findings.iter().filter(|f| f.rule == "NET-LISTEN-UNKNOWN").collect();
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert!(f[0].title.contains("tcp/40000") && f[0].title.contains("tcp/53711") && f[0].title.contains("(rpc.statd)"), "{}", f[0].title);
+    assert!(f[0].description.contains("NFS"), "{}", f[0].description);
+    assert_eq!(f[0].evidence.matches("socket:").count(), 3);
+}
+
+#[test]
+fn updates_module_is_skipped_for_a_test_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});
+    assert!(report.notes.iter().any(|n| n.contains("updates")), "{:?}", report.notes);
+    assert!(report.findings.is_empty());
+}
+
+#[test]
+fn whitelist_knows_nvidia_and_wtmpdb() {
+    let cfg = Config::default();
+    assert!(cfg.is_suid_allowed("/usr/bin/nvidia-modprobe"));
+    assert!(cfg.allowed_pam_modules.iter().any(|m| m == "pam_wtmpdb"));
+}
+
 // ------------------------------------------------------------ the whole sandbox
 
 #[test]

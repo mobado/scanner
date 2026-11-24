@@ -3,13 +3,17 @@ set -e
 
 case "$1" in
     configure)
-        # Where baselines and timer reports go (only root can read them).
         install -d -m 0700 /var/lib/scanner /var/log/scanner
-        # The nightly timer is installed but NOT enabled. Enable it after saving a baseline:
-        #   sudo scanner --cli --baseline-save /var/lib/scanner/baseline.json
-        #   sudo systemctl enable --now scanner-diff.timer
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload >/dev/null 2>&1 || true
+            # First installation only: switch the nightly check on and let it run once now.
+            # That first run saves the baseline of this machine by itself (when the scan is
+            # clean), so nobody has to do it by hand. Upgrades keep your choices.
+            if [ -z "${2:-}" ]; then
+                systemctl enable scanner-diff.timer >/dev/null 2>&1 || true
+                systemctl start scanner-diff.timer >/dev/null 2>&1 || true
+                systemctl start --no-block scanner-diff.service >/dev/null 2>&1 || true
+            fi
         fi
         ;;
 esac

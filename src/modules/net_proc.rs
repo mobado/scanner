@@ -266,6 +266,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
 
     let mut reported: HashSet<(String, u32)> = HashSet::new();
     let mut connections = Vec::new();
+    let first_finding = col.findings.len();
 
     for s in &sockets {
         let pids = owners.get(&s.inode).cloned().unwrap_or_default();
@@ -300,6 +301,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
         }
     }
     col.inventory.connections = connections;
+    super::net_group::group_listener_findings(col, first_finding);
 
     check_ss_consistency(ctx, &sockets, col);
     check_hidden_processes(ctx, col);
@@ -479,7 +481,7 @@ fn check_orphan(ctx: &ScanCtx, s: &SocketEntry, col: &mut Collector) {
     let (sev, desc) = match (&nfs_thread, &nfs_mount, s.uid) {
         (Some(t), Some(_), 0) => (
             Severity::Low,
-            format!("No process has the socket open, but the kernel thread [{t}] and an NFS mount exist. It is almost certainly the kernel NFS service (NFSv4.0 listens on a random port for callbacks from the server). Fixed port: options nfs callback_tcpport=… in /etc/modprobe.d."),
+            format!("No process has the socket open, but the kernel thread [{t}] and an NFS mount exist. It is almost certainly the kernel NFS client (lockd for file locking, or the NFSv4.0 callback channel, which listen on random ports). Fixed ports can be set in /etc/modprobe.d (options lockd nlm_udpport=… nlm_tcpport=…, options nfs callback_tcpport=…)."),
         ),
         _ => (
             if s.proto.is_tcp() { Severity::High } else { Severity::Low },

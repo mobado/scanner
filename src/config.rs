@@ -148,7 +148,7 @@ impl Default for Config {
                 "/usr/bin/write", "/usr/bin/bsd-write", "/usr/bin/write.ul", "/usr/bin/ssh-agent",
                 "/usr/bin/mlocate", "/usr/bin/plocate", "/usr/bin/locate",
                 // fuse, polkit, dbus, openssh
-                "/usr/bin/fusermount", "/usr/bin/fusermount3", "/usr/bin/pkexec",
+                "/usr/bin/fusermount", "/usr/bin/fusermount3", "/usr/bin/pkexec", "/usr/bin/nvidia-modprobe",
                 "/usr/lib/polkit-1/polkit-agent-helper-1", "/usr/libexec/polkit-agent-helper-1",
                 "/usr/lib/dbus-1.0/dbus-daemon-launch-helper", "/usr/lib/openssh/ssh-keysign",
                 "/usr/libexec/openssh/ssh-keysign",
@@ -197,7 +197,7 @@ impl Default for Config {
             allowed_pam_modules: s(&[
                 "pam_unix", "pam_deny", "pam_permit", "pam_env", "pam_limits", "pam_systemd",
                 "pam_loginuid", "pam_keyinit", "pam_selinux", "pam_motd", "pam_mail", "pam_lastlog",
-                "pam_lastlog2", "pam_securetty", "pam_nologin", "pam_rootok", "pam_succeed_if",
+                "pam_lastlog2", "pam_wtmpdb", "pam_securetty", "pam_nologin", "pam_rootok", "pam_succeed_if",
                 "pam_umask", "pam_xauth", "pam_wheel", "pam_faildelay", "pam_cap",
                 "pam_gnome_keyring", "pam_kwallet5", "pam_kwallet6", "pam_fprintd", "pam_sss",
                 "pam_winbind", "pam_ldap", "pam_krb5", "pam_mkhomedir", "pam_systemd_home",

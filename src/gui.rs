@@ -7,7 +7,7 @@ use scanner::baseline::Baseline;
 use scanner::external_tools::{self, Tool};
 use scanner::report::{Report, VerdictLevel};
 use scanner::sandbox::SelfTestResult;
-use scanner::{run_scan, Config, Finding, ModuleId, ScanOptions, Severity, SysRoot};
+use scanner::{Config, Finding, ModuleId, ScanOptions, Severity, SysRoot};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
@@ -110,7 +110,7 @@ impl ScannerApp {
             deep_pid: false,
             root_path: "/".into(),
             baseline_compare: String::new(),
-            baseline_save: "/var/lib/scanner/baseline.json".into(),
+            baseline_save: scanner::autobaseline::DEFAULT_PATH.into(),
             export_path: default_report_path().display().to_string(),
             auto_export: false,
             rx: None,
@@ -167,7 +167,7 @@ impl ScannerApp {
         self.set_progress("Starting …");
         std::thread::spawn(move || {
             let sys = SysRoot::new(root);
-            let report = run_scan(&sys, &cfg, &opts, &|m| {
+            let report = scanner::scan::run_scan_auto(&sys, &cfg, &opts, true, &|m| {
                 if let Ok(mut p) = progress.lock() {
                     *p = m.to_string();
                 }
@@ -212,6 +212,9 @@ impl ScannerApp {
                         r.summary.critical,
                         r.summary.high
                     );
+                    if let Some(p) = &r.baseline_auto_saved {
+                        self.status.push_str(&format!(" A baseline was saved automatically ({p})."));
+                    }
                     self.report = Some(*r);
                     self.selected = None;
                     if std::mem::take(&mut self.auto_export) {
@@ -322,12 +325,13 @@ impl ScannerApp {
                 .min_size(egui::vec2(ui.available_width(), 34.0));
             if ui
                 .add_enabled(!self.busy(), full)
-                .on_hover_text("Runs all four modules and every installed external tool (can take a few minutes) and saves the report as JSON and text.")
+                .on_hover_text("Runs everything: all modules, the deep PID scan and every installed external tool (can take a few minutes), and saves the report as JSON and text.")
                 .clicked()
             {
                 for (_, on) in &mut self.modules {
                     *on = true;
                 }
+                self.deep_pid = true;
                 for (_, path, on) in &mut self.tools {
                     *on = path.is_some();
                 }
@@ -363,9 +367,14 @@ impl ScannerApp {
 
             ui.add_space(8.0);
             section(ui, "Baseline");
-            ui.label(RichText::new("Compare with file (empty = no comparison)").small().color(MUTED));
-            ui.add(egui::TextEdit::singleline(&mut self.baseline_compare).hint_text("/var/lib/scanner/baseline.json").desired_width(f32::INFINITY));
-            ui.label(RichText::new("Save the latest scan as a baseline").small().color(MUTED));
+            match scanner::autobaseline::default_if_exists() {
+                Some(p) => ui.label(RichText::new(format!("✔ Automatic baseline in use: {}", p.display())).small().color(OK)),
+                None if self.is_root => ui.label(RichText::new("The first clean scan saves a baseline by itself.").small().color(MUTED)),
+                None => ui.label(RichText::new("The baseline is made automatically by the first scan as root.").small().color(MUTED)),
+            };
+            ui.label(RichText::new("Compare with another file (empty = the automatic baseline)").small().color(MUTED));
+            ui.add(egui::TextEdit::singleline(&mut self.baseline_compare).hint_text(scanner::autobaseline::DEFAULT_PATH).desired_width(f32::INFINITY));
+            ui.label(RichText::new("Save the latest scan as the new baseline (e.g. after updates)").small().color(MUTED));
             ui.add(egui::TextEdit::singleline(&mut self.baseline_save).desired_width(f32::INFINITY));
             let can_save = self.report.is_some() && !self.baseline_save.trim().is_empty();
             if ui.add_enabled(can_save, egui::Button::new("Save baseline")).clicked() {
@@ -373,7 +382,7 @@ impl ScannerApp {
                     let path = PathBuf::from(self.baseline_save.trim());
                     self.status = match Baseline::from_report(r).save(&path) {
                         Ok(()) => {
-                            let missing: Vec<&str> = ModuleId::ALL.iter().filter(|m| !r.modules.iter().any(|x| x == m.id())).map(|m| m.id()).collect();
+                            let missing: Vec<&str> = ModuleId::CORE.iter().filter(|m| !r.modules.iter().any(|x| x == m.id())).map(|m| m.id()).collect();
                             format!(
                                 "Baseline saved to {} ({} SUID/SGID files, {} persistence files){}",
                                 path.display(),

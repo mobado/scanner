@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use scanner::baseline::Baseline;
 use scanner::external_tools::{self, Tool};
-use scanner::{run_scan, Config, ModuleId, ScanOptions, Severity, SysRoot};
+use scanner::{Config, ModuleId, ScanOptions, Severity, SysRoot};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -58,6 +58,14 @@ struct Cli {
     /// Walk the whole PID range to find hidden processes (slower)
     #[arg(long)]
     deep_pid_scan: bool,
+
+    /// Run everything: all modules, all installed external tools and the deep PID scan
+    #[arg(long)]
+    full: bool,
+
+    /// Do not save or use the automatic baseline (/var/lib/scanner/baseline.json)
+    #[arg(long)]
+    no_auto_baseline: bool,
 
     /// Scan another root file system (e.g. a mounted disk or a test directory)
     #[arg(long, value_name = "DIR", default_value = "/")]
@@ -130,6 +138,7 @@ fn wants_cli(cli: &Cli) -> bool {
         || cli.modules.is_some()
         || cli.tools.is_some()
         || cli.deep_pid_scan
+        || cli.full
         || cli.root.as_os_str() != "/"
 }
 
@@ -223,6 +232,15 @@ fn parse_opts(cli: &Cli) -> Result<ScanOptions> {
             bail!("the baseline file {} does not exist", b.display());
         }
     }
+    if cli.full {
+        return Ok(ScanOptions {
+            modules: ModuleId::ALL.to_vec(),
+            tools: Tool::ALL.to_vec(),
+            deep_pid_scan: true,
+            baseline_compare: cli.baseline_compare.clone(),
+            min_severity,
+        });
+    }
     Ok(ScanOptions { modules, tools, deep_pid_scan: cli.deep_pid_scan, baseline_compare: cli.baseline_compare.clone(), min_severity })
 }
 
@@ -234,7 +252,7 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
     }
     let sys = SysRoot::new(&cli.root);
     let interactive = std::io::stderr().is_terminal();
-    let report = run_scan(&sys, &cfg, &opts, &|msg| {
+    let report = scanner::scan::run_scan_auto(&sys, &cfg, &opts, !cli.no_auto_baseline, &|msg| {
         if interactive {
             eprintln!("» {msg}");
         }
