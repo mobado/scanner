@@ -74,7 +74,7 @@ impl Default for Config {
             allowed_listen_processes: s(&[
                 "avahi-daemon", "kdeconnectd", "chronyd", "systemd-resolved", "systemd-timesyncd",
                 "systemd-networkd", "NetworkManager", "dhclient", "cupsd", "cups-browsed", "tailscaled",
-                "pipewire", "wireplumber", "gsd-sharing",
+                "pipewire", "wireplumber", "gsd-sharing", "firefox-esr", "firefox", "chromium", "thunderbird", "chrome",
             ]),
             report_loopback_listeners: false,
             suspicious_remote_ports: vec![

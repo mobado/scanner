@@ -339,6 +339,7 @@ fn whitelist_port_ranges_trusted_processes_and_hidden_findings() {
     assert!(cfg.is_listen_process_allowed("avahi-daemon", Some("/usr/sbin/avahi-daemon")));
     assert!(!cfg.is_listen_process_allowed("avahi-daemon", Some("/tmp/avahi-daemon")), "a copy outside /usr is not trusted");
     assert!(!cfg.is_listen_process_allowed("rpcbind", Some("/usr/sbin/rpcbind")), "rpcbind exposure is still reported");
+    assert!(cfg.is_listen_process_allowed("firefox-esr", Some("/usr/lib/firefox-esr/firefox-esr")), "browser UDP ports are normal");
 
     let f = scanner::Finding::new(Severity::Low, "persistence", "PERS-SYSTEMD-LOCAL", "Locally created systemd unit: x.service");
     let mut hidden = Config::default();

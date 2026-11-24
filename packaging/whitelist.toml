@@ -36,6 +36,11 @@ allowed_listen_processes = [
     "pipewire",
     "wireplumber",
     "gsd-sharing",
+    "firefox-esr",
+    "firefox",
+    "chromium",
+    "thunderbird",
+    "chrome",
 ]
 report_loopback_listeners = false
 suspicious_remote_ports = [
@@ -426,6 +431,7 @@ allowed_suid = [
     "/usr/bin/fusermount",
     "/usr/bin/fusermount3",
     "/usr/bin/pkexec",
+    "/usr/bin/nvidia-modprobe",
     "/usr/lib/polkit-1/polkit-agent-helper-1",
     "/usr/libexec/polkit-agent-helper-1",
     "/usr/lib/dbus-1.0/dbus-daemon-launch-helper",
@@ -567,6 +573,7 @@ allowed_pam_modules = [
     "pam_mail",
     "pam_lastlog",
     "pam_lastlog2",
+    "pam_wtmpdb",
     "pam_securetty",
     "pam_nologin",
     "pam_rootok",
