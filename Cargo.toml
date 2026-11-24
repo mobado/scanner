@@ -3,7 +3,7 @@ name = "scanner"
 version = "0.1.0"
 edition = "2021"
 description = "Read-only intrusion and backdoor scanner for Debian 13 (Trixie)"
-license = "MIT"
+license = "GPL-3.0-only"
 default-run = "scanner"
 
 [lib]
