@@ -276,9 +276,9 @@ fn whitelist_glob_and_toml_round_trip() {
 fn debsums_and_friends_parse() {
     let f = parse_debsums("/usr/bin/ls\n/usr/share/doc/x/README\n", "debsums: missing file /usr/share/man/man1/a.1.gz (from a package)\n");
     assert_eq!(f.len(), 3);
-    assert_eq!(f[0].severity, Severity::Critical);
-    assert_eq!(f[1].severity, Severity::Low);
-    assert_eq!(f[2].rule, "EXT-DEBSUMS-MISSING");
+    assert!(f.iter().any(|x| x.rule == "EXT-DEBSUMS-CHANGED" && x.severity == Severity::Critical));
+    assert!(f.iter().any(|x| x.rule == "EXT-DEBSUMS-CHANGED" && x.severity == Severity::Low));
+    assert!(f.iter().any(|x| x.rule == "EXT-DEBSUMS-MISSING"));
     assert_eq!(parse_chkrootkit("Checking `ls'... INFECTED\n")[0].severity, Severity::Critical);
     assert_eq!(parse_rkhunter("Warning: The file properties have changed:\n         File: /usr/bin/ls\n").len(), 1);
     assert_eq!(parse_lynis("", "warning[]=SSH-7408|Root login|\nsuggestion[]=X|y|\n").len(), 2);
