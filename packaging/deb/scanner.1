@@ -1,0 +1,93 @@
+.TH SCANNER 1 "2026" "scanner" "User Commands"
+.SH NAME
+scanner \- read-only intrusion and backdoor scanner for Debian 13
+.SH SYNOPSIS
+.B scanner
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B scanner
+looks for signs of intrusion, backdoors and persistence: reverse and bind shells, hidden or
+disguised processes, programs running from /tmp or deleted from disk, new SUID/SGID files,
+suspicious systemd units, cron jobs, SSH keys, sshd and PAM settings, and pending updates.
+It can also run debsums, chkrootkit, rkhunter and lynis.
+.PP
+It is strictly read-only: it never changes the system. The only files it writes are the
+reports and baselines you ask for, and the automatic baseline in /var/lib/scanner.
+.PP
+Without options a window opens (when a screen is available) and, if not run as root, asks for
+the sudo password to restart with full rights. Any report option gives terminal mode.
+.SH OPTIONS
+.TP
+.B \-\-cli
+Force terminal mode.
+.TP
+.B \-\-full
+Run everything: all modules, the deep PID scan and all installed external tools.
+.TP
+.B \-\-json, \-\-html
+Write the report as JSON or as a self-contained HTML page.
+.TP
+.B \-\-summary
+Print one line: OK, NOTICE, ATTENTION or ALARM.
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fIFILE\fR
+Write the report to a file.
+.TP
+.BI \-\-modules " LIST"
+Comma separated: net_proc, proc_audit, fs_perms, persistence, updates.
+.TP
+.BI \-\-tools " LIST"
+Comma separated: debsums, chkrootkit, rkhunter, lynis, or "all".
+.TP
+.B \-\-deep\-pid\-scan
+Walk the whole PID range to find hidden processes (slower).
+.TP
+.BI \-\-baseline\-save " FILE"
+Save a baseline of SUID/SGID files, listening ports and persistence files.
+.TP
+.BI \-\-baseline\-compare " FILE"
+Compare with a saved baseline. Without it the automatic baseline is used.
+.TP
+.B \-\-no\-auto\-baseline
+Do not save or use the automatic baseline.
+.TP
+\fB\-c\fR, \fB\-\-config\fR \fIFILE\fR
+Whitelist in TOML or JSON.
+.TP
+.B \-\-min\-severity \fILEVEL\fR
+Only show findings from low, medium, high or critical upwards.
+.TP
+.B \-\-root \fIDIR\fR
+Scan another root file system, for example a mounted disk.
+.TP
+.B \-\-no\-sudo
+Do not ask for the sudo password.
+.TP
+.B \-\-self\-test
+Run the safe self-test in a temporary sandbox.
+.TP
+.B \-\-print\-config
+Print the default whitelist as TOML.
+.TP
+.B \-\-list\-tools
+Show which external tools are installed.
+.SH EXIT STATUS
+0 no high or critical findings, 1 at least one high, 2 at least one critical, 3 error.
+.SH FILES
+.TP
+/etc/scanner/whitelist.toml
+System whitelist. Else ~/.config/scanner/whitelist.toml.
+.TP
+/var/lib/scanner/baseline.json
+Automatic baseline (root only).
+.TP
+/var/log/scanner/
+Reports from the nightly scanner\-diff.timer.
+.SH SEE ALSO
+.BR debsums (1),
+.BR chkrootkit (1),
+.BR rkhunter (8),
+.BR lynis (8),
+/usr/share/doc/scanner/README.md
+.SH AUTHOR
+https://github.com/mobado/scanner

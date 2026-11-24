@@ -13,6 +13,7 @@
 #   /usr/share/icons/hicolor/scalable/apps/scanner.svg icon
 #   /etc/scanner/whitelist.toml                        whitelist (kept on upgrade)
 #   /usr/lib/systemd/system/scanner-diff.{service,timer} nightly check (enabled on install; saves the baseline itself)
+#   /usr/share/man/man1/scanner.1.gz                   manual page (man scanner)
 #   /usr/share/doc/scanner/                            README, copyright, changelog, VM test script
 set -eu
 cd "$(dirname "$0")/.."
@@ -38,7 +39,10 @@ install -d -m 0755 "$PKG/usr/lib/systemd/system"
 sed 's|/usr/local/sbin/scanner|/usr/bin/scanner|' packaging/scanner-diff.service > "$PKG/usr/lib/systemd/system/scanner-diff.service"
 chmod 0644 "$PKG/usr/lib/systemd/system/scanner-diff.service"
 install -m 0644 packaging/scanner-diff.timer                  "$PKG/usr/lib/systemd/system/scanner-diff.timer"
-install -D -m 0644 README.md                                  "$PKG/usr/share/doc/scanner/README.md"
+install -d -m 0755 "$PKG/usr/share/man/man1"
+gzip -9n -c packaging/deb/scanner.1 > "$PKG/usr/share/man/man1/scanner.1.gz"
+chmod 0644 "$PKG/usr/share/man/man1/scanner.1.gz"
+install -D -m 0644 README.md                                 "$PKG/usr/share/doc/scanner/README.md"
 install -D -m 0644 packaging/deb/copyright                    "$PKG/usr/share/doc/scanner/copyright"
 install -D -m 0755 scripts/sandbox-vm-test.sh                 "$PKG/usr/share/doc/scanner/examples/sandbox-vm-test.sh"
 {
