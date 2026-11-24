@@ -555,6 +555,24 @@ fn an_incomplete_baseline_is_completed_after_a_clean_root_scan() {
 }
 
 #[test]
+fn several_updated_programs_become_one_restart_finding() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    for (pid, exe) in [(300u32, "/usr/libexec/flatpak-session-helper"), (301, "/usr/bin/firefox-esr"), (302, "/home/x/payload")] {
+        write(root, &format!("/proc/{pid}/stat"), &format!("{pid} (x) S 1 0 0 0 -1 4194560 0 0\n"));
+        write(root, &format!("/proc/{pid}/status"), &format!("Name:\tx\nTgid:\t{pid}\nPPid:\t1\nUid:\t1000\t1000\t1000\t1000\n"));
+        write(root, &format!("/proc/{pid}/cmdline"), &format!("{exe}\0"));
+        symlink(format!("{exe} (deleted)"), root.join(format!("proc/{pid}/exe"))).expect("exe");
+    }
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::ProcAudit]), &|_| {});
+    let deleted: Vec<_> = report.findings.iter().filter(|f| f.rule == "PROC-DELETED").collect();
+    assert_eq!(deleted.len(), 2, "{deleted:?}");
+    let grouped = deleted.iter().find(|f| f.title.contains("need a restart")).expect("grouped");
+    assert!(grouped.title.contains("flatpak-session-helper") && grouped.title.contains("firefox-esr"), "{}", grouped.title);
+    assert!(deleted.iter().any(|f| f.title.contains("/home/x/payload")));
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});

@@ -35,6 +35,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     let cfg = ctx.cfg;
     col.inventory.process_count = ctx.processes.len();
     let own = crate::procinfo::own_exe(ctx.sys);
+    let first_finding = col.findings.len();
 
     for p in ctx.processes {
         if p.is_kernel_thread() || p.state == 'Z' || (own.is_some() && p.exe_path() == own.as_deref()) {
@@ -140,4 +141,37 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
             );
         }
     }
+    group_restart_needed(col, first_finding);
+}
+
+/// After updates many running programs have a replaced binary. Several of those (Low, from
+/// package directories) become one finding that says what to restart.
+fn group_restart_needed(col: &mut Collector, from: usize) {
+    let tail: Vec<Finding> = col.findings.split_off(from);
+    let (stale, mut keep): (Vec<Finding>, Vec<Finding>) = tail.into_iter().partition(|f| f.rule == "PROC-DELETED" && f.severity == Severity::Low);
+    if stale.len() < 2 {
+        keep.extend(stale);
+        col.findings.extend(keep);
+        return;
+    }
+    let mut names: Vec<String> = stale
+        .iter()
+        .map(|f| f.title.rsplit('/').next().unwrap_or("?").trim().to_string())
+        .collect();
+    names.sort();
+    names.dedup();
+    let evidence: Vec<String> = stale.iter().map(|f| f.evidence.lines().next().unwrap_or("").to_string()).collect();
+    keep.push(
+        Finding::new(
+            Severity::Low,
+            MODULE,
+            "PROC-DELETED",
+            format!("{} running programs were updated on disk and need a restart: {}", stale.len(), names.join(", ")),
+        )
+        .evidence(evidence.join("\n"))
+        .description("The programs on disk were replaced by a package update while the old versions keep running, so the old (possibly vulnerable) code is still in use. Restart them, or log out and in again, or reboot. Binaries deleted outside the package folders (/usr, /opt) are reported separately and are more suspicious.")
+        .verify("needrestart -r l")
+        .verify("ls -l /proc/*/exe 2>/dev/null | grep deleted"),
+    );
+    col.findings.extend(keep);
 }
