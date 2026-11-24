@@ -50,6 +50,34 @@ scripts/                static build, test in a disposable VM
 No code uses `.unwrap()`: missing `/proc` files, processes that disappear mid-scan
 and unreadable files become notes in the report, never a crash.
 
+## Install on Debian 13 (.deb)
+
+Download `scanner_<version>-1_amd64.deb` from the
+[Releases page](https://github.com/mobado/scanner/releases) and install it:
+
+```sh
+sudo apt install ./scanner_0.2.0-1_amd64.deb
+```
+
+You then find **Scanner** in the application menu, and `scanner` works in the terminal.
+The package installs the whitelist in `/etc/scanner/whitelist.toml` (kept on upgrades) and
+the nightly timer, which stays off until you have saved a baseline:
+
+```sh
+sudo scanner --cli --baseline-save /var/lib/scanner/baseline.json
+sudo systemctl enable --now scanner-diff.timer
+```
+
+Remove with `sudo apt remove scanner` (`sudo apt purge scanner` also removes baselines and reports).
+
+### Build the .deb yourself
+
+```sh
+sh scripts/build-deb.sh          # → dist/scanner_<version>-1_amd64.deb
+```
+
+On GitHub every version tag (`v0.2.0` …) builds the package inside Debian 13 and attaches it to the release.
+
 ## Build
 
 ```sh

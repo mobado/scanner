@@ -34,5 +34,7 @@ if git rev-parse --verify -q origin/main >/dev/null && ! git merge-base --is-anc
     fi
 fi
 
-git push -u origin main
+# --follow-tags also sends version tags (v0.2.0 …): GitHub then builds the .deb
+# and puts it on the Releases page for everyone to download.
+git push -u --follow-tags origin main
 echo "Done: https://github.com/mobado/scanner"

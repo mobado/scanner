@@ -8,3 +8,4 @@
 scanner-report*.json
 scanner-report*.txt
 baseline*.json
+/dist/

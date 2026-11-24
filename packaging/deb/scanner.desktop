@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Scanner
+GenericName=Intrusion and backdoor scanner
+Comment=Read-only intrusion and backdoor scanner for Debian 13
+Exec=scanner
+Icon=scanner
+Terminal=false
+Categories=System;Security;Monitor;
+Keywords=security;rootkit;backdoor;intrusion;audit;suid;
