@@ -51,6 +51,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     check_cron(ctx, col);
     check_rc_local(ctx, col);
     check_ld_preload(ctx, col);
+    check_ld_conf(ctx, col);
     let akf = ssh::check_sshd_config(ctx, col);
     ssh::check_authorized_keys(ctx, col, &homes, &akf);
     system::check_pam(ctx, col);
@@ -549,6 +550,34 @@ fn check_rc_local(ctx: &ScanCtx, col: &mut Collector) {
             .verify(format!("cat {path}"))
             .verify("systemctl status rc-local.service"),
     );
+}
+
+/// /etc/ld.so.conf and /etc/ld.so.conf.d/*: library search paths. One that points to a
+/// temporary or home directory lets an attacker's library be loaded by every program.
+fn check_ld_conf(ctx: &ScanCtx, col: &mut Collector) {
+    let mut files = vec!["/etc/ld.so.conf".to_string()];
+    files.extend(ctx.sys.dir_names("/etc/ld.so.conf.d").into_iter().map(|n| format!("/etc/ld.so.conf.d/{n}")));
+    for path in files {
+        let Ok(text) = ctx.sys.read_string(&path) else { continue };
+        record(ctx, col, &path);
+        for (i, line) in text.lines().enumerate() {
+            let dir = line.trim();
+            if dir.is_empty() || dir.starts_with('#') || dir.starts_with("include") {
+                continue;
+            }
+            let bad = ctx.cfg.is_temp_path(dir) || ["/home/", "/root/", "/var/www/"].iter().any(|p| dir.starts_with(p));
+            if bad {
+                col.push(
+                    Finding::new(Severity::High, MODULE, "PERS-LDCONF", format!("Library search path in an unusual place: {dir}"))
+                        .evidence(format!("{path}:{}: {dir}", i + 1))
+                        .description("ld.so.conf lists folders where the system looks for shared libraries. A temporary or home folder here lets an attacker's library replace a real one for every program – a rootkit technique.")
+                        .verify(format!("cat {}", shq(&path)))
+                        .verify(format!("ls -la {}", shq(dir)))
+                        .verify("ldconfig -p | grep -v ' /usr/lib\\| /lib'"),
+                );
+            }
+        }
+    }
 }
 
 fn check_ld_preload(ctx: &ScanCtx, col: &mut Collector) {

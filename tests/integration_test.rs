@@ -577,6 +577,20 @@ fn several_updated_programs_become_one_restart_finding() {
 }
 
 #[test]
+fn library_path_in_tmp_is_flagged_but_normal_ones_are_not() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/etc/ld.so.conf", "include /etc/ld.so.conf.d/*.conf\n");
+    write(root, "/etc/ld.so.conf.d/x86_64-linux-gnu.conf", "# Multiarch\n/usr/local/lib/x86_64-linux-gnu\n/lib/x86_64-linux-gnu\n");
+    write(root, "/etc/ld.so.conf.d/zz.conf", "/dev/shm/.lib\n");
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::Persistence]), &|_| {});
+    let f: Vec<_> = report.findings.iter().filter(|f| f.rule == "PERS-LDCONF").collect();
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].severity, Severity::High);
+    assert!(f[0].evidence.contains("zz.conf:1: /dev/shm/.lib"));
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});
