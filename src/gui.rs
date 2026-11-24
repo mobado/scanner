@@ -5,7 +5,7 @@
 use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, Stroke};
 use scanner::baseline::Baseline;
 use scanner::external_tools::{self, Tool};
-use scanner::report::Report;
+use scanner::report::{Report, VerdictLevel};
 use scanner::sandbox::SelfTestResult;
 use scanner::{run_scan, Config, Finding, ModuleId, ScanOptions, Severity, SysRoot};
 use std::path::PathBuf;
@@ -80,6 +80,8 @@ pub struct ScannerApp {
     shot: Option<Shot>,
     /// Result of "Restart with sudo" (runs in its own thread so the window does not freeze).
     sudo_result: Option<Receiver<Result<(), &'static str>>>,
+    /// Index of the finding shown in the detail panel.
+    selected: Option<usize>,
 }
 
 impl ScannerApp {
@@ -123,6 +125,7 @@ impl ScannerApp {
             is_root: scanner::sys::is_root(),
             shot: shot.map(|path| Shot { path, frames: 0, requested: false, done: Arc::new(AtomicBool::new(false)) }),
             sudo_result: None,
+            selected: None,
         };
         if let Some(note) = sudo_note {
             app.status = note;
@@ -210,6 +213,7 @@ impl ScannerApp {
                         r.summary.high
                     );
                     self.report = Some(*r);
+                    self.selected = None;
                     if std::mem::take(&mut self.auto_export) {
                         self.export(false);
                         let txt_status = self.status.clone();
@@ -403,6 +407,17 @@ impl ScannerApp {
                 }
             });
             ui.label(RichText::new(format!("{} known SUID files · {} allowed ports", self.cfg.allowed_suid.len(), self.cfg.allowed_listen_ports.len())).small().color(MUTED));
+            let hidden = self.cfg.ignore_findings.len() + self.cfg.ignore_rules.len();
+            ui.label(RichText::new(format!("Hidden by you: {} finding(s), {} rule(s)", self.cfg.ignore_findings.len(), self.cfg.ignore_rules.len())).small().color(MUTED));
+            ui.label(RichText::new(format!("\"Hide\" saves to {}", self.whitelist_target().display())).small().color(MUTED));
+            if ui.add_enabled(hidden > 0, egui::Button::new("Show hidden findings again")).clicked() {
+                self.cfg.ignore_findings.clear();
+                self.cfg.ignore_rules.clear();
+                self.status = match self.save_whitelist() {
+                    Ok(p) => format!("Nothing is hidden any more ({}). Run a scan to see the findings again.", p.display()),
+                    Err(e) => format!("Could not save the whitelist: {e}"),
+                };
+            }
 
             ui.add_space(8.0);
             section(ui, "Root to scan");
@@ -424,14 +439,48 @@ impl ScannerApp {
         });
     }
 
-    fn summary_cards(&self, ui: &mut egui::Ui) {
+    fn verdict_banner(&self, ui: &mut egui::Ui) {
         let Some(r) = &self.report else { return };
+        let v = r.verdict();
+        let (col, icon) = match v.level {
+            VerdictLevel::Clean => (OK, "✔"),
+            VerdictLevel::Minor => (sev_color(Severity::Low), "ℹ"),
+            VerdictLevel::Attention => (sev_color(Severity::High), "⚠"),
+            VerdictLevel::Alarm => (sev_color(Severity::Critical), "✖"),
+        };
+        egui::Frame::new()
+            .fill(col.linear_multiply(0.14))
+            .stroke(Stroke::new(1.0, col))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(14, 10))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(icon).size(26.0).strong().color(col));
+                    ui.add_space(4.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(&v.headline).size(17.0).strong().color(Color32::WHITE));
+                        ui.label(RichText::new(&v.detail).color(TEXT));
+                    });
+                });
+            });
+    }
+
+    /// The four severity cards (click one to show only that severity) and the totals card.
+    fn summary_cards(&mut self, ui: &mut egui::Ui) {
+        let Some(r) = &self.report else { return };
+        let counts: Vec<usize> = Severity::ALL_DESC.iter().map(|s| r.summary.count(*s)).collect();
+        let (total, secs, procs) = (r.summary.total, r.duration_ms as f64 / 1000.0, r.inventory.process_count);
+        let mut clicked: Option<usize> = None;
+        let only = |show: &[bool; 4], i: usize| show.iter().enumerate().all(|(j, on)| *on == (j == i));
+        let show = self.show_sev;
         ui.columns(5, |cols| {
             for (i, sev) in Severity::ALL_DESC.iter().enumerate() {
-                let n = r.summary.count(*sev);
-                egui::Frame::new()
-                    .fill(CARD)
-                    .stroke(Stroke::new(1.0, if n > 0 { sev_color(*sev) } else { BORDER }))
+                let n = counts[i];
+                let active = only(&show, i);
+                let resp = egui::Frame::new()
+                    .fill(if active { CARD_HI } else { CARD })
+                    .stroke(Stroke::new(if active { 2.0 } else { 1.0 }, if n > 0 || active { sev_color(*sev) } else { BORDER }))
                     .corner_radius(CornerRadius::same(8))
                     .inner_margin(Margin::symmetric(12, 8))
                     .show(&mut cols[i], |ui| {
@@ -440,19 +489,185 @@ impl ScannerApp {
                             ui.label(RichText::new(n.to_string()).size(26.0).strong().color(if n > 0 { sev_color(*sev) } else { MUTED }));
                             ui.label(RichText::new(sev.label()).color(MUTED));
                         });
-                    });
+                    })
+                    .response
+                    .interact(egui::Sense::click())
+                    .on_hover_text(format!("Show only {} findings (click again to show all)", sev.label().to_lowercase()));
+                if resp.clicked() {
+                    clicked = Some(i);
+                }
             }
             egui::Frame::new().fill(CARD).stroke(Stroke::new(1.0, BORDER)).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(12, 8)).show(&mut cols[4], |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(r.summary.total.to_string()).size(26.0).strong());
+                    ui.label(RichText::new(total.to_string()).size(26.0).strong());
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(format!("findings in {:.1} s", r.duration_ms as f64 / 1000.0)).small().color(MUTED));
-                        ui.label(RichText::new(format!("{} processes", r.inventory.process_count)).small().color(MUTED));
+                        ui.label(RichText::new(format!("findings in {secs:.1} s")).small().color(MUTED));
+                        ui.label(RichText::new(format!("{procs} processes")).small().color(MUTED));
                     });
                 });
             });
         });
+        if let Some(i) = clicked {
+            if only(&self.show_sev, i) {
+                self.show_sev = [true; 4];
+            } else {
+                self.show_sev = [false; 4];
+                self.show_sev[i] = true;
+            }
+            self.tab = Tab::Findings;
+        }
+    }
+
+    fn findings_view(&mut self, ui: &mut egui::Ui) {
+        let Some(r) = &self.report else {
+            ui.label("No scan yet.");
+            return;
+        };
+        let mut modules: Vec<String> = r.findings.iter().map(|f| f.module.clone()).collect();
+        modules.sort();
+        modules.dedup();
+        ui.horizontal(|ui| {
+            for (i, sev) in Severity::ALL_DESC.iter().enumerate() {
+                let on = self.show_sev[i];
+                let b = egui::Button::new(RichText::new(sev.label()).color(if on { Color32::BLACK } else { MUTED }).strong())
+                    .fill(if on { sev_color(*sev) } else { CARD })
+                    .corner_radius(CornerRadius::same(10));
+                if ui.add(b).clicked() {
+                    self.show_sev[i] = !on;
+                }
+            }
+            ui.add_space(10.0);
+            egui::ComboBox::from_id_salt("modfilter").selected_text(format!("Module: {}", self.module_filter)).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.module_filter, "all".to_string(), "all");
+                for m in &modules {
+                    ui.selectable_value(&mut self.module_filter, m.clone(), m);
+                }
+            });
+            ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search title, evidence, rule …").desired_width(240.0));
+        });
+        ui.add_space(6.0);
+        let q = self.search.to_lowercase();
+        let visible: Vec<usize> = r
+            .findings
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                let idx = Severity::ALL_DESC.iter().position(|s| *s == f.severity).unwrap_or(3);
+                self.show_sev[idx]
+                    && (self.module_filter == "all" || f.module == self.module_filter)
+                    && (q.is_empty() || f.title.to_lowercase().contains(&q) || f.evidence.to_lowercase().contains(&q) || f.rule.to_lowercase().contains(&q))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if visible.is_empty() {
+            ui.add_space(20.0);
+            ui.label(RichText::new(if r.findings.is_empty() { "No findings. Compare against a baseline regularly to detect changes." } else { "No findings match the filter." }).color(MUTED));
+            return;
+        }
+        let selected = match self.selected {
+            Some(s) if visible.contains(&s) => s,
+            _ => visible[0],
+        };
+        let ctx = ui.ctx().clone();
+        let mut new_sel = None;
+        let mut action = None;
+        let height = ui.available_height();
+        let list_w = (ui.available_width() * 0.44).clamp(300.0, 600.0);
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(list_w, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_min_height(height);
+                egui::ScrollArea::vertical().id_salt("finding-list").auto_shrink([false, false]).show(ui, |ui| {
+                    for &i in &visible {
+                        if list_row(ui, &r.findings[i], i == selected).clicked() {
+                            new_sel = Some(i);
+                        }
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            let w = ui.available_width();
+            ui.allocate_ui_with_layout(egui::vec2(w, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                egui::Frame::new().fill(CARD).stroke(Stroke::new(1.0, BORDER)).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(14)).show(ui, |ui| {
+                    ui.set_min_size(egui::vec2(ui.available_width(), height - 30.0));
+                    egui::ScrollArea::vertical().id_salt("finding-detail").auto_shrink([false, false]).show(ui, |ui| {
+                        action = finding_detail(ui, &ctx, &r.findings[selected]);
+                    });
+                });
+            });
+        });
+        self.selected = Some(new_sel.unwrap_or(selected));
+        if let Some(a) = action {
+            self.apply_hide(a);
+        }
+    }
+
+    /// Where "Hide" saves the whitelist: the file that was loaded, else the system file as
+    /// root (also used by the systemd timer), else ~/.config/scanner/whitelist.toml.
+    fn whitelist_target(&self) -> PathBuf {
+        if !self.cfg_path.trim().is_empty() {
+            return PathBuf::from(self.cfg_path.trim());
+        }
+        if self.is_root {
+            PathBuf::from(scanner::config::SYSTEM_WHITELIST)
+        } else {
+            scanner::config::user_whitelist_path().unwrap_or_else(|| PathBuf::from("whitelist.toml"))
+        }
+    }
+
+    fn save_whitelist(&mut self) -> Result<PathBuf, String> {
+        let path = self.whitelist_target();
+        let body = self.cfg.to_toml().map_err(|e| e.to_string())?;
+        let text = format!("# Whitelist for scanner (Debian 13 \"Trixie\"), saved from the window.\n# Remove a line from ignore_findings / ignore_rules to show those findings again.\n\n{body}");
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, text).map_err(|e| e.to_string())?;
+        // A personal whitelist should stay owned by the person, also when saved through sudo.
+        if !path.starts_with("/etc") {
+            give_to_sudo_user(&path);
+            if let Some(dir) = path.parent() {
+                give_to_sudo_user(dir);
+            }
+        }
+        self.cfg_path = path.display().to_string();
+        Ok(path)
+    }
+
+    fn apply_hide(&mut self, action: HideAction) {
+        let what = match &action {
+            HideAction::One(key) => {
+                if !self.cfg.ignore_findings.contains(key) {
+                    self.cfg.ignore_findings.push(key.clone());
+                }
+                "The finding is hidden"
+            }
+            HideAction::Rule(rule) => {
+                if !self.cfg.ignore_rules.contains(rule) {
+                    self.cfg.ignore_rules.push(rule.clone());
+                }
+                "Every finding of that rule is hidden"
+            }
+            HideAction::Process(name) => {
+                if !self.cfg.allowed_listen_processes.contains(name) {
+                    self.cfg.allowed_listen_processes.push(name.clone());
+                }
+                "The program's listening ports are trusted"
+            }
+        };
+        if let Some(r) = &mut self.report {
+            let cfg = &self.cfg;
+            r.findings.retain(|f| {
+                let trusted_process = matches!(&action, HideAction::Process(n) if f.rule == "NET-LISTEN-UNKNOWN" && process_in_title(&f.title).as_deref() == Some(n.as_str()));
+                !cfg.suppresses(f) && !trusted_process
+            });
+            r.finalize();
+        }
+        self.selected = None;
+        self.status = match self.save_whitelist() {
+            Ok(p) => format!("{what}. Saved in {} – later scans and the nightly timer use it too.", p.display()),
+            Err(e) => format!("{what} for now, but the whitelist could not be saved: {e}"),
+        };
     }
 
     fn tabs(&mut self, ui: &mut egui::Ui) {
@@ -475,65 +690,6 @@ impl ScannerApp {
                 if ui.add(b).clicked() {
                     self.tab = tab;
                 }
-            }
-        });
-    }
-
-    fn findings_view(&mut self, ui: &mut egui::Ui) {
-        let Some(r) = &self.report else {
-            ui.label("No scan yet.");
-            return;
-        };
-        let mut modules: Vec<String> = r.findings.iter().map(|f| f.module.clone()).collect();
-        modules.sort();
-        modules.dedup();
-        ui.horizontal(|ui| {
-            for (i, sev) in [Severity::Critical, Severity::High, Severity::Medium, Severity::Low].iter().enumerate() {
-                let on = self.show_sev[i];
-                let b = egui::Button::new(RichText::new(sev.label()).color(if on { Color32::BLACK } else { MUTED }).strong())
-                    .fill(if on { sev_color(*sev) } else { CARD })
-                    .corner_radius(CornerRadius::same(10));
-                if ui.add(b).clicked() {
-                    self.show_sev[i] = !on;
-                }
-            }
-            ui.add_space(10.0);
-            egui::ComboBox::from_id_salt("modfilter").selected_text(format!("Module: {}", self.module_filter)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.module_filter, "all".to_string(), "all");
-                for m in &modules {
-                    ui.selectable_value(&mut self.module_filter, m.clone(), m);
-                }
-            });
-            ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search title, evidence, rule …").desired_width(260.0));
-        });
-        ui.add_space(4.0);
-        let q = self.search.to_lowercase();
-        let show_sev = self.show_sev;
-        let module_filter = self.module_filter.clone();
-        let visible: Vec<&Finding> = r
-            .findings
-            .iter()
-            .filter(|f| {
-                let idx = match f.severity {
-                    Severity::Critical => 0,
-                    Severity::High => 1,
-                    Severity::Medium => 2,
-                    Severity::Low => 3,
-                };
-                show_sev[idx]
-                    && (module_filter == "all" || f.module == module_filter)
-                    && (q.is_empty() || f.title.to_lowercase().contains(&q) || f.evidence.to_lowercase().contains(&q) || f.rule.to_lowercase().contains(&q))
-            })
-            .collect();
-        if visible.is_empty() {
-            ui.add_space(20.0);
-            ui.label(RichText::new(if r.findings.is_empty() { "No findings. Compare against a baseline regularly to detect changes." } else { "No findings match the filter." }).color(MUTED));
-            return;
-        }
-        let ctx = ui.ctx().clone();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (i, f) in visible.iter().enumerate() {
-                finding_card(ui, &ctx, i, f);
             }
         });
     }
@@ -760,6 +916,8 @@ impl eframe::App for ScannerApp {
                 });
                 return;
             }
+            self.verdict_banner(ui);
+            ui.add_space(8.0);
             self.summary_cards(ui);
             ui.add_space(8.0);
             self.tabs(ui);
@@ -776,55 +934,137 @@ impl eframe::App for ScannerApp {
     }
 }
 
-fn finding_card(ui: &mut egui::Ui, ctx: &egui::Context, i: usize, f: &Finding) {
+enum HideAction {
+    One(String),
+    Rule(String),
+    Process(String),
+}
+
+/// "Unknown listening port tcp/1716 (kdeconnectd)" → "kdeconnectd"
+fn process_in_title(title: &str) -> Option<String> {
+    let start = title.rfind('(')?;
+    let end = title.rfind(')')?;
+    (end > start + 1).then(|| title[start + 1..end].to_string())
+}
+
+/// One compact, clickable row in the finding list.
+fn list_row(ui: &mut egui::Ui, f: &Finding, selected: bool) -> egui::Response {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 50.0), egui::Sense::click());
+    let card = rect.shrink2(egui::vec2(0.0, 2.0));
+    let p = ui.painter_at(rect);
+    let bg = if selected {
+        CARD_HI
+    } else if resp.hovered() {
+        Color32::from_rgb(0x24, 0x2c, 0x37)
+    } else {
+        CARD
+    };
+    p.rect_filled(card, CornerRadius::same(6), bg);
+    if selected {
+        p.rect_stroke(card, CornerRadius::same(6), Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
+    }
     let c = sev_color(f.severity);
-    egui::Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, BORDER))
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin { left: 0, right: 10, top: 6, bottom: 6 })
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_top(|ui| {
-                // coloured edge
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(5.0, 22.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, CornerRadius::same(2), c);
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        egui::Frame::new().fill(c).corner_radius(CornerRadius::same(4)).inner_margin(Margin::symmetric(6, 1)).show(ui, |ui| {
-                            ui.label(RichText::new(f.severity.label().to_uppercase()).small().strong().color(Color32::BLACK));
-                        });
-                        ui.label(RichText::new(format!("{} · {}", f.module, f.rule)).small().color(MUTED));
-                    });
-                    egui::CollapsingHeader::new(RichText::new(&f.title).strong().color(Color32::WHITE)).id_salt(("finding", i, &f.rule)).show(ui, |ui| {
-                        if !f.description.is_empty() {
-                            ui.label(&f.description);
-                        }
-                        if !f.evidence.is_empty() {
-                            ui.add_space(4.0);
-                            ui.label(RichText::new("Evidence").strong().color(MUTED));
-                            egui::Frame::new().fill(BG).corner_radius(CornerRadius::same(4)).inner_margin(Margin::same(8)).show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.label(RichText::new(&f.evidence).monospace().size(12.0));
-                            });
-                        }
-                        if !f.verify.is_empty() {
-                            ui.add_space(4.0);
-                            ui.label(RichText::new("Verify manually").strong().color(MUTED));
-                            for v in &f.verify {
-                                ui.horizontal(|ui| {
-                                    if ui.small_button("Copy").clicked() {
-                                        ctx.copy_text(v.clone());
-                                    }
-                                    ui.label(RichText::new(format!("$ {v}")).monospace().size(12.0).color(ACCENT));
-                                });
-                            }
-                        }
-                    });
-                });
-            });
+    p.rect_filled(egui::Rect::from_min_size(card.min, egui::vec2(4.0, card.height())), CornerRadius::same(2), c);
+    let badge = p.layout_no_wrap(f.severity.label().to_uppercase(), egui::FontId::proportional(10.0), Color32::BLACK);
+    let brect = egui::Rect::from_min_size(card.min + egui::vec2(12.0, 7.0), badge.size() + egui::vec2(10.0, 4.0));
+    p.rect_filled(brect, CornerRadius::same(4), c);
+    p.galley(brect.min + egui::vec2(5.0, 2.0), badge, Color32::BLACK);
+    p.text(
+        egui::pos2(brect.right() + 8.0, brect.center().y),
+        egui::Align2::LEFT_CENTER,
+        format!("{} · {}", f.module, f.rule),
+        egui::FontId::proportional(11.0),
+        MUTED,
+    );
+    p.text(
+        egui::pos2(card.left() + 12.0, card.bottom() - 13.0),
+        egui::Align2::LEFT_CENTER,
+        &f.title,
+        egui::FontId::proportional(14.0),
+        Color32::WHITE,
+    );
+    resp.on_hover_text(&f.title)
+}
+
+/// The detail panel for the selected finding. Returns what to hide, if a button was pressed.
+fn finding_detail(ui: &mut egui::Ui, ctx: &egui::Context, f: &Finding) -> Option<HideAction> {
+    let mut action = None;
+    let c = sev_color(f.severity);
+    ui.horizontal(|ui| {
+        egui::Frame::new().fill(c).corner_radius(CornerRadius::same(4)).inner_margin(Margin::symmetric(8, 2)).show(ui, |ui| {
+            ui.label(RichText::new(f.severity.label().to_uppercase()).small().strong().color(Color32::BLACK));
         });
-    ui.add_space(4.0);
+        ui.label(RichText::new(format!("{} · {}", f.module, f.rule)).color(MUTED));
+    });
+    ui.add_space(6.0);
+    ui.label(RichText::new(&f.title).size(18.0).strong().color(Color32::WHITE));
+    ui.add_space(6.0);
+    if !f.description.is_empty() {
+        ui.label(RichText::new("What it means").strong().color(MUTED));
+        ui.label(&f.description);
+        ui.add_space(8.0);
+    }
+    if !f.evidence.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Evidence").strong().color(MUTED));
+            if ui.small_button("Copy").clicked() {
+                ctx.copy_text(f.evidence.clone());
+            }
+        });
+        egui::Frame::new().fill(BG).corner_radius(CornerRadius::same(4)).inner_margin(Margin::same(8)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(&f.evidence).monospace().size(12.0));
+        });
+        ui.add_space(8.0);
+    }
+    if !f.verify.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Check it yourself (run in a terminal)").strong().color(MUTED));
+            if ui.small_button("Copy all").clicked() {
+                ctx.copy_text(f.verify.join("\n"));
+            }
+        });
+        for v in &f.verify {
+            ui.horizontal(|ui| {
+                if ui.small_button("Copy").clicked() {
+                    ctx.copy_text(v.clone());
+                }
+                ui.label(RichText::new(format!("$ {v}")).monospace().size(12.0).color(ACCENT));
+            });
+        }
+        ui.add_space(8.0);
+    }
+    ui.separator();
+    ui.label(RichText::new("Checked it and it is fine on this machine?").strong().color(MUTED));
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button("Hide this finding")
+            .on_hover_text("Saved in the whitelist, so it does not come back in later scans.")
+            .clicked()
+        {
+            action = Some(HideAction::One(Config::finding_key(f)));
+        }
+        if f.rule == "NET-LISTEN-UNKNOWN" {
+            if let Some(name) = process_in_title(&f.title) {
+                if ui
+                    .button(format!("Trust all ports of {name}"))
+                    .on_hover_text("Only while the program is installed under /usr; a copy elsewhere with the same name is still reported.")
+                    .clicked()
+                {
+                    action = Some(HideAction::Process(name));
+                }
+            }
+        }
+        if ui
+            .button(format!("Hide every {} finding", f.rule))
+            .on_hover_text("Hides the whole rule. Use it only for checks that never matter on this machine.")
+            .clicked()
+        {
+            action = Some(HideAction::Rule(f.rule.clone()));
+        }
+    });
+    action
 }
 
 /// Where the report is saved by default: in the project's reports/ directory when the program runs

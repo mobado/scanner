@@ -329,6 +329,42 @@ fn nfs_callback_listener_is_low_and_shared_socket_reported_once() {
     assert!(p111[0].title.contains("rpcbind"), "{}", p111[0].title);
 }
 
+#[test]
+fn whitelist_port_ranges_trusted_processes_and_hidden_findings() {
+    let cfg = Config::default();
+    assert!(cfg.is_listen_allowed("udp", 1716), "KDE Connect range");
+    assert!(cfg.is_listen_allowed("tcp", 1764));
+    assert!(!cfg.is_listen_allowed("tcp", 1765));
+    assert!(!cfg.is_listen_allowed("udp", 22));
+    assert!(cfg.is_listen_process_allowed("avahi-daemon", Some("/usr/sbin/avahi-daemon")));
+    assert!(!cfg.is_listen_process_allowed("avahi-daemon", Some("/tmp/avahi-daemon")), "a copy outside /usr is not trusted");
+    assert!(!cfg.is_listen_process_allowed("rpcbind", Some("/usr/sbin/rpcbind")), "rpcbind exposure is still reported");
+
+    let f = scanner::Finding::new(Severity::Low, "persistence", "PERS-SYSTEMD-LOCAL", "Locally created systemd unit: x.service");
+    let mut hidden = Config::default();
+    assert!(!hidden.suppresses(&f));
+    hidden.ignore_findings.push(Config::finding_key(&f));
+    assert!(hidden.suppresses(&f));
+    let back: Config = toml::from_str(&hidden.to_toml().expect("toml")).expect("parse");
+    assert!(back.suppresses(&f), "hidden findings survive saving and loading");
+}
+
+#[test]
+fn verdict_follows_the_worst_finding() {
+    use scanner::report::{Report, VerdictLevel};
+    let mut r = Report { running_as_root: true, scan_root: "/".into(), ..Report::default() };
+    r.finalize();
+    assert_eq!(r.verdict().level, VerdictLevel::Clean);
+    r.findings.push(scanner::Finding::new(Severity::Medium, "m", "X", "t"));
+    r.finalize();
+    assert_eq!(r.verdict().level, VerdictLevel::Minor);
+    r.findings.push(scanner::Finding::new(Severity::Critical, "m", "Y", "t"));
+    r.finalize();
+    let v = r.verdict();
+    assert_eq!(v.level, VerdictLevel::Alarm);
+    assert!(r.to_text(false).contains("VERDICT:"));
+}
+
 // ------------------------------------------------------------ the whole sandbox
 
 #[test]

@@ -17,6 +17,25 @@ allowed_listen_ports = [
     "udp/53",
     "tcp/5355",
     "udp/5355",
+    "tcp/1714-1764",
+    "udp/1714-1764",
+    "udp/41641",
+]
+allowed_listen_processes = [
+    "avahi-daemon",
+    "kdeconnectd",
+    "chronyd",
+    "systemd-resolved",
+    "systemd-timesyncd",
+    "systemd-networkd",
+    "NetworkManager",
+    "dhclient",
+    "cupsd",
+    "cups-browsed",
+    "tailscaled",
+    "pipewire",
+    "wireplumber",
+    "gsd-sharing",
 ]
 report_loopback_listeners = false
 suspicious_remote_ports = [
@@ -643,3 +662,4 @@ allowed_ld_preload = [
 external_tool_timeout_secs = 900
 ignore_rules = []
 ignore_evidence_containing = []
+ignore_findings = []

@@ -137,17 +137,16 @@ fn has_display() -> bool {
     std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
-fn load_config(path: &Option<PathBuf>) -> Result<Config> {
-    match path {
-        Some(p) => Config::load(p).with_context(|| format!("could not read the whitelist {}", p.display())),
-        None => {
-            let default = PathBuf::from("/etc/scanner/whitelist.toml");
-            if default.exists() {
-                Config::load(&default).with_context(|| format!("could not read {}", default.display()))
-            } else {
-                Ok(Config::default())
-            }
+/// Load the whitelist: --config, else /etc/scanner/whitelist.toml, else
+/// ~/.config/scanner/whitelist.toml. Returns the path that was read, if any.
+fn load_config(path: &Option<PathBuf>) -> Result<(Config, Option<PathBuf>)> {
+    let chosen = path.clone().or_else(scanner::config::default_whitelist_path);
+    match chosen {
+        Some(p) => {
+            let cfg = Config::load(&p).with_context(|| format!("could not read the whitelist {}", p.display()))?;
+            Ok((cfg, Some(p)))
         }
+        None => Ok((Config::default(), None)),
     }
 }
 
@@ -196,8 +195,8 @@ fn real_main(cli: Cli) -> Result<u8> {
     if use_gui {
         #[cfg(feature = "gui")]
         {
-            let cfg = load_config(&cli.config)?;
-            gui::run(cfg, cli.config.clone(), cli.screenshot.clone(), sudo_note)?;
+            let (cfg, cfg_path) = load_config(&cli.config)?;
+            gui::run(cfg, cfg_path, cli.screenshot.clone(), sudo_note)?;
             return Ok(0);
         }
         #[cfg(not(feature = "gui"))]
@@ -228,7 +227,7 @@ fn parse_opts(cli: &Cli) -> Result<ScanOptions> {
 }
 
 fn cli_scan(cli: &Cli) -> Result<u8> {
-    let cfg = load_config(&cli.config)?;
+    let (cfg, _) = load_config(&cli.config)?;
     let opts = parse_opts(cli)?;
     if !cli.root.is_dir() {
         bail!("the root {} is not a directory", cli.root.display());

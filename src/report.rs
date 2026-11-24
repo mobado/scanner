@@ -25,6 +25,21 @@ impl Summary {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerdictLevel {
+    Clean,
+    Minor,
+    Attention,
+    Alarm,
+}
+
+#[derive(Debug, Clone)]
+pub struct Verdict {
+    pub level: VerdictLevel,
+    pub headline: String,
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Report {
     pub scanner: String,
@@ -82,6 +97,42 @@ impl Report {
         self.findings.iter().any(|f| f.rule == rule)
     }
 
+    /// A plain-language conclusion for people who do not read every finding.
+    pub fn verdict(&self) -> Verdict {
+        let s = &self.summary;
+        let not_root = if self.running_as_root || self.scan_root != "/" {
+            ""
+        } else {
+            " This scan did not run as root, so parts of the system could not be checked."
+        };
+        let (level, headline, detail) = if s.critical > 0 {
+            (
+                VerdictLevel::Alarm,
+                format!("Possible intrusion – {} critical finding(s) need attention now", s.critical),
+                "Read the critical findings first and run their verification commands. Do not reboot or delete anything before you have looked: evidence can disappear.".to_string(),
+            )
+        } else if s.high > 0 {
+            (
+                VerdictLevel::Attention,
+                format!("{} finding(s) should be checked", s.high),
+                "Nothing clearly shows an intrusion, but the high findings can be serious. Check each one with its verification commands.".to_string(),
+            )
+        } else if s.medium > 0 {
+            (
+                VerdictLevel::Minor,
+                "No signs of intrusion – a few things are worth a look".to_string(),
+                "The medium findings are mostly exposure or settings (open services, configuration), not intrusion.".to_string(),
+            )
+        } else {
+            (
+                VerdictLevel::Clean,
+                "No signs of intrusion found".to_string(),
+                "Save a baseline now so later scans show exactly what changes.".to_string(),
+            )
+        };
+        Verdict { level, headline, detail: format!("{detail}{not_root}") }
+    }
+
     /// Readable terminal report. `color` turns on ANSI colours.
     pub fn to_text(&self, color: bool) -> String {
         let (bold, dim, reset) = if color { ("\x1b[1m", "\x1b[2m", "\x1b[0m") } else { ("", "", "") };
@@ -94,9 +145,9 @@ impl Report {
         let _ = writeln!(o, " System:    {}", self.os);
         let _ = writeln!(o, " Time:      {}   Duration: {:.1} s", self.generated_at, self.duration_ms as f64 / 1000.0);
         let _ = writeln!(o, " Root:      {}{}", if self.running_as_root { "yes" } else { "NO – the result is incomplete" }, if self.scan_root != "/" { format!("   Scanned root: {}", self.scan_root) } else { String::new() });
-        let _ = writeln!(o, " Moduler:   {}", self.modules.join(", "));
+        let _ = writeln!(o, " Modules:   {}", self.modules.join(", "));
         if !self.tools_run.is_empty() {
-            let _ = writeln!(o, " Verktyg:   {}", self.tools_run.join(", "));
+            let _ = writeln!(o, " Tools:     {}", self.tools_run.join(", "));
         }
         if let Some(b) = &self.baseline_compared {
             let _ = writeln!(o, " Baseline:  {b}");
@@ -108,6 +159,9 @@ impl Report {
             "{bold} SUMMARY:{reset} {} critical · {} high · {} medium · {} low  ({} findings in total)",
             s.critical, s.high, s.medium, s.low, s.total
         );
+        let v = self.verdict();
+        let _ = writeln!(o, "{bold} VERDICT:{reset} {}", v.headline);
+        let _ = writeln!(o, "          {}", v.detail);
         let _ = writeln!(o, "{line}");
 
         for sev in Severity::ALL_DESC {

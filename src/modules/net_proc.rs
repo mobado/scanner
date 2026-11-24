@@ -408,6 +408,7 @@ fn check_socket_owner(
             );
         } else if first_owner_of_listener
             && !cfg.is_listen_allowed(s.proto.family(), s.local.port())
+            && !cfg.is_listen_process_allowed(&p.display_name(), p.exe_path())
             && (cfg.report_loopback_listeners || !ip_is_loopback(&s.local.ip()))
         {
             let user_app = p.uid != 0 && p.exe_path().map(|e| ["/usr/", "/opt/", "/app/", "/snap/"].iter().any(|d| e.starts_with(d))).unwrap_or(false);

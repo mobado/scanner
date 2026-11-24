@@ -1,5 +1,7 @@
 # scanner – read-only intrusion and backdoor scanner for Debian 13 ("Trixie")
 
+[![CI](https://github.com/mobado/scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/mobado/scanner/actions/workflows/ci.yml)
+
 `scanner` looks for signs of intrusion, backdoors and persistence mechanisms on
 Debian 13. It is **strictly read-only**: it reads `/proc`, `/etc`, systemd files and
 the file system, but never changes, stops or removes anything. The only files it
@@ -84,6 +86,20 @@ Every finding has *evidence* (paths, command lines, file lines) and *concrete
 commands for manual verification*, e.g. `ls -l /proc/1234/exe`, `dpkg -S`,
 `debsums -s`, `systemctl cat`, `ssh-keygen -lf`.
 
+## In the window
+
+* **Verdict** at the top: a plain-language conclusion (no signs of intrusion / worth a
+  look / should be checked / possible intrusion). The text report has the same `VERDICT:` line.
+* **Summary cards**: click a severity to show only those findings (click again for all).
+* **Findings**: a compact list on the left and the selected finding on the right – what it
+  means, the evidence and the commands to check it yourself, each with a *Copy* button.
+* **Hide what is fine on your machine**: *Hide this finding*, *Trust all ports of …*
+  (listening ports of a program installed under `/usr`) or *Hide every … finding*.
+  The choice is saved in the whitelist – `/etc/scanner/whitelist.toml` when running as
+  root (also used by the nightly timer), otherwise `~/.config/scanner/whitelist.toml` –
+  and *Show hidden findings again* undoes it.
+* **Full scan + save report** runs everything and saves the report as JSON and text.
+
 Run as **root** – otherwise the scanner cannot read other users' processes,
 `/var/spool/cron/crontabs`, `/root/.ssh` or `/sys/kernel/debug/sched/debug`.
 What was skipped is listed under *Notes*.
@@ -95,11 +111,17 @@ sudo mkdir -p /etc/scanner
 scanner --print-config | sudo tee /etc/scanner/whitelist.toml
 ```
 
-`/etc/scanner/whitelist.toml` is read automatically if it exists (or pass `--config`).
-Important fields: `allowed_listen_ports` (`"tcp/22"`), `allowed_suid` (supports `*`),
+`/etc/scanner/whitelist.toml` is read automatically if it exists, otherwise
+`~/.config/scanner/whitelist.toml` (or pass `--config`).
+Important fields: `allowed_listen_ports` (`"tcp/22"` or a range `"udp/1714-1764"`),
+`allowed_listen_processes` (trusted programs under `/usr`), `allowed_suid` (supports `*`),
 `allowed_systemd_units`, `allowed_cron_files`, `allowed_ssh_key_comments`,
 `allowed_ld_preload`, `allowed_argv0_mismatch`, `fs_exclude_paths`,
-`ignore_rules` (rule ids) and `ignore_evidence_containing`.
+`ignore_rules` (rule ids), `ignore_findings` (single findings hidden in the window)
+and `ignore_evidence_containing`.
+
+On GitHub, every push runs the tests, builds the static binary and runs the self-test;
+the static binary can be downloaded from the run's *Artifacts*.
 
 ## A clean baseline on a freshly installed Debian 13 machine
 

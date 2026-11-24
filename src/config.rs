@@ -10,8 +10,11 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
-    /// Expected listening ports, like "tcp/22" or "udp/68".
+    /// Expected listening ports, like "tcp/22", "udp/68" or a range "udp/1714-1764".
     pub allowed_listen_ports: Vec<String>,
+    /// Programs (exe name) whose listening ports are trusted, as long as the program
+    /// is installed under /usr (a copy elsewhere with the same name is still reported).
+    pub allowed_listen_processes: Vec<String>,
     /// Also report listening ports bound only to loopback (127.0.0.1/::1).
     pub report_loopback_listeners: bool,
     /// Remote ports often used by backdoors and reverse shells.
@@ -49,6 +52,8 @@ pub struct Config {
     pub ignore_rules: Vec<String>,
     /// Ignore findings whose evidence contains any of these snippets.
     pub ignore_evidence_containing: Vec<String>,
+    /// Single findings hidden with "Hide this finding" in the window ("RULE|title").
+    pub ignore_findings: Vec<String>,
 }
 
 fn s(list: &[&str]) -> Vec<String> {
@@ -61,6 +66,15 @@ impl Default for Config {
             allowed_listen_ports: s(&[
                 "tcp/22", "udp/68", "udp/546", "udp/123", "udp/5353", "tcp/631", "udp/631",
                 "udp/323", "tcp/25", "tcp/53", "udp/53", "tcp/5355", "udp/5355",
+                // KDE Connect / GSConnect
+                "tcp/1714-1764", "udp/1714-1764",
+                // Tailscale
+                "udp/41641",
+            ]),
+            allowed_listen_processes: s(&[
+                "avahi-daemon", "kdeconnectd", "chronyd", "systemd-resolved", "systemd-timesyncd",
+                "systemd-networkd", "NetworkManager", "dhclient", "cupsd", "cups-browsed", "tailscaled",
+                "pipewire", "wireplumber", "gsd-sharing",
             ]),
             report_loopback_listeners: false,
             suspicious_remote_ports: vec![
@@ -207,6 +221,7 @@ impl Default for Config {
             external_tool_timeout_secs: 900,
             ignore_rules: Vec::new(),
             ignore_evidence_containing: Vec::new(),
+            ignore_findings: Vec::new(),
         }
     }
 }
@@ -246,8 +261,29 @@ impl Config {
     }
 
     pub fn is_listen_allowed(&self, proto: &str, port: u16) -> bool {
-        let key = format!("{proto}/{port}");
-        self.allowed_listen_ports.iter().any(|p| p == &key)
+        self.allowed_listen_ports.iter().any(|entry| {
+            let Some((p, ports)) = entry.split_once('/') else { return false };
+            if p != proto {
+                return false;
+            }
+            match ports.split_once('-') {
+                Some((lo, hi)) => match (lo.trim().parse::<u16>(), hi.trim().parse::<u16>()) {
+                    (Ok(lo), Ok(hi)) => (lo..=hi).contains(&port),
+                    _ => false,
+                },
+                None => ports.trim().parse::<u16>() == Ok(port),
+            }
+        })
+    }
+
+    /// Is this a trusted program for listening ports? Only when its exe is under /usr.
+    pub fn is_listen_process_allowed(&self, name: &str, exe: Option<&str>) -> bool {
+        exe.map(|e| e.starts_with("/usr/")).unwrap_or(false) && self.allowed_listen_processes.iter().any(|p| p == name)
+    }
+
+    /// The key used to hide one finding ("RULE|title").
+    pub fn finding_key(f: &crate::finding::Finding) -> String {
+        format!("{}|{}", f.rule, f.title)
     }
 
     pub fn is_temp_path(&self, path: &str) -> bool {
@@ -274,6 +310,7 @@ impl Config {
     /// Should the finding be hidden according to the whitelist?
     pub fn suppresses(&self, f: &crate::finding::Finding) -> bool {
         self.ignore_rules.iter().any(|r| r == &f.rule)
+            || self.ignore_findings.iter().any(|k| *k == Config::finding_key(f))
             || self
                 .ignore_evidence_containing
                 .iter()
@@ -291,4 +328,31 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
         }
     }
     rec(pattern.as_bytes(), text.as_bytes())
+}
+
+/// The system-wide whitelist, used by the systemd timer as well.
+pub const SYSTEM_WHITELIST: &str = "/etc/scanner/whitelist.toml";
+
+/// The personal whitelist: `~/.config/scanner/whitelist.toml` of the person who started
+/// the program (also when it runs through sudo, via SUDO_USER).
+pub fn user_whitelist_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("SUDO_USER")
+        .ok()
+        .and_then(|u| {
+            crate::procinfo::read_accounts(&crate::sys::SysRoot::live())
+                .into_iter()
+                .find(|a| a.name == u)
+                .map(|a| a.home)
+        })
+        .or_else(|| std::env::var("HOME").ok())?;
+    Some(std::path::Path::new(&home).join(".config/scanner/whitelist.toml"))
+}
+
+/// Find the whitelist to use when none is given: the system one, else the personal one.
+pub fn default_whitelist_path() -> Option<std::path::PathBuf> {
+    let sys = std::path::PathBuf::from(SYSTEM_WHITELIST);
+    if sys.exists() {
+        return Some(sys);
+    }
+    user_whitelist_path().filter(|p| p.exists())
 }
