@@ -175,6 +175,13 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
                 let (mut f, notes) = baseline::compare(&b, &col.inventory, &modules_run);
                 let dpkg_modified = std::fs::metadata(sys.path("/var/lib/dpkg/status")).and_then(|m| m.modified()).ok();
                 crate::autobaseline::soften_after_updates(&mut f, &b.created_at, dpkg_modified);
+                // New ports of a program you trust in the whitelist (installed under /usr) are not news.
+                f.retain(|x| {
+                    x.rule != "BASE-LISTEN-NEW"
+                        || !crate::modules::net_group::process_in_title(&x.title)
+                            .map(|name| cfg.allowed_listen_processes.contains(&name))
+                            .unwrap_or(false)
+                });
                 col.findings.extend(f);
                 col.notes.extend(notes);
                 baseline_compared = Some(format!("{} (created {} on {})", path.display(), b.created_at, b.hostname));
