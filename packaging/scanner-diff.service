@@ -1,0 +1,42 @@
+# Read-only, regular comparison against the baseline.
+# Install: see README.md, section "Regular diff runs".
+#
+# Exit codes: 0 = nothing serious, 1 = at least one high finding (counts as success),
+#             2 = at least one critical finding (the service is marked "failed"), 3 = error.
+# Add OnFailure=your-alert@%n.service if you want e-mail/alerts on critical findings.
+
+[Unit]
+Description=Scanner – read-only intrusion and backdoor check against the baseline
+Documentation=man:systemd.exec(5)
+After=local-fs.target network-online.target
+ConditionPathExists=/var/lib/scanner/baseline.json
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'exec /usr/local/sbin/scanner --cli --no-sudo --config /etc/scanner/whitelist.toml --baseline-compare /var/lib/scanner/baseline.json --json --output /var/log/scanner/report-$(date +%%Y%%m%%d-%%H%%M).json'
+SuccessExitStatus=1
+Nice=10
+IOSchedulingClass=idle
+
+# --- Read-only: the whole system is read-only for the service, except the report directory.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/scanner
+# /tmp and /dev/shm must be the real ones so programs there can be detected.
+PrivateTmp=no
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# Read rights are enough: read every file and other processes' /proc/<pid>/fd and environ.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_PTRACE
+AmbientCapabilities=
+UMask=0077

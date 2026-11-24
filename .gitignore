@@ -1,0 +1,10 @@
+# Build output
+/target/
+
+# Local screenshots and scan reports (they describe this machine – never publish them)
+/shots/
+/reports/
+*.png
+scanner-report*.json
+scanner-report*.txt
+baseline*.json
