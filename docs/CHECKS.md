@@ -77,11 +77,20 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 
 | Rule | Usual level | Meaning |
 |------|-------------|---------|
-| `BASE-SUID-NEW` | **Critical** | A new SUID/SGID file since the baseline |
-| `BASE-SUID-CHANGED` | Critical/Medium | A SUID/SGID file changed (Medium when packages were updated after the baseline) |
+| `BASE-SUID-NEW` | **Critical** | A new SUID/SGID file since the baseline (Low when apt installed it and it matches the package) |
+| `BASE-SUID-CHANGED` | Critical/Medium | A SUID/SGID file changed. Not reported when verified as an apt upgrade; Medium if it matches its package but apt did not touch it; Critical if it differs or no package owns it |
 | `BASE-SUID-PERMS` / `-REMOVED` | High/Low | Changed permissions / file gone |
 | `BASE-LISTEN-NEW` | High/Medium | A new listening port (random ports of known programs are ignored) |
 | `BASE-PERSIST-NEW` / `-CHANGED` / `-REMOVED` | High–Low | A persistence file appeared / changed / disappeared |
+
+### How an apt upgrade is verified
+
+A changed (or new) SUID or persistence file is accepted as an upgrade only when **all** hold:
+a package owns it (`/var/lib/dpkg/info/*.md5sums`, or a conffile in `/var/lib/dpkg/status`),
+its content equals that package's checksum, and `/var/log/dpkg.log` shows an install/upgrade of
+the package after the baseline (or its file list was rewritten since). This uses dpkg's own
+MD5 records, like `debsums`; a root attacker who also rewrites those records and the log could
+fool it, so run `debsums` or scan from trusted media when in doubt.
 
 ## External tools (`external:*`)
 

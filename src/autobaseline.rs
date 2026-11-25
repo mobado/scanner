@@ -2,7 +2,6 @@
 //! complete scan as root, and compares against it afterwards, so nobody has to remember to.
 
 use crate::baseline::Baseline;
-use crate::finding::{Finding, Severity};
 use crate::report::Report;
 use crate::scan::ModuleId;
 use std::path::PathBuf;
@@ -76,22 +75,24 @@ pub fn auto_save_to(report: &Report, path: &std::path::Path) -> AutoBaseline {
     }
 }
 
-/// Changes to SUID files or persistence files after package updates were installed are
-/// usually the updates themselves: lower them one step and say so.
-pub fn soften_after_updates(findings: &mut [Finding], baseline_created: &str, dpkg_status_modified: Option<std::time::SystemTime>) {
-    let Some(modified) = dpkg_status_modified else { return };
-    let Ok(created) = chrono::DateTime::parse_from_str(baseline_created, "%Y-%m-%d %H:%M:%S %z") else { return };
-    let created: std::time::SystemTime = created.into();
-    if modified <= created {
-        return;
-    }
-    for f in findings.iter_mut() {
-        if f.rule == "BASE-SUID-CHANGED" || f.rule == "BASE-PERSIST-CHANGED" {
-            f.severity = Severity::Medium;
-            f.description.push_str(" Packages were installed or updated after the baseline was saved, so this is probably the update itself: confirm with debsums (it compares against the package), then save a fresh baseline.");
-            f.verify.push("debsums -s".into());
+/// Put the current state of files verified as apt upgrades into the baseline.
+pub fn refresh_upgraded(report: &Report, path: &std::path::Path) -> Result<usize, crate::error::ScanError> {
+    let mut base = Baseline::load(path)?;
+    let mut n = 0;
+    for file in &report.upgraded_files {
+        if let Some(e) = report.inventory.suid.iter().find(|e| &e.path == file) {
+            base.suid.retain(|x| &x.path != file);
+            base.suid.push(e.clone());
+            n += 1;
+        }
+        if let Some(hash) = report.inventory.persistence_files.get(file) {
+            base.persistence_files.insert(file.clone(), hash.clone());
+            n += 1;
         }
     }
+    base.suid.sort_by(|a, b| a.path.cmp(&b.path));
+    base.save(path)?;
+    Ok(n)
 }
 
 /// An old baseline may lack a part (made by a quick scan without the file system walk). After a

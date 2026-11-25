@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+* Changed files are verified against apt: if the file matches its package and apt installed or
+  upgraded that package after the baseline, it is no longer flagged (listed in the notes and taken
+  into the automatic baseline). Everything else is still flagged, with what was checked.
+* Lynis suggestions are listed; several changed documentation files from debsums are grouped.
+* README, rule reference (`docs/CHECKS.md`) and changelog.
+
 ## 0.3.1
 * A baseline made by an older version no longer gives High findings for kinds of files it did not
   track yet (`/etc/ld.so.conf*`); they are Low and added to the baseline automatically.

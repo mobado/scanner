@@ -53,7 +53,8 @@ src/
 │   └── common.rs       assessment of command lines (base64, /dev/tcp, curl|sh, nc -e …)
 ├── external_tools.rs   debsums -c, chkrootkit, rkhunter, lynis (PATH check and timeout)
 ├── baseline.rs         baseline in JSON and diff (new SUID/SGID files = Critical)
-├── autobaseline.rs     the automatic baseline: save, complete, soften after package updates
+├── autobaseline.rs     the automatic baseline: save, complete, take in verified upgrades
+├── pkgverify.rs        was a changed file changed by apt? (dpkg checksums + dpkg.log)
 ├── report.rs           sorted final report (Critical first), verdict, JSON and readable text
 ├── html.rs             self-contained HTML report
 ├── scan.rs             orchestration (run_scan, run_scan_auto)
@@ -77,7 +78,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.3.1-1_amd64.deb
+sudo apt install ./scanner_0.3.2-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -197,9 +198,12 @@ automatically. New SUID/SGID files since then are *Critical*.
 * It is **not** saved when the first scan has critical or high findings – a baseline taken
   on a compromised system would make the intrusion look normal. Check the findings, then
   use *Save baseline* in the window (or `--baseline-save`).
-* After package updates, changed SUID/persistence files are lowered to *Medium* with a note
-  (the update itself is the likely reason); confirm with `debsums -s` and save a fresh
-  baseline (*Save baseline*).
+* **apt upgrades are checked automatically.** For every changed or new SUID/persistence file the
+  scanner looks up the owning package in dpkg's records, compares the file with the package's
+  checksum, and checks `/var/log/dpkg.log` for an install/upgrade after the baseline. Verified
+  upgrades are **not flagged** (they are listed under *Notes* and added to the baseline). Files
+  that do not match their package, that no package owns, or that apt did not touch (for example
+  a SUID bit set by hand) are still flagged. A new SUID program installed by apt is shown as Low.
 * `--no-auto-baseline` turns the automatic baseline off; `--baseline-compare FILE` compares
   with another file.
 
@@ -224,8 +228,7 @@ sudo chmod 0400 /var/lib/scanner/baseline.json
 sha256sum /var/lib/scanner/baseline.json   # write the sum down somewhere else
 ```
 
-After `apt upgrade`, SUID binaries and configuration change legitimately. Then run
-`sudo debsums -c` (should be empty) and save a **new** baseline.
+After `apt upgrade` nothing needs to be done: verified upgrades are recognised (see above).
 
 ## Updates
 

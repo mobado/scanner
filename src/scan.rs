@@ -101,6 +101,13 @@ pub fn run_scan_auto(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, auto: bool
         opts.baseline_compare = crate::autobaseline::default_if_exists();
     }
     let mut report = run_scan(sys, cfg, &opts, progress);
+    // Bring verified upgrades into the automatic baseline, so it follows the system.
+    if auto && live && report.running_as_root && !report.upgraded_files.is_empty() && opts.baseline_compare == Some(crate::autobaseline::default_path()) {
+        match crate::autobaseline::refresh_upgraded(&report, &crate::autobaseline::default_path()) {
+            Ok(n) => report.notes.push(format!("The automatic baseline was updated with {n} verified upgraded file(s).")),
+            Err(e) => report.notes.push(format!("The baseline could not be updated with the upgraded files: {e}")),
+        }
+    }
     if auto && live {
         match crate::autobaseline::auto_save(&report) {
             crate::autobaseline::AutoBaseline::Saved(p) => {
@@ -168,13 +175,27 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
     }
 
     let mut baseline_compared = None;
+    let mut upgraded_files = Vec::new();
     if let Some(path) = &opts.baseline_compare {
         progress("Comparing against the baseline …");
         match Baseline::load(path) {
             Ok(b) => {
                 let (mut f, notes) = baseline::compare(&b, &col.inventory, &modules_run);
-                let dpkg_modified = std::fs::metadata(sys.path("/var/lib/dpkg/status")).and_then(|m| m.modified()).ok();
-                crate::autobaseline::soften_after_updates(&mut f, &b.created_at, dpkg_modified);
+                // Changes that apt explains (verified against the package) are not reported.
+                progress("Checking changed files against dpkg …");
+                let apt = crate::pkgverify::apply(sys, &mut f, &b.created_at);
+                if !apt.upgraded.is_empty() {
+                    let files: Vec<String> = apt.upgraded.iter().map(|(p, pkg)| format!("{p} ({pkg})")).collect();
+                    col.notes.push(format!(
+                        "{} changed file(s) were verified against their package and an apt install/upgrade after the baseline, so they are not reported: {}",
+                        files.len(),
+                        files.join(", ")
+                    ));
+                    for op in apt.operations.iter().take(20) {
+                        col.notes.push(format!("apt: {op}"));
+                    }
+                }
+                upgraded_files = apt.upgraded.into_iter().map(|(p, _)| p).collect();
                 // New ports of a program you trust in the whitelist (installed under /usr) are not news.
                 f.retain(|x| {
                     x.rule != "BASE-LISTEN-NEW"
@@ -224,6 +245,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         tools_run,
         baseline_compared,
         baseline_auto_saved: None,
+        upgraded_files,
         summary: Default::default(),
         findings,
         notes: col.notes,

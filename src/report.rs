@@ -57,6 +57,9 @@ pub struct Report {
     /// Set when the scanner saved a baseline by itself during this scan.
     #[serde(default)]
     pub baseline_auto_saved: Option<String>,
+    /// Files that changed since the baseline but were verified as apt upgrades.
+    #[serde(default)]
+    pub upgraded_files: Vec<String>,
     pub summary: Summary,
     pub findings: Vec<Finding>,
     /// What was skipped or could not be read.

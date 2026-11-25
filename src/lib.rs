@@ -19,6 +19,7 @@ pub mod external_tools;
 pub mod finding;
 pub mod html;
 pub mod modules;
+pub mod pkgverify;
 pub mod procinfo;
 pub mod report;
 pub mod sandbox;

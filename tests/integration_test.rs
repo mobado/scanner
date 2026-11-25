@@ -454,20 +454,72 @@ fn automatic_baseline_is_saved_once_and_not_on_a_dirty_scan() {
     assert_eq!(auto_save_to(&r, &target), AutoBaseline::NotNeeded);
 }
 
+fn md5_of(data: &str) -> String {
+    use md5::{Digest, Md5};
+    Md5::digest(data.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn suid(root: &Path, path: &str, content: &str) {
+    write(root, path, content);
+    fs::set_permissions(root.join(path.trim_start_matches('/')), fs::Permissions::from_mode(0o4755)).expect("chmod");
+}
+
 #[test]
-fn baseline_changes_after_package_updates_are_softened() {
-    use std::time::{Duration, SystemTime};
-    let mut f = vec![
-        scanner::Finding::new(Severity::Critical, "baseline", "BASE-SUID-CHANGED", "t"),
-        scanner::Finding::new(Severity::Critical, "baseline", "BASE-SUID-NEW", "t"),
-    ];
-    let created = "2026-01-01 00:00:00 +0000";
-    scanner::autobaseline::soften_after_updates(&mut f, created, Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_900_000_000)));
-    assert_eq!(f[0].severity, Severity::Medium, "update changed the file");
-    assert_eq!(f[1].severity, Severity::Critical, "a new SUID file stays critical");
-    let mut g = vec![scanner::Finding::new(Severity::Critical, "baseline", "BASE-SUID-CHANGED", "t")];
-    scanner::autobaseline::soften_after_updates(&mut g, created, Some(SystemTime::UNIX_EPOCH));
-    assert_eq!(g[0].severity, Severity::Critical, "no package activity after the baseline");
+fn apt_upgrades_are_verified_and_only_other_changes_are_flagged() {
+    use scanner::autobaseline::refresh_upgraded;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("root");
+    suid(&root, "/usr/bin/passwd", "passwd v1");
+    suid(&root, "/usr/bin/su", "su v1");
+    suid(&root, "/usr/bin/mount", "mount v1");
+    write(&root, "/etc/pam.d/common-auth", "auth required pam_unix.so\n");
+    let sys = SysRoot::new(&root);
+    let o = opts(&[ModuleId::FsPerms, ModuleId::Persistence]);
+    let mut first = run_scan(&sys, &Config::default(), &o, &|_| {});
+    first.generated_at = "2026-01-01 00:00:00 +0000".into();
+    let base = dir.path().join("baseline.json");
+    Baseline::from_report(&first).save(&base).expect("save");
+
+    // passwd: a real upgrade (new content, new package checksum, log entry)
+    suid(&root, "/usr/bin/passwd", "passwd v2");
+    // su: changed by someone, the package ships something else
+    suid(&root, "/usr/bin/su", "su with a backdoor");
+    // a new SUID file nobody owns
+    suid(&root, "/usr/bin/zz-unknown", "x");
+    // a SUID bit set by hand on a packaged program that apt did not touch
+    suid(&root, "/usr/bin/ping6x", "ping");
+    // a config file changed by a package upgrade (conffile checksum in status)
+    write(&root, "/etc/pam.d/common-auth", "auth required pam_unix.so nullok\n");
+    write(&root, "/var/lib/dpkg/info/passwd.md5sums", &format!("{}  usr/bin/passwd\n", md5_of("passwd v2")));
+    write(&root, "/var/lib/dpkg/info/util-linux.md5sums", &format!("{}  bin/su\n", md5_of("su v1")));
+    write(&root, "/var/lib/dpkg/info/iputils-ping.md5sums", &format!("{}  usr/bin/ping6x\n", md5_of("ping")));
+    write(&root, "/var/lib/dpkg/status", &format!("Package: libpam-runtime\nStatus: install ok installed\nConffiles:\n /etc/pam.d/common-auth {}\nDescription: x\n", md5_of("auth required pam_unix.so nullok\n")));
+    write(&root, "/var/log/dpkg.log", "2026-06-01 10:00:00 upgrade passwd:amd64 1:4.17-1 1:4.17-2\n2026-06-01 10:00:01 upgrade util-linux:amd64 2.41-1 2.41-2\n2026-06-01 10:00:02 upgrade libpam-runtime:all 1.7-1 1.7-2\n");
+
+    let o = ScanOptions { baseline_compare: Some(base.clone()), ..o };
+    let report = run_scan(&sys, &Config::default(), &o, &|_| {});
+    let find = |rule: &str, path: &str| report.findings.iter().find(|f| f.rule == rule && f.evidence.contains(path));
+
+    assert!(find("BASE-SUID-CHANGED", "/usr/bin/passwd").is_none(), "verified upgrade is not flagged");
+    assert!(report.upgraded_files.iter().any(|p| p == "/usr/bin/passwd"), "{:?}", report.upgraded_files);
+    assert!(find("BASE-PERSIST-CHANGED", "/etc/pam.d/common-auth").is_none(), "upgraded conffile is not flagged");
+    assert!(report.notes.iter().any(|n| n.contains("verified against their package")), "{:?}", report.notes);
+
+    let su = find("BASE-SUID-CHANGED", "/usr/bin/su").expect("tampered su");
+    assert_eq!(su.severity, Severity::Critical);
+    assert!(su.description.contains("does NOT match"), "{}", su.description);
+    let unknown = find("BASE-SUID-NEW", "/usr/bin/zz-unknown").expect("unowned");
+    assert_eq!(unknown.severity, Severity::Critical);
+    assert!(unknown.description.contains("no installed package"), "{}", unknown.description);
+    let hand = find("BASE-SUID-NEW", "/usr/bin/ping6x").expect("chmod by hand");
+    assert_eq!(hand.severity, Severity::Critical);
+    assert!(hand.description.contains("by hand"), "{}", hand.description);
+
+    // the verified files are put into the baseline, so they are not looked at again
+    assert!(refresh_upgraded(&report, &base).expect("refresh") >= 2);
+    let again = run_scan(&sys, &Config::default(), &o, &|_| {});
+    assert!(again.upgraded_files.is_empty(), "{:?}", again.upgraded_files);
+    assert!(again.findings.iter().any(|f| f.rule == "BASE-SUID-CHANGED" && f.evidence.contains("/usr/bin/su")), "tampering stays");
 }
 
 #[test]
