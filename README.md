@@ -8,6 +8,20 @@ the file system, but never changes, stops or removes anything. The only files it
 writes are reports and baselines you ask for (`--output`, `--baseline-save`, the
 export buttons).
 
+## What it checks
+
+| Module | Looks for |
+|--------|-----------|
+| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), hidden processes, disguised process names |
+| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD` |
+| `fs_perms` | SUID/SGID files on local file systems, dangerous permissions |
+| `persistence` | systemd units and timers, cron, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys and `sshd_config`, PAM, shell files, extra UID 0 accounts |
+| `updates` | Pending security updates, other updates, reboot needed, old package lists |
+| external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed) |
+
+Every rule is listed in [docs/CHECKS.md](docs/CHECKS.md). What changed between versions is in
+[CHANGELOG.md](CHANGELOG.md).
+
 The same code comes in two forms:
 
 | Form | Build | Use |
@@ -39,13 +53,20 @@ src/
 │   └── common.rs       assessment of command lines (base64, /dev/tcp, curl|sh, nc -e …)
 ├── external_tools.rs   debsums -c, chkrootkit, rkhunter, lynis (PATH check and timeout)
 ├── baseline.rs         baseline in JSON and diff (new SUID/SGID files = Critical)
-├── report.rs           sorted final report (Critical first), JSON and readable text
-├── scan.rs             orchestration
+├── autobaseline.rs     the automatic baseline: save, complete, soften after package updates
+├── report.rs           sorted final report (Critical first), verdict, JSON and readable text
+├── html.rs             self-contained HTML report
+├── scan.rs             orchestration (run_scan, run_scan_auto)
 └── sandbox.rs          safe self-test in a temporary directory
 tests/integration_test.rs   tests with made-up /proc and systemd files (tempfile)
-packaging/              systemd service + timer, example whitelist
-scripts/                static build, test in a disposable VM
+packaging/              systemd service + timer, example whitelist, deb/ (control files, man page, icon)
+scripts/                static build, .deb build, publish to GitHub, test in a disposable VM
+docs/CHECKS.md         every rule and what it means
+.github/workflows/     CI: build, tests, static binary, .deb on version tags
 ```
+
+The module list above also has `modules/net_group.rs` (groups per-port findings) and
+`modules/updates.rs` (apt simulation, reboot needed).
 
 No code uses `.unwrap()`: missing `/proc` files, processes that disappear mid-scan
 and unreadable files become notes in the report, never a crash.
@@ -56,10 +77,11 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.2.0-1_amd64.deb
+sudo apt install ./scanner_0.3.1-1_amd64.deb
 ```
 
-You then find **Scanner** in the application menu, and `scanner` works in the terminal.
+You then find **Scanner** in the application menu, `scanner` works in the terminal and
+`man scanner` explains the options.
 The package installs the whitelist in `/etc/scanner/whitelist.toml` (kept on upgrades) and
 the nightly timer. On first installation the timer is switched on and runs once right
 away: that first scan saves the **baseline of the machine by itself** (`/var/lib/scanner/baseline.json`),
@@ -73,7 +95,17 @@ Remove with `sudo apt remove scanner` (`sudo apt purge scanner` also removes bas
 sh scripts/build-deb.sh          # → dist/scanner_<version>-1_amd64.deb
 ```
 
-On GitHub every version tag (`v0.2.0` …) builds the package inside Debian 13 and attaches it to the release.
+On GitHub every version tag (`v0.3.1` …) builds the package inside Debian 13, installs it,
+runs the self-test and attaches it to the release.
+
+### Releasing a new version
+
+```sh
+# 1. bump `version` in Cargo.toml and add a section to CHANGELOG.md
+cargo test && git commit -am "Release 0.3.2"
+git tag -a v0.3.2 -m "scanner 0.3.2"
+sh scripts/publish-to-github.sh        # pushes the commits and the tag; CI builds the .deb
+```
 
 ## Build
 
@@ -126,7 +158,11 @@ commands for manual verification*, e.g. `ls -l /proc/1234/exe`, `dpkg -S`,
   The choice is saved in the whitelist – `/etc/scanner/whitelist.toml` when running as
   root (also used by the nightly timer), otherwise `~/.config/scanner/whitelist.toml` –
   and *Show hidden findings again* undoes it.
-* **Full scan + save report** runs everything and saves the report as JSON and text.
+* **Full scan + save report** runs everything (all modules, the deep PID scan and every
+  installed tool) and saves the report as JSON and text. **↻ Scan again** repeats the current scan.
+* **Export** as text, JSON or a self-contained **HTML** page.
+* The **Baseline** box shows whether the automatic baseline is in use; *Save baseline* replaces
+  it with the latest scan (for example after updates).
 
 Run as **root** – otherwise the scanner cannot read other users' processes,
 `/var/spool/cron/crontabs`, `/root/.ssh` or `/sys/kernel/debug/sched/debug`.
@@ -215,8 +251,12 @@ journalctl -u scanner-diff.service
 ls /var/log/scanner/
 ```
 
+With the `.deb` all of this is already set up: the timer is enabled on first install and
+the first run saves the baseline. The unit needs no baseline file to exist – the scanner makes
+and uses it itself (`StateDirectory=scanner`, `LogsDirectory=scanner`), and runs with the deep PID scan.
+
 The service runs with `ProtectSystem=strict` (the whole file system read-only except
-`/var/log/scanner`), `ProtectHome=read-only`, `NoNewPrivileges=yes` and only the read
+`/var/lib/scanner` and `/var/log/scanner`), `ProtectHome=read-only`, `NoNewPrivileges=yes` and only the read
 capabilities `CAP_DAC_READ_SEARCH`, `CAP_DAC_OVERRIDE` and `CAP_SYS_PTRACE`.
 `PrivateTmp=no` is deliberate: otherwise the service would not see the real `/tmp`.
 Critical findings give exit code 2 and the service is marked as failed – add
@@ -239,6 +279,15 @@ The script saves a baseline, creates harmless test artefacts (a systemd service
 pointing to `/tmp`, a cron file, a deleted running binary in `/tmp`, a SUID copy of
 `/bin/true` and a python server on 127.0.0.1:31337), checks that the rules fire and
 removes everything afterwards. It refuses to run without the flag and warns on physical hardware.
+
+## Contributing and licence
+
+Issues and pull requests are welcome at <https://github.com/mobado/scanner>. Please keep the
+scanner **read-only** (it must never change the system), run `cargo test` and add a test with
+made-up `/proc`/`/etc` files for every new rule. New false alarms are best fixed in the
+default whitelist (`src/config.rs`) with a short comment on why the thing is normal.
+
+Licensed under the **GNU General Public License v3.0** – see [LICENSE](LICENSE).
 
 ## Limitations
 
