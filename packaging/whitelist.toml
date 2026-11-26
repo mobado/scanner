@@ -1,8 +1,9 @@
 # Whitelist for scanner (Debian 13 "Trixie").
-# Generated with: scanner --print-config > /etc/scanner/whitelist.toml
-# Remove or add entries for your machine. Missing fields get their default value.
+# New default entries are added automatically when scanner is upgraded; your own changes are
+# kept and entries you remove stay removed. Set add_new_defaults = false to stop that.
 # '*' in allowed_suid and fs_exclude_paths matches one name (not '/').
 
+add_new_defaults = true
 allowed_listen_ports = [
     "tcp/22",
     "udp/68",
