@@ -118,8 +118,9 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 
 ## Login attempts (`auth_logs`)
 
-Reads the systemd journal (the last `login_days` days, default 7), or `/var/log/auth.log*`
-when the journal is not available (for example on a mounted disk). "Many" means at least
+Reads the systemd journal, or `/var/log/auth.log*` when the journal is not available (for
+example on a mounted disk), and never further back than `log_days` days (default 28, four
+weeks; for a mounted disk counted from its newest log line). "Many" means at least
 `login_fail_threshold` (default 10).
 
 | Rule | Usual level | Meaning |

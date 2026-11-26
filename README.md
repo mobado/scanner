@@ -82,7 +82,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.4.1-1_amd64.deb
+sudo apt install ./scanner_0.4.2-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -193,7 +193,7 @@ Important fields: `allowed_listen_ports` (`"tcp/22"` or a range `"udp/1714-1764"
 `allowed_listen_processes` (trusted programs under `/usr`), `allowed_suid` (supports `*`),
 `allowed_systemd_units`, `allowed_cron_files`, `allowed_ssh_key_comments`,
 `allowed_ld_preload`, `allowed_argv0_mismatch`, `fs_exclude_paths`,
-`login_days` and `login_fail_threshold` (login check), `common_remote_ports`,
+`log_days` (how far back the log checks look, 28) and `login_fail_threshold` (login check), `common_remote_ports`,
 `trusted_resolvers`, `allowed_out_of_tree_modules`, `known_rootkit_modules`, `web_roots`,
 `ignore_rules` (rule ids), `ignore_findings` (single findings hidden in the window)
 and `ignore_evidence_containing`.

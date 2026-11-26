@@ -127,14 +127,16 @@ pub fn backward_jumps(text: &str) -> Vec<String> {
 fn check_time_order(ctx: &ScanCtx, col: &mut Collector) {
     for log in ["/var/log/auth.log", "/var/log/syslog"] {
         let Some((data, _)) = read_tail(ctx, log, 16 * 1024 * 1024, 1) else { continue };
-        let jumps = backward_jumps(&String::from_utf8_lossy(&data));
+        let text = String::from_utf8_lossy(&data);
+        let recent = crate::modules::common::recent_lines(text.lines().collect(), ctx.cfg.log_days, ctx.sys.is_live());
+        let jumps = backward_jumps(&recent.join("\n"));
         if !jumps.is_empty() {
             col.push(
                 Finding::new(Severity::Medium, MODULE, "INT-TIME-BACKWARDS", format!("Time jumps backwards in {log}"))
                     .evidence(jumps.join("\n"))
                     .description("Later lines carry an earlier time. The clock was set back (or lines were inserted), so the order of events can't be trusted around these points.")
                     .verify(format!("grep -n . {log} | head -50"))
-                    .verify("journalctl -u systemd-timesyncd --since=-30days"),
+                    .verify("journalctl -u systemd-timesyncd --since=-28days"),
             );
         }
     }

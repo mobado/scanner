@@ -3,6 +3,7 @@
 
 use crate::config::Config;
 use crate::finding::Severity;
+use chrono::{Datelike, NaiveDateTime};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -231,6 +232,33 @@ pub fn split_quoted(line: &str) -> Vec<String> {
         out.push(cur);
     }
     out
+}
+
+/// The time of a log line: ISO ("2026-11-25T10:00:00+01:00", journal or rsyslog) or the old
+/// syslog form "Nov 25 10:00:00", whose year is taken from `reference` (the year before when
+/// that would put the line in the future).
+pub fn log_line_time(line: &str, reference: NaiveDateTime) -> Option<NaiveDateTime> {
+    let mut words = line.split_whitespace();
+    let first = words.next()?;
+    if first.starts_with(|c: char| c.is_ascii_digit()) {
+        return chrono::DateTime::parse_from_str(first, "%Y-%m-%dT%H:%M:%S%.f%z").ok().map(|t| t.naive_local());
+    }
+    let stamp = format!("{first} {} {}", words.next()?, words.next()?);
+    let with_year = |year: i32| NaiveDateTime::parse_from_str(&format!("{year} {stamp}"), "%Y %b %d %H:%M:%S").ok();
+    match with_year(reference.year()) {
+        Some(t) if t <= reference + chrono::Duration::days(1) => Some(t),
+        _ => with_year(reference.year() - 1),
+    }
+}
+
+/// Keep only the log lines from the last `days` days. On the running system "now" is the end
+/// of that window; for a mounted disk or test folder it is the newest line in the log. Lines
+/// without a readable time are kept.
+pub fn recent_lines<'a>(lines: Vec<&'a str>, days: u32, live: bool) -> Vec<&'a str> {
+    let now = chrono::Local::now().naive_local();
+    let reference = if live { now } else { lines.iter().filter_map(|l| log_line_time(l, now)).max().unwrap_or(now) };
+    let oldest = reference - chrono::Duration::days(i64::from(days.max(1)));
+    lines.into_iter().filter(|l| log_line_time(l, reference).map(|t| t >= oldest).unwrap_or(true)).collect()
 }
 
 /// Shorten long evidence.

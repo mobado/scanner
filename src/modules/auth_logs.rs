@@ -6,7 +6,7 @@
 
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{clip, shq};
+use crate::modules::common::{clip, recent_lines, shq};
 use std::collections::BTreeMap;
 
 pub const MODULE: &str = "auth_logs";
@@ -170,11 +170,11 @@ pub fn parse_line(line: &str) -> Option<Event> {
 fn read_lines(ctx: &ScanCtx, col: &mut Collector) -> Vec<String> {
     if ctx.sys.is_live() {
         if let Some(journalctl) = crate::external_tools::find_binary("journalctl") {
-            let since = format!("--since=-{}days", ctx.cfg.login_days.max(1));
+            let since = format!("--since=-{}days", ctx.cfg.log_days.max(1));
             let args = ["--no-pager", "-q", "-o", "short-iso", "-n", "300000", since.as_str(), "SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10"];
             match crate::external_tools::run_capture(&journalctl, &args, 120) {
                 Ok(o) if !o.stdout.trim().is_empty() => {
-                    col.note(format!("auth_logs: read the journal for the last {} days", ctx.cfg.login_days.max(1)));
+                    col.note(format!("auth_logs: read the journal for the last {} days", ctx.cfg.log_days.max(1)));
                     return o.stdout.lines().map(|l| l.to_string()).collect();
                 }
                 Ok(_) => {}
@@ -195,12 +195,14 @@ fn read_lines(ctx: &ScanCtx, col: &mut Collector) -> Vec<String> {
             Err(_) => {}
         }
     }
+    let days = ctx.cfg.log_days.max(1);
     if used.is_empty() {
         col.note("auth_logs: no login log could be read (journal empty or unreadable and no /var/log/auth.log) – run as root");
     } else {
-        col.note(format!("auth_logs: read {}", used.join(" and ")));
+        col.note(format!("auth_logs: read {} (last {days} days)", used.join(" and ")));
     }
-    lines
+    let recent = recent_lines(lines.iter().map(|l| l.as_str()).collect(), days, ctx.sys.is_live());
+    recent.into_iter().map(|l| l.to_string()).collect()
 }
 
 pub fn run(ctx: &ScanCtx, col: &mut Collector) {
@@ -235,7 +237,7 @@ fn level(count: usize, threshold: usize) -> Severity {
 
 /// Turn the events into findings.
 pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
-    let journal = |filter: &str| format!("sudo journalctl --since=-30days SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 | grep -F -- {}", shq(filter));
+    let journal = |filter: &str| format!("sudo journalctl --since=-28days SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 | grep -F -- {}", shq(filter));
 
     // SSH, per source address, in order of time.
     let mut by_source: BTreeMap<&str, Vec<&Event>> = BTreeMap::new();
@@ -307,7 +309,7 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
             Finding::new(Severity::Low, MODULE, "AUTH-SSH-FAILED", "Failed SSH logins")
                 .evidence(lines.join("\n"))
                 .description("A few wrong passwords or user names over SSH – often a typing mistake or a passing scanner.")
-                .verify("sudo journalctl -t sshd -t sshd-session --since=-30days | grep -E 'Failed|Invalid user'"),
+                .verify("sudo journalctl -t sshd -t sshd-session --since=-28days | grep -E 'Failed|Invalid user'"),
         );
     }
     let mut unknown: BTreeMap<&str, usize> = BTreeMap::new();
@@ -323,7 +325,7 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
             Finding::new(level(total, threshold), MODULE, "AUTH-SSH-INVALID-USER", "SSH logins with user names that do not exist")
                 .evidence(format!("{total} attempt(s), {} different name(s):\n{}", unknown.len(), clip(&lines.join("\n"), 900)))
                 .description("Attempts with made-up user names (admin, test, oracle …) are typical of automated scanners trying to break in.")
-                .verify("sudo journalctl -t sshd -t sshd-session --since=-30days | grep 'Invalid user'"),
+                .verify("sudo journalctl -t sshd -t sshd-session --since=-28days | grep 'Invalid user'"),
         );
     }
 
@@ -335,14 +337,14 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
                     .evidence(clip(&e.line, 300))
                     .description("Packages create system accounts when they are installed. If you did not add this account, find out who did.")
                     .verify(format!("getent passwd {}", shq(&e.user)))
-                    .verify("sudo journalctl -t useradd --since=-30days"),
+                    .verify("sudo journalctl -t useradd --since=-28days"),
             ),
             Kind::GroupAdded { group } if crate::modules::persistence::extra::PRIVILEGED_GROUPS.contains(&group.as_str()) => col.push(
                 Finding::new(Severity::Medium, MODULE, "AUTH-GROUP-ADD", format!("{} was added to the powerful group {group}", e.user))
                     .evidence(clip(&e.line, 300))
                     .description("Members of this group have root or near-root power. Make sure this was intended.")
                     .verify(format!("id {}", shq(&e.user)))
-                    .verify("sudo journalctl -t usermod -t gpasswd --since=-30days"),
+                    .verify("sudo journalctl -t usermod -t gpasswd --since=-28days"),
             ),
             _ => {}
         }
@@ -364,10 +366,10 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
     }
     for ((rule, who), (count, list)) in groups {
         let (severity, title, text, check) = match rule {
-            "AUTH-SUDO-FAILED" => (level(count, threshold), format!("Wrong sudo password: {who}"), "Wrong passwords for sudo. Usually typing mistakes; many of them can mean someone with access to the account is guessing.", "sudo journalctl -t sudo --since=-30days | grep 'incorrect password'"),
-            "AUTH-SUDO-DENIED" => (Severity::Medium, format!("sudo refused: {who}"), "This account tried to run something as root without being allowed to. Make sure you know why.", "sudo journalctl -t sudo --since=-30days | grep -E 'NOT in sudoers|not allowed'"),
-            "AUTH-SU-FAILED" => (level(count, threshold), format!("Failed su: {who}"), "A wrong password when switching user with su.", "sudo journalctl -t su --since=-30days"),
-            _ => (level(count, threshold), format!("Failed logins on this computer: {who}"), "Wrong passwords at the console, desktop login, screen lock or a password dialog. Usually typing mistakes; many in a row, or at times you were away, deserve a look.", "sudo journalctl --since=-30days SYSLOG_FACILITY=10 | grep 'authentication failure'"),
+            "AUTH-SUDO-FAILED" => (level(count, threshold), format!("Wrong sudo password: {who}"), "Wrong passwords for sudo. Usually typing mistakes; many of them can mean someone with access to the account is guessing.", "sudo journalctl -t sudo --since=-28days | grep 'incorrect password'"),
+            "AUTH-SUDO-DENIED" => (Severity::Medium, format!("sudo refused: {who}"), "This account tried to run something as root without being allowed to. Make sure you know why.", "sudo journalctl -t sudo --since=-28days | grep -E 'NOT in sudoers|not allowed'"),
+            "AUTH-SU-FAILED" => (level(count, threshold), format!("Failed su: {who}"), "A wrong password when switching user with su.", "sudo journalctl -t su --since=-28days"),
+            _ => (level(count, threshold), format!("Failed logins on this computer: {who}"), "Wrong passwords at the console, desktop login, screen lock or a password dialog. Usually typing mistakes; many in a row, or at times you were away, deserve a look.", "sudo journalctl --since=-28days SYSLOG_FACILITY=10 | grep 'authentication failure'"),
         };
         col.push(Finding::new(severity, MODULE, rule, title).evidence(describe_events(&list, count)).description(text).verify(check));
     }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+* The log checks look back four weeks (28 days) and no further, for the journal and for
+  `auth.log`/`syslog` files. The setting is now called `log_days` (it replaces `login_days`).
+
 ## 0.4.1
 * Fixed: the scan seemed to hang at *Logs and clock*. Verifying the whole system journal (which
   can take minutes) now runs only in the full scan, stops after `journal_verify_secs` (90 s) and

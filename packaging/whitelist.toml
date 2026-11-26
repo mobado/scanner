@@ -4,8 +4,8 @@
 # '*' in allowed_suid and fs_exclude_paths matches one name (not '/').
 
 add_new_defaults = true
-# Login check: days of the journal to read, and failures that raise a finding to Medium.
-login_days = 7
+# Log checks: how many days back to look, and failures that raise a login finding to Medium.
+log_days = 28
 # Full scan: time limit in seconds for verifying the system journal (0 = never).
 journal_verify_secs = 90
 login_fail_threshold = 10

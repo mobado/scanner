@@ -61,8 +61,8 @@ pub struct Config {
     pub web_roots: Vec<String>,
     /// Time limit in seconds for verifying the journal in the full scan (0 = never).
     pub journal_verify_secs: u64,
-    /// How many days of the journal the login check reads.
-    pub login_days: u32,
+    /// How far back the log checks look, in days (28 = four weeks).
+    pub log_days: u32,
     /// Failed logins from one address (or by one user) that raise a finding to Medium.
     pub login_fail_threshold: usize,
     /// Timeout in seconds for external tools.
@@ -263,7 +263,7 @@ impl Default for Config {
             ]),
             web_roots: s(&["/var/www", "/srv/www", "/srv/http", "/usr/share/nginx/html"]),
             journal_verify_secs: 90,
-            login_days: 7,
+            log_days: 28,
             login_fail_threshold: 10,
             external_tool_timeout_secs: 900,
             ignore_rules: Vec::new(),

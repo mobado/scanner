@@ -974,6 +974,36 @@ fn log_and_time_integrity_and_account_events() {
 }
 
 #[test]
+fn logs_are_read_four_weeks_back_and_no_further() {
+    use scanner::modules::common::{log_line_time, recent_lines};
+    assert_eq!(Config::default().log_days, 28);
+    let reference = chrono::NaiveDate::from_ymd_opt(2026, 1, 10).expect("date").and_hms_opt(12, 0, 0).expect("time");
+    assert_eq!(log_line_time("Dec 30 10:00:00 h sshd[1]: x", reference).map(|t| t.format("%Y-%m-%d").to_string()), Some("2025-12-30".into()), "old syslog lines get the right year");
+    assert!(log_line_time("2026-01-09T10:00:00.123456+01:00 h x", reference).is_some());
+    assert!(log_line_time("2026-01-09T10:00:00+0100 h x", reference).is_some());
+    let lines = vec![
+        "2026-10-01T10:00:00+01:00 h sshd[1]: old",
+        "2026-10-29T10:00:00+01:00 h sshd[1]: just inside",
+        "Nov 20 10:00:00 h sshd[1]: classic",
+        "2026-11-25T10:00:00+01:00 h sshd[1]: newest",
+    ];
+    let kept = recent_lines(lines, 28, false);
+    assert_eq!(kept.len(), 3, "{kept:?}");
+    assert!(!kept.iter().any(|l| l.ends_with(": old")));
+
+    // a failed login from five weeks before the newest line is not reported
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "/var/log/auth.log",
+        "2026-10-15T09:00:00+0100 h su[3]: FAILED SU (to root) oldtimer on pts/0\n2026-11-25T09:00:00+0100 h su[4]: FAILED SU (to root) anna on pts/0\n",
+    );
+    let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::AuthLogs]), &|_| {});
+    let titles: Vec<&str> = report.findings.iter().map(|f| f.title.as_str()).collect();
+    assert!(titles.iter().any(|t| t.contains("anna")) && !titles.iter().any(|t| t.contains("oldtimer")), "{titles:?}");
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});
