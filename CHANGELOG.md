@@ -5,6 +5,7 @@
   upgraded that package after the baseline, it is no longer flagged (listed in the notes and taken
   into the automatic baseline). Everything else is still flagged, with what was checked.
 * Lynis suggestions are listed; several changed documentation files from debsums are grouped.
+* The *Scan again* button is removed – *Start scan* does the same thing.
 * README, rule reference (`docs/CHECKS.md`) and changelog.
 
 ## 0.3.1

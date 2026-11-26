@@ -160,8 +160,7 @@ commands for manual verification*, e.g. `ls -l /proc/1234/exe`, `dpkg -S`,
   root (also used by the nightly timer), otherwise `~/.config/scanner/whitelist.toml` –
   and *Show hidden findings again* undoes it.
 * **Full scan + save report** runs everything (all modules, the deep PID scan and every
-  installed tool) and saves the report as JSON and text. **↻ Scan again** repeats the current scan.
-* **Export** as text, JSON or a self-contained **HTML** page.
+  installed tool) and saves the report as JSON and text.* **Export** as text, JSON or a self-contained **HTML** page.
 * The **Baseline** box shows whether the automatic baseline is in use; *Save baseline* replaces
   it with the latest scan (for example after updates).
 
