@@ -7,6 +7,8 @@
   Docker and package tokens, `.netrc`, `.env`).
 * Environment variables that load code, in running programs and in environment files; SSH agent
   sockets in unusual places; tokens carried by programs (names only).
+* Password wallet: the full scan listens 15 s for programs asking the Secret Service or
+  KWallet for secrets (`--watch-wallet SECS`, setting `wallet_watch_secs`).
 * io_uring in programs outside the system folders; user, network and mount namespaces that no
   known sandbox explains.
 * Hardware: USB devices that are both keyboard and drive (now and in the kernel log),

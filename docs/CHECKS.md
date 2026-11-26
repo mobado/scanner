@@ -112,6 +112,7 @@ every network, to one address, or only to this computer.
 | `PROC-ENV-INJECT` | High–Low | A running program has a variable that loads code: `NODE_OPTIONS=--require`, `PYTHONSTARTUP`, `BASH_ENV`, `LD_AUDIT`, `PERL5OPT`, `RUBYOPT`, `-javaagent`, library paths in temporary folders … |
 | `PROC-SSH-SOCKET` | Medium | `SSH_AUTH_SOCK` points somewhere key agents do not normally put their socket |
 | `PROC-ENV-SECRETS` | Medium/Low | Programs carry API keys, tokens or passwords in their environment (**names only**, values are never reported); Medium when a browser, viewer or temporary program has one |
+| `PROC-SECRET-CALL` | Critical–Low | A program asked the password wallet (Secret Service, GNOME Keyring, KWallet) for secrets while the scanner listened: full scan (`wallet_watch_secs` = 15) or `--watch-wallet SECS`. Medium for scripts and command line tools, High/Critical from odd folders; installed programs are only named in the notes. Passwords never pass through the scanner (`dbus-monitor --profile` shows who asked for what) |
 | `PROC-IO-URING` | High–Low | A program outside the system folders uses io_uring, which sidesteps system call monitoring |
 | `PROC-NAMESPACE` | High/Medium | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps, Steam), container, Snap or system service explains. A mount namespace alone only counts for programs in home or temporary folders |
 
@@ -303,11 +304,9 @@ fool it, so run `debsums` or scan from trusted media when in doubt.
   media with `--root /mnt/disk`.
 * Without **root**, other users' processes, `/root`, `/var/spool/cron` and debugfs are
   unreadable. The report says what was skipped.
-* **D-Bus calls** to the Secret Service, KWallet or GNOME Keyring are not watched: a scan is a
-  snapshot, and who asked a running wallet for a password cannot be seen afterwards. Only
-  programs that have wallet or browser files open at the time of the scan are found.
-* The same goes for other short moments: a program that read a password store and closed it
-  before the scan leaves no open file.
+* A scan is a short moment: the password wallet is only heard while the scanner listens, and a
+  program that read a password file and closed it before the scan leaves nothing open. A program
+  that ends right after asking the wallet may not be identified.
 * A **baseline** only shows change. If the machine was already compromised when it was made,
   the intrusion looks normal – which is why it is not saved automatically when the first scan
   has critical or high findings.

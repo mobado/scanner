@@ -155,6 +155,7 @@ impl ScannerApp {
             modules: self.modules.iter().filter(|(_, on)| *on).map(|(m, _)| *m).collect(),
             tools: self.tools.iter().filter(|(_, p, on)| *on && p.is_some()).map(|(t, _, _)| *t).collect(),
             deep_pid_scan: self.deep_pid,
+            watch_wallet_secs: None,
             baseline_compare: (!self.baseline_compare.trim().is_empty()).then(|| PathBuf::from(self.baseline_compare.trim())),
             min_severity: Severity::Low,
         };

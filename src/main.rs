@@ -66,6 +66,10 @@ struct Cli {
     #[arg(long)]
     deep_pid_scan: bool,
 
+    /// Listen this many seconds for programs asking the password wallet (the full scan does it for 15)
+    #[arg(long, value_name = "SECS")]
+    watch_wallet: Option<u64>,
+
     /// Run everything: all modules, all installed external tools and the deep PID scan
     #[arg(long)]
     full: bool,
@@ -159,6 +163,7 @@ fn wants_cli(cli: &Cli) -> bool {
         || cli.modules.is_some()
         || cli.tools.is_some()
         || cli.deep_pid_scan
+        || cli.watch_wallet.is_some()
         || cli.full
         || cli.summary
         || cli.html
@@ -277,9 +282,9 @@ fn parse_opts(cli: &Cli) -> Result<ScanOptions> {
     }
     let baseline_compare = cli.baseline_diff.clone().or_else(|| cli.baseline_compare.clone());
     if cli.full {
-        return Ok(ScanOptions { modules: ModuleId::ALL.to_vec(), tools: Tool::ALL.to_vec(), deep_pid_scan: true, baseline_compare, min_severity });
+        return Ok(ScanOptions { modules: ModuleId::ALL.to_vec(), tools: Tool::ALL.to_vec(), deep_pid_scan: true, watch_wallet_secs: cli.watch_wallet, baseline_compare, min_severity });
     }
-    Ok(ScanOptions { modules, tools, deep_pid_scan: cli.deep_pid_scan, baseline_compare, min_severity })
+    Ok(ScanOptions { modules, tools, deep_pid_scan: cli.deep_pid_scan, watch_wallet_secs: cli.watch_wallet, baseline_compare, min_severity })
 }
 
 fn cli_scan(cli: &Cli) -> Result<u8> {

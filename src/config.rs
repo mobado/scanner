@@ -78,6 +78,8 @@ pub struct Config {
     pub web_roots: Vec<String>,
     /// Time limit in seconds for verifying the journal in the full scan (0 = never).
     pub journal_verify_secs: u64,
+    /// Seconds the full scan listens for programs asking the password wallet (0 = never).
+    pub wallet_watch_secs: u64,
     /// How far back the log checks look, in days (28 = four weeks).
     pub log_days: u32,
     /// Failed logins from one address (or by one user) that raise a finding to Medium.
@@ -325,6 +327,7 @@ impl Default for Config {
             ]),
             web_roots: s(&["/var/www", "/srv/www", "/srv/http", "/usr/share/nginx/html"]),
             journal_verify_secs: 90,
+            wallet_watch_secs: 15,
             log_days: 28,
             login_fail_threshold: 10,
             external_tool_timeout_secs: 900,

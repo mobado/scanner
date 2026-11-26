@@ -15,6 +15,7 @@ pub mod netlocal;
 pub mod hardware;
 pub mod sandboxes;
 pub mod secrets;
+pub mod wallet;
 pub mod procwatch;
 pub mod tunnels;
 pub mod net_group;
@@ -38,6 +39,8 @@ pub struct ScanCtx<'a> {
     pub cfg: &'a Config,
     /// Walk the whole PID range to find hidden processes (slower).
     pub deep_pid_scan: bool,
+    /// How long to listen for requests to the password wallet (0 = not at all).
+    pub wallet_watch_secs: u64,
     /// Are we running with root privileges (or against a test root, where everything is readable)?
     pub privileged: bool,
     /// Processes read once and shared between the modules.

@@ -57,6 +57,10 @@ Comma separated: debsums, chkrootkit, rkhunter, lynis, or "all".
 .B \-\-deep\-pid\-scan
 Walk the whole PID range to find hidden processes (slower).
 .TP
+.BI \-\-watch\-wallet " SECS"
+Listen this long for programs asking the password wallet (Secret Service, KWallet). The full
+scan listens 15 seconds. Passwords never pass through the scanner.
+.TP
 .BI \-\-baseline\-save " FILE"
 Save a baseline of SUID/SGID files, listening ports and persistence files.
 .TP

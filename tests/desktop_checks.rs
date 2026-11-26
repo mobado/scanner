@@ -142,7 +142,7 @@ fn downloads_and_hidden_programs() {
 fn browser_addons_and_settings() {
     let sys = SysRoot::new("/nonexistent");
     let cfg = Config::default();
-    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, privileged: true, processes: &[] };
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
     let _unused = Collector::default();
     let chrome = serde_json::json!({"extensions": {"settings": {
         "storeaddon": {"location": 1, "from_webstore": true, "manifest": {"name": "Fine"}},

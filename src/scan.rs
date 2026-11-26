@@ -106,6 +106,9 @@ pub struct ScanOptions {
     pub modules: Vec<ModuleId>,
     pub tools: Vec<Tool>,
     pub deep_pid_scan: bool,
+    /// Listen this long for requests to the password wallet. `None`: as long as the
+    /// setting `wallet_watch_secs` says in a full scan, otherwise not at all.
+    pub watch_wallet_secs: Option<u64>,
     pub baseline_compare: Option<PathBuf>,
     pub min_severity: Severity,
 }
@@ -116,6 +119,7 @@ impl Default for ScanOptions {
             modules: ModuleId::ALL.to_vec(),
             tools: Vec::new(),
             deep_pid_scan: false,
+            watch_wallet_secs: None,
             baseline_compare: None,
             min_severity: Severity::Low,
         }
@@ -174,7 +178,8 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
     } else {
         Vec::new()
     };
-    let ctx = ScanCtx { sys, cfg, deep_pid_scan: opts.deep_pid_scan, privileged, processes: &processes };
+    let wallet_watch_secs = opts.watch_wallet_secs.unwrap_or(if opts.deep_pid_scan { cfg.wallet_watch_secs } else { 0 }).min(600);
+    let ctx = ScanCtx { sys, cfg, deep_pid_scan: opts.deep_pid_scan, wallet_watch_secs, privileged, processes: &processes };
 
     let mut modules_run = Vec::new();
     for m in ModuleId::ALL {
@@ -184,6 +189,8 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         // Say so when a step is known to take a while, so the window does not look stuck.
         let slow = if m == ModuleId::Integrity && opts.deep_pid_scan && privileged && sys.is_live() && cfg.journal_verify_secs > 0 {
             format!(" (verifying the system journal, at most {} s)", cfg.journal_verify_secs)
+        } else if m == ModuleId::ProcAudit && wallet_watch_secs > 0 && sys.is_live() {
+            format!(" (listening {wallet_watch_secs} s for programs asking the password wallet)")
         } else {
             String::new()
         };

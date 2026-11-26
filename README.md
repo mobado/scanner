@@ -16,7 +16,7 @@ export buttons).
 | `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands, eBPF programs, taint marks, Secure Boot, lockdown and UEFI boot entries, AppArmor and SELinux, USB devices that are both keyboard and drive, Thunderbolt devices |
 | `services` | Web shells in web folders, container socket and Docker API exposure, privileged containers |
 | `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps, kernel start options, GRUB scripts, the kernel file against its package, disk errors |
-| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files, shells and download tools started by browsers or document viewers, other programs holding saved passwords, cookies or wallets open, environment variables that load code, SSH agent sockets, tokens in environments, io_uring and unexplained namespaces |
+| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files, shells and download tools started by browsers or document viewers, other programs holding saved passwords, cookies or wallets open, environment variables that load code, who asks the password wallet (listens briefly), SSH agent sockets, tokens in environments, io_uring and unexplained namespaces |
 | `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions, downloads and hidden programs in home folders, browser add-ons, settings and helper programs (native messaging), private keys, logins and `.env` files that others can read, rewritten programs and backdated files |
 | `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, network and sleep scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, environment files that load code, the boot image (initramfs) |
 | `desktop_session` | Autostart, session and login-screen scripts, session D-Bus services and portals, settings of KDE Plasma, GNOME, XFCE and window managers, programs reading the keyboard, remote desktop programs, Flatpak, Snap and AppImage, Wayland or X11. Findings are labelled `[xdg]`, `[kde]`, `[gnome]` …; skipped on servers without a desktop |
@@ -62,6 +62,7 @@ src/
 │   ├── netlocal.rs     Bluetooth, shared folders, DNS settings, DNS around a VPN
 │   ├── secrets.rs      open password stores, readable keys, environment variables
 │   ├── sandboxes.rs    io_uring, namespaces no known sandbox explains
+│   ├── wallet.rs       listens for programs asking the password wallet
 │   ├── hardware.rs     USB keyboard-and-drive devices, Thunderbolt
 │   ├── bootchain.rs    kernel start options, GRUB scripts, kernel file, disk errors
 │   ├── desktop_session/    the desktop module (labels, server detection)
@@ -153,6 +154,7 @@ scanner --json --output report.json           # JSON to a file
 scanner --modules net_proc,persistence        # only some modules
 scanner --tools debsums,chkrootkit            # external tools too ("all" = all four)
 scanner --deep-pid-scan                       # walk the whole PID range for hidden processes
+scanner --watch-wallet 60                     # listen 60 s for programs asking the password wallet
 scanner --min-severity high                   # hide low/medium
 scanner --html --output report.html          # a self-contained, colourful report page
 scanner --summary                             # one line: OK / NOTICE / ATTENTION / ALARM (for monitoring)
@@ -352,7 +354,7 @@ Licensed under the **GNU General Public License v3.0** – see [LICENSE](LICENSE
 * `/sys/kernel/debug/sched/debug` needs root and a mounted debugfs.
 * Shell histories are read to find suspicious commands. Matching lines appear in the report,
   so treat saved reports as private (a typed password could be on such a line).
-* A scan is a snapshot: D-Bus calls to password wallets are not watched, and a program that read
-  a password store and closed it again is not seen.
+* A scan is a short moment: the password wallet is only heard while the scanner listens (15 s in
+  the full scan), and a program that read a password file and closed it again is not seen.
 * rkhunter and lynis write their own logs in `/var/log` – the scanner itself writes nothing.
 * The window version cannot be linked statically; the static binary is CLI-only.

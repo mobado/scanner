@@ -8,6 +8,7 @@ use scanner::modules::hardware::log_keyboard_drives;
 use scanner::modules::netwatch::packet_sockets;
 use scanner::modules::persistence::hooks::assignment;
 use scanner::modules::sandboxes::managed_cgroup;
+use scanner::modules::wallet::{asks_for_secrets, judge_caller, parse_call};
 use scanner::modules::secrets::{hide_secrets, judge_reader, judge_variable, names_a_secret, secret_store, usual_agent_socket};
 use scanner::report::Report;
 use scanner::{run_scan, ModuleId, ScanOptions, Severity, SysRoot};
@@ -271,4 +272,22 @@ fn raw_packet_sockets_show_sniffers() {
     link(root, "/proc/96/fd/3", "socket:[5003]");
     let report = scan(root, &[ModuleId::NetProc]);
     assert_eq!(levels(&report, "NET-SNIFFER"), vec![Severity::Medium, Severity::High]);
+}
+
+#[test]
+fn programs_that_ask_the_password_wallet() {
+    let line = "mc\t1795735556.186201\t2\t:1.203\torg.freedesktop.secrets\t/org/freedesktop/secrets\torg.freedesktop.Secret.Service\tSearchItems";
+    assert_eq!(parse_call(line), Some((":1.203", "org.freedesktop.Secret.Service", "SearchItems")));
+    assert_eq!(parse_call("sig\t1\t2\torg.freedesktop.DBus\t:1.2\t/x\torg.freedesktop.DBus\tNameAcquired"), None);
+    assert!(asks_for_secrets("GetSecrets") && asks_for_secrets("readPassword") && asks_for_secrets("passwordList"));
+    assert!(!asks_for_secrets("isEnabled") && !asks_for_secrets("networkWallet") && !asks_for_secrets("close"));
+
+    let cfg = Config::default();
+    let level = |name: &str, exe: &str| judge_caller(&cfg, &[name.to_string()], exe).0;
+    assert_eq!(level("firefox-esr", "/usr/lib/firefox-esr/firefox-esr"), Severity::Low);
+    assert_eq!(level("secret-tool", "/usr/bin/secret-tool"), Severity::Medium);
+    assert_eq!(level("python3.13", "/usr/bin/python3.13"), Severity::Medium);
+    assert_eq!(level("tool", "/usr/local/bin/tool"), Severity::Medium);
+    assert_eq!(level("x", "/home/anna/Downloads/x"), Severity::High);
+    assert_eq!(level("x", "/tmp/x"), Severity::Critical);
 }
