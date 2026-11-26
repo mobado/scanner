@@ -46,6 +46,8 @@ pub struct Baseline {
 pub fn newly_tracked(path: &str) -> bool {
     // entries starting "/." are folders inside any home folder
     NEWLY_TRACKED.iter().any(|p| if p.starts_with("/.") { path.contains(p) } else { path.starts_with(p) })
+        // window manager files that live in /etc
+        || ["/etc/xdg/openbox/", "/etc/xdg/lxsession/", "/etc/sway/", "/usr/local/share/autostart/"].iter().any(|p| path.starts_with(p))
         || path.contains("-generators/")
         || path.contains("/.git/hooks/")
         || (path.contains("/systemd/") && path.contains(".d/") && path.ends_with(".conf"))
@@ -53,7 +55,30 @@ pub fn newly_tracked(path: &str) -> bool {
 
 /// Kinds of files that later versions started to track: in a baseline made by an older
 /// version they are new to the baseline, not suspicious.
-pub const NEWLY_TRACKED: [&str; 36] = [
+pub const NEWLY_TRACKED: [&str; 59] = [
+    "/.local/share/dbus-1/",
+    "/usr/local/share/dbus-1/",
+    "/.local/share/xdg-desktop-portal/",
+    "/.config/xdg-desktop-portal/",
+    "/usr/local/share/xdg-desktop-portal/",
+    "/.config/sway/",
+    "/.config/swayidle/",
+    "/.config/i3/",
+    "/.i3/",
+    "/.config/openbox/",
+    "/.config/lxsession/",
+    "/.config/hypr/",
+    "/.config/labwc/",
+    "/.config/wayfire.ini",
+    "/.fluxbox/",
+    "/.xscreensaver",
+    "/.local/share/kwin/",
+    "/.local/share/kglobalaccel/",
+    "/.config/xfce4/xinitrc",
+    "/.config/gnome-session/",
+    "/usr/share/autostart/",
+    "/usr/share/gnome/autostart/",
+    "/etc/dconf/",
     "/etc/binfmt.d/",
     "/usr/local/lib/binfmt.d/",
     "/etc/initramfs-tools/",

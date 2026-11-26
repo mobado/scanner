@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0
+* Autostart: more system folders, programs that no package installed, and user entries that
+  replace system entries.
+* All desktops: session D-Bus services, portals, `xhost +`.
+* KDE Plasma: saved session, notification actions (lock and login hooks), shortcuts, KWin
+  scripts and window rules, proxy. GNOME: dconf settings (shortcuts, proxy, remote desktop,
+  screen lock, extensions) and saved session. XFCE: session, shortcuts, panel and saved
+  session. sway, i3, Hyprland, openbox, LXDE, labwc, wayfire, fluxbox and idle/lock daemons.
+* Programs that read the keyboard directly, keyloggers; the report says whether a session is
+  Wayland or X11.
+
 ## 0.7.0
 * `--baseline-diff [FILE]` (and a checkbox in the window) shows only what changed since the
   baseline. The baseline now also records Secure Boot, lockdown and UEFI boot entries.

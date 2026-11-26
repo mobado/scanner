@@ -62,6 +62,72 @@ pub(crate) fn check_tracing(ctx: &ScanCtx, col: &mut Collector) {
     }
 }
 
+// ---------------------------------------------------------------- desktop session and input
+
+/// Programs that read the keyboard and mouse devices as part of their job.
+const INPUT_READERS: [&str; 34] = [
+    "systemd", "systemd-logind", "Xorg", "Xwayland", "kwin_wayland", "gnome-shell", "mutter", "sway", "Hyprland",
+    "wayfire", "labwc", "weston", "cosmic-comp", "upowerd", "thermald", "acpid", "thd", "keyd", "input-remapper-service",
+    "interception", "ydotoold", "org_kde_powerdevil", "gsd-media-keys", "steam", "sddm", "lightdm", "gdm3", "bluetoothd",
+    "solaar", "brltty", "touchegg", "logid", "iio-sensor-proxy", "systemd-udevd",
+];
+
+/// Names of programs written to record what is typed.
+const KEYLOGGERS: [&str; 6] = ["logkeys", "xspy", "lkl", "uberkey", "xkbcat", "xmacrorec2"];
+
+/// Report programs that read the keyboard directly, and say which kind of desktop session runs.
+pub(crate) fn check_input_and_session(ctx: &ScanCtx, col: &mut Collector) {
+    let mut sessions = std::collections::BTreeSet::new();
+    for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread()) {
+        if p.uid >= 1000 {
+            if let Ok(env) = ctx.sys.read_bytes(format!("/proc/{}/environ", p.pid)) {
+                let value = |key: &str| env.split(|b| *b == 0).find_map(|v| String::from_utf8_lossy(v).strip_prefix(key).map(String::from));
+                if let Some(kind) = value("XDG_SESSION_TYPE=").filter(|k| k == "x11" || k == "wayland") {
+                    sessions.insert((p.uid, kind, value("XDG_CURRENT_DESKTOP=").unwrap_or_else(|| "unknown desktop".into())));
+                }
+            }
+        }
+        let name = p.display_name();
+        let exe = p.exe_path().unwrap_or("");
+        let system = ["/usr/", "/opt/"].iter().any(|d| exe.starts_with(d)) && !exe.starts_with("/usr/local/");
+        // "xinput test <keyboard>" prints every key pressed in an X11 session
+        let spying = KEYLOGGERS.contains(&name.as_str()) || (name == "xinput" && p.cmdline.iter().any(|a| a == "test" || a.starts_with("test-xi") || a == "--test-xi2"));
+        let devices: Vec<String> = ctx
+            .sys
+            .dir_names(format!("/proc/{}/fd", p.pid))
+            .into_iter()
+            .filter_map(|fd| ctx.sys.read_link(format!("/proc/{}/fd/{fd}", p.pid)))
+            .filter(|t| t.starts_with("/dev/input/event") || t.starts_with("/dev/input/mice") || t.starts_with("/dev/input/mouse"))
+            .collect();
+        let expected = system && (INPUT_READERS.contains(&name.as_str()) || INPUT_READERS.contains(&p.comm.as_str()));
+        if !spying && (devices.is_empty() || expected) {
+            continue;
+        }
+        let severity = if spying || !system { Severity::High } else { Severity::Medium };
+        col.push(
+            Finding::new(severity, MODULE, "PROC-INPUT-READER", format!("Program reads the keyboard or mouse directly: {name}"))
+                .evidence(format!(
+                    "PID {} UID {} exe={}\ncmdline=\"{}\"\n{}",
+                    p.pid,
+                    p.uid,
+                    p.exe.as_deref().unwrap_or("?"),
+                    clip(&p.cmdline_str(), 300),
+                    clip(&devices.join(", "), 300)
+                ))
+                .description("A program that reads the input devices sees everything typed, passwords included, under both Wayland and X11. Key remappers and game or mouse tools do this on purpose; check that you installed this one.")
+                .verify(format!("ls -l /proc/{}/fd | grep input", p.pid))
+                .verify(format!("ps -o pid,user,etime,cmd -p {}", p.pid)),
+        );
+    }
+    for (uid, kind, desktop) in sessions {
+        col.note(if kind == "x11" {
+            format!("Desktop session of user {uid}: X11 ({desktop}). In X11 every program in the session can read what is typed and take pictures of the screen, so an unknown program matters more")
+        } else {
+            format!("Desktop session of user {uid}: Wayland ({desktop}). Programs cannot read each other's keyboard input; only the input devices themselves would give that away")
+        });
+    }
+}
+
 /// One line of /proc/<pid>/mountinfo: (mount point, root within the file system, type, source).
 pub fn parse_mount(line: &str) -> Option<(String, String, String, String)> {
     let (left, right) = line.split_once(" - ")?;

@@ -87,6 +87,7 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PROC-APPIMAGE` | Low | A program running from a mounted AppImage |
 | `PROC-TRACED` | Critical–Low | A process is being traced (`TracerPid`): Critical when an unknown program traces sshd, sudo, a browser, a key agent …; Low for an installed debugger on an ordinary program |
 | `PROC-HIDDEN-MOUNT` | Critical–Medium | A mount over `/proc/<pid>` (hides a process), or over parts of `/etc`, `/usr/bin`, libraries … |
+| `PROC-INPUT-READER` | High/Medium | A program that reads `/dev/input` directly and is not a known compositor, key or mouse tool (High from outside the system folders), known keyloggers, or `xinput test`. The report's notes also say whether each session is Wayland or X11 |
 | `PROC-LD-LIBRARY-PATH` | High/Low | `LD_LIBRARY_PATH` points to a temporary (High) or relative folder (AppImages are skipped) |
 
 ## File permissions (`fs_perms`)
@@ -130,8 +131,16 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PERS-PAM-PERMIT` | Critical | `pam_permit.so` as `sufficient` in auth/account |
 | `PERS-PAM-EXEC` / `-PATH` / `-UNKNOWN` / `-PERMS` | Critical–Medium | Odd PAM modules and permissions |
 | `PERS-SHELLRC` | High+ | Suspicious shell start files |
-| `PERS-AUTOSTART` | Critical–Low | XDG autostart: suspicious commands; own scripts or unknown programs (Medium); installed programs in a user's autostart (Low); entries for all users that no package installed (Medium) |
-| `PERS-SESSION-SCRIPT` | Critical–Low | Login, logout, sleep and network scripts (X11, GDM, SDDM, NetworkManager, system-sleep, Plasma): suspicious commands, or not installed by a package |
+| `PERS-AUTOSTART` | Critical–Low | XDG autostart (`/etc/xdg`, `/usr/share/autostart`, GNOME and user folders): suspicious commands; own scripts, programs no package installed, or a user entry that replaces a system entry (Medium); installed programs in a user's autostart (Low) |
+| `PERS-DBUS-SERVICE` | Critical–Low | Session D-Bus services in home folders or `/usr/local` (Medium when they replace a system service, such as a portal) |
+| `PERS-PORTAL` | Medium | A desktop portal that no package installed |
+| `PERS-DESKTOP-COMMAND` | Critical–Medium | A command from a desktop's own settings that is suspicious or runs from an odd place: KDE saved session, notification actions and shortcuts; GNOME shortcuts and saved session; XFCE session, shortcuts, saved session and panel; sway, i3, Hyprland, swayidle, openbox, LXDE, labwc, wayfire, fluxbox, xscreensaver |
+| `PERS-KWIN-SCRIPT` / `-RULE` | Medium/Low | An own KWin script is on (Medium when it can start programs); window rules that make windows invisible |
+| `PERS-DESKTOP-PROXY` | Medium | KDE or GNOME settings send traffic through a proxy (passwords are not shown) |
+| `PERS-REMOTE-DESKTOP` / `PERS-SCREEN-LOCK` | Medium / Low | GNOME remote desktop is on / the screen lock is off |
+| `PERS-GNOME-EXTENSION` | Low | Own GNOME Shell extensions that are switched on (read from the dconf database) |
+| `PERS-X11-OPEN` | Medium | `xhost +` opens the X11 display to others |
+| `PERS-SESSION-SCRIPT` | Critical–Low | Login, logout, sleep and network scripts (X11, GDM, SDDM, NetworkManager, system-sleep, Plasma, XFCE `xinitrc`): suspicious commands, or not installed by a package |
 | `PERS-DM-SCRIPT` | Critical–Medium | LightDM/SDDM/GDM settings that run an unusual command |
 | `PERS-POLKIT` | Critical–Low | polkit rules that no package installed (above all ones that allow actions without a password), polkit files in home folders |
 | `PERS-UDEV` | Critical–Medium | A udev rule runs a suspicious command or a program outside the system folders |

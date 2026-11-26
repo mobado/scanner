@@ -16,9 +16,9 @@ export buttons).
 | `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands, eBPF programs, taint marks, Secure Boot, lockdown and UEFI boot entries |
 | `services` | Web shells in web folders, container socket and Docker API exposure, privileged containers |
 | `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps |
-| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files |
+| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files, programs reading the keyboard (keyloggers), Wayland or X11 session |
 | `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions, downloads and hidden programs in home folders, browser add-ons and settings, rewritten programs and backdated files |
-| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, desktop autostart, session and login-screen scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, the boot image (initramfs) |
+| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, desktop autostart, session and login-screen scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, the boot image (initramfs); settings of KDE Plasma, GNOME, XFCE and window managers, session D-Bus services and portals |
 | `updates` | Pending security updates, other updates, reboot needed, old package lists |
 | `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords |
 | external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed). `chkrootkit` and `rkhunter` give false alarms on modern systems, so their findings are a second opinion and never Critical |
@@ -61,6 +61,8 @@ src/
 │   │   ├── ssh.rs      sshd_config (with Include) and authorized_keys
 │   │   ├── system.rs   PAM, shell files, UID 0, shared IDs, sudo NOPASSWD
 │   │   ├── desktop.rs  XDG autostart, session and login-screen scripts, polkit rules
+│   │   ├── environments.rs  D-Bus services, portals, KDE, GNOME, XFCE and window managers
+│   │   ├── gvdb.rs     reader for GNOME's dconf settings database
 │   │   ├── hooks.rs    systemd generators/drop-ins, binfmt, git and installer hooks, initramfs
 │   │   ├── apt.rs      software sources (.list and .sources) and apt hooks
 │   │   └── history.rs  suspicious commands in shell histories
@@ -92,7 +94,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.7.0-1_amd64.deb
+sudo apt install ./scanner_0.8.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and

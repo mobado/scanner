@@ -11,7 +11,9 @@
 
 pub mod apt;
 pub mod desktop;
+pub mod environments;
 pub mod extra;
+pub mod gvdb;
 pub mod history;
 pub mod hooks;
 pub mod ssh;
@@ -66,6 +68,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     extra::check_at_jobs(ctx, col);
     extra::check_keys_and_certificates(ctx, col);
     desktop::check_desktop(ctx, col, &homes);
+    environments::check_environments(ctx, col, &homes);
     apt::check_apt(ctx, col);
     hooks::check_hooks(ctx, col, &homes);
     history::check_histories(ctx, col, &homes);

@@ -68,7 +68,7 @@ fn autostart_session_scripts_and_polkit() {
     let root = dir.path();
     write(root, "/etc/passwd", "anna:x:1000:1000::/home/anna:/bin/bash\n");
     program(root, "/usr/bin/nextcloud", "x");
-    write(root, "/var/lib/dpkg/info/desk.list", "/etc/xdg/autostart/packaged.desktop\n/etc/X11/Xsession.d/20x11-common\n");
+    write(root, "/var/lib/dpkg/info/desk.list", "/etc/xdg/autostart/packaged.desktop\n/etc/X11/Xsession.d/20x11-common\n/usr/bin/nextcloud\n");
     write(root, "/etc/xdg/autostart/packaged.desktop", "[Desktop Entry]\nExec=/usr/bin/true\n");
     write(root, "/etc/xdg/autostart/added.desktop", "[Desktop Entry]\nExec=/opt/thing/run\n");
     write(root, "/home/anna/.config/autostart/sync.desktop", "[Desktop Entry]\nExec=nextcloud --background\n");

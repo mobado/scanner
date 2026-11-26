@@ -6,7 +6,7 @@ use crate::finding::{Finding, Severity};
 use crate::modules::common::{analyze_command, analyze_user_command, clip, max_severity, program_words, reasons, shq, CmdIssue};
 use crate::modules::{Collector, ScanCtx};
 use crate::pkgverify::owned_paths;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use walkdir::WalkDir;
 
 /// Folders with scripts that the system runs at login, logout, sleep or network changes.
@@ -16,7 +16,7 @@ const SESSION_DIRS: [&str; 10] = [
 ];
 
 /// The same in a home folder.
-const HOME_SESSION: [&str; 5] = [".config/plasma-workspace/env", ".config/plasma-workspace/shutdown", ".config/autostart-scripts", ".xinitrc", ".xsession"];
+const HOME_SESSION: [&str; 6] = [".config/plasma-workspace/env", ".config/plasma-workspace/shutdown", ".config/autostart-scripts", ".config/xfce4/xinitrc", ".xinitrc", ".xsession"];
 
 const DM_KEYS: [&str; 9] = [
     "greeter-setup-script", "session-setup-script", "session-cleanup-script", "display-setup-script", "display-stopped-script",
@@ -266,52 +266,127 @@ fn starts_installed_program(ctx: &ScanCtx, exec: &str) -> bool {
     }) && !words.is_empty()
 }
 
+/// Folders whose entries start for every user.
+const SYSTEM_AUTOSTART: [&str; 4] = ["/etc/xdg/autostart", "/usr/share/autostart", "/usr/share/gnome/autostart", "/usr/local/share/autostart"];
+
+/// The file a program word stands for, following links; `None` when there is no such program.
+fn program_file(ctx: &ScanCtx, word: &str) -> Option<String> {
+    let mut path = if word.starts_with('/') {
+        word.to_string()
+    } else {
+        ["/usr/local/bin", "/usr/bin", "/usr/sbin", "/bin", "/usr/games"].iter().map(|d| format!("{d}/{word}")).find(|p| ctx.sys.exists(p))?
+    };
+    for _ in 0..8 {
+        let Some(target) = ctx.sys.read_link(&path) else { break };
+        path = ctx.sys.resolve_link_target(&path, &target);
+    }
+    // "dir/../x" would not match a package's file list
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/').filter(|p| !p.is_empty() && *p != ".") {
+        if part == ".." {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    let path = format!("/{}", parts.join("/"));
+    ctx.sys.exists(&path).then_some(path)
+}
+
+struct Entry {
+    path: String,
+    exec: String,
+    in_home: bool,
+    /// Programs in system folders that the command starts.
+    programs: Vec<String>,
+}
+
 fn check_autostart(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)], has_dpkg: bool) {
-    let mut dirs: Vec<(String, bool)> = vec![("/etc/xdg/autostart".into(), false)];
+    let mut dirs: Vec<(String, bool)> = SYSTEM_AUTOSTART.iter().map(|d| (d.to_string(), false)).collect();
     for (_, _, home) in homes {
         dirs.push((format!("{home}/.config/autostart"), true));
     }
     let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    // file name → program of the system-wide entry with that name
+    let mut system_programs: HashMap<String, String> = HashMap::new();
     for (dir, in_home) in dirs {
-        let files: Vec<String> = ctx.sys.dir_names(&dir).into_iter().filter(|n| n.ends_with(".desktop")).map(|n| format!("{dir}/{n}")).collect();
-        let owned = if in_home { HashSet::new() } else { owned_paths(ctx.sys, &files) };
-        for path in files {
+        for name in ctx.sys.dir_names(&dir).into_iter().filter(|n| n.ends_with(".desktop")) {
+            let path = format!("{dir}/{name}");
             if !seen.insert(path.clone()) {
                 continue;
             }
             let Ok(text) = ctx.sys.read_string(&path) else { continue };
             record(ctx, col, &path);
-            let (Some(exec), false) = desktop_entry(&text) else { continue };
-            let issues = if in_home { analyze_user_command(&exec, ctx.cfg) } else { analyze_command(&exec, ctx.cfg) };
-            let name = crate::procinfo::basename(&path).to_string();
-            let evidence = format!("{path}\nExec={}", clip(&exec, 400));
-            let finding = |severity: Severity, title: String, description: String| {
-                Finding::new(severity, MODULE, "PERS-AUTOSTART", title).evidence(evidence.clone()).description(description).verify(format!("cat {}", shq(&path)))
-            };
-            match max_severity(&issues) {
-                Some(severity) if severity >= Severity::Medium && (in_home || severity >= Severity::High) => col.push(finding(
-                    severity,
-                    format!("Suspicious autostart entry: {path}"),
-                    format!("The program starts automatically when a user logs in to the desktop. Suspicious: {}.", reasons(&issues)),
-                )),
-                _ if in_home && starts_installed_program(ctx, &exec) => col.push(finding(
-                    Severity::Low,
-                    format!("Autostart entry in a home directory: {name}"),
-                    "An installed program starts when the user logs in to the desktop. Usually normal; check that you know it.".into(),
-                )),
-                _ if in_home => col.push(finding(
-                    Severity::Medium,
-                    format!("Autostart runs a script or program of its own: {name}"),
-                    "At every desktop login this runs something that is not an installed program (a file in a home folder, a command line, or a program that is not found). Check that you set it up.".into(),
-                )),
-                _ if has_dpkg && !owned.contains(&path) => col.push(finding(
-                    Severity::Medium,
-                    format!("Autostart entry for all users that no package installed: {name}"),
-                    "This starts for every user who logs in to the desktop and did not come with a package. Check that an administrator added it.".into(),
-                )),
-                _ => {}
+            let (Some(exec), hidden) = desktop_entry(&text) else { continue };
+            let words = program_words(&exec);
+            if !in_home {
+                if let Some(first) = words.first() {
+                    system_programs.insert(name.clone(), crate::procinfo::basename(first).to_string());
+                }
             }
+            if hidden {
+                continue;
+            }
+            let programs = words
+                .iter()
+                .filter_map(|w| program_file(ctx, w))
+                .filter(|p| ["/usr/", "/bin/", "/sbin/", "/opt/"].iter().any(|d| p.starts_with(d)))
+                .collect();
+            entries.push(Entry { path, exec, in_home, programs });
         }
+    }
+    let wanted: Vec<String> = entries.iter().flat_map(|e| std::iter::once(e.path.clone()).chain(e.programs.iter().cloned())).collect();
+    let owned = owned_paths(ctx.sys, &wanted);
+    for Entry { path, exec, in_home, programs } in entries {
+        // what a package installed system-wide is checked against its package, not here
+        let packaged = !in_home && owned.contains(&path);
+        let issues = if in_home { analyze_user_command(&exec, ctx.cfg) } else { analyze_command(&exec, ctx.cfg) };
+        let unknown: Vec<&String> = programs.iter().filter(|p| has_dpkg && !owned.contains(*p)).collect();
+        let name = crate::procinfo::basename(&path).to_string();
+        let first = program_words(&exec).first().map(|w| crate::procinfo::basename(w).to_string()).unwrap_or_default();
+        let replaced = system_programs.get(&name).filter(|p| in_home && **p != first);
+        let mut evidence = format!("{path}\nExec={}", clip(&exec, 400));
+        let (severity, title, description) = match max_severity(&issues) {
+            Some(severity) if severity >= Severity::Medium && (in_home || severity >= Severity::High) => (
+                severity,
+                format!("Suspicious autostart entry: {path}"),
+                format!("The program starts automatically when a user logs in to the desktop. Suspicious: {}.", reasons(&issues)),
+            ),
+            _ if !packaged && !unknown.is_empty() => {
+                evidence.push_str(&format!("\nno package installed: {}", unknown.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", ")));
+                (
+                    Severity::Medium,
+                    format!("Autostart runs a program that no package installed: {name}"),
+                    "At every desktop login this runs a program from a system folder that apt did not put there. Software installed by hand looks like this; so does a planted program.".to_string(),
+                )
+            }
+            _ if replaced.is_some() => {
+                evidence.push_str(&format!("\nthe system-wide entry of the same name starts {}", replaced.map(String::as_str).unwrap_or("?")));
+                (
+                    Severity::Medium,
+                    format!("Autostart entry replaces a system entry: {name}"),
+                    "A file in the home folder takes the place of a system autostart entry with the same name and starts something else. Check that you changed it.".to_string(),
+                )
+            }
+            _ if in_home && starts_installed_program(ctx, &exec) => (
+                Severity::Low,
+                format!("Autostart entry in a home directory: {name}"),
+                "An installed program starts when the user logs in to the desktop. Usually normal; check that you know it.".to_string(),
+            ),
+            _ if in_home => (
+                Severity::Medium,
+                format!("Autostart runs a script or program of its own: {name}"),
+                "At every desktop login this runs something that is not an installed program (a file in a home folder, a command line, or a program that is not found). Check that you set it up.".to_string(),
+            ),
+            _ if has_dpkg && !packaged => (
+                Severity::Medium,
+                format!("Autostart entry for all users that no package installed: {name}"),
+                "This starts for every user who logs in to the desktop and did not come with a package. Check that an administrator added it.".to_string(),
+            ),
+            _ => continue,
+        };
+        col.push(Finding::new(severity, MODULE, "PERS-AUTOSTART", title).evidence(evidence).description(description).verify(format!("cat {}", shq(&path))));
     }
 }
 
