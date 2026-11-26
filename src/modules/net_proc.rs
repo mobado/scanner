@@ -302,6 +302,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     }
     col.inventory.connections = connections;
     super::net_group::group_listener_findings(col, first_finding);
+    super::netwatch::run(ctx, col);
 
     check_ss_consistency(ctx, &sockets, col);
     check_hidden_processes(ctx, col);

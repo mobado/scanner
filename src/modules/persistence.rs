@@ -9,6 +9,7 @@
 //! Every file that controls persistence is hashed (SHA-256) into the inventory so that
 //! a baseline can show what changed.
 
+pub mod extra;
 pub mod ssh;
 pub mod system;
 
@@ -57,6 +58,10 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     system::check_pam(ctx, col);
     system::check_shell_files(ctx, col, &homes);
     system::check_accounts(ctx, col, &accounts);
+    extra::check_udev(ctx, col);
+    extra::check_at_jobs(ctx, col);
+    extra::check_keys_and_certificates(ctx, col);
+    col.inventory.accounts = extra::collect_accounts(ctx, &accounts);
 }
 
 /// (user name, uid, home directory) for root, normal users, directories under /home

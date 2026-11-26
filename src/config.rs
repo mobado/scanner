@@ -49,6 +49,16 @@ pub struct Config {
     pub allowed_pam_modules: Vec<String>,
     /// Known harmless LD_PRELOAD libraries (substring of the path), e.g. Firefox sandbox and Flatpak.
     pub allowed_ld_preload: Vec<String>,
+    /// Remote ports that normal outgoing connections use (others are listed per program).
+    pub common_remote_ports: Vec<u16>,
+    /// Public DNS servers that are fine to find in /etc/resolv.conf.
+    pub trusted_resolvers: Vec<String>,
+    /// Module name prefixes that may be built outside the kernel (drivers).
+    pub allowed_out_of_tree_modules: Vec<String>,
+    /// Names of known kernel rootkits.
+    pub known_rootkit_modules: Vec<String>,
+    /// Folders searched for web shells.
+    pub web_roots: Vec<String>,
     /// How many days of the journal the login check reads.
     pub login_days: u32,
     /// Failed logins from one address (or by one user) that raise a finding to Medium.
@@ -226,6 +236,30 @@ impl Default for Config {
                 "vgpreload", "libgamemodeauto", "libMangoHud", "libvkbasalt", "libsnoopy", "libfaketime",
                 "libsteam", "steamclient",
             ]),
+            common_remote_ports: vec![
+                22, 25, 53, 80, 123, 143, 443, 465, 587, 853, 993, 995, 110, 119, 389, 636, 563, 873,
+                // chat, push and calls
+                3478, 3479, 5222, 5223, 5228, 5229, 5230, 19302, 8883,
+                // web alternatives, git, printing, sync
+                8080, 8443, 9418, 11371, 631, 2049, 111, 445,
+            ],
+            trusted_resolvers: s(&[
+                "1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112", "208.67.222.222",
+                "208.67.220.220", "94.140.14.14", "94.140.15.15", "2606:4700:4700::1111", "2606:4700:4700::1001",
+                "2001:4860:4860::8888", "2001:4860:4860::8844", "2620:fe::fe", "2620:fe::9",
+            ]),
+            allowed_out_of_tree_modules: s(&[
+                "nvidia", "vbox", "vmmon", "vmnet", "zfs", "spl", "wl", "evdi", "v4l2loopback", "openrazer",
+                "razer", "xpadneo", "hid_xpadneo", "ddcci", "acpi_call", "tp_smapi", "zenpower", "it87",
+                "r8125", "r8168", "rtl88", "rtl89", "8812au", "8821au", "88x2bu", "xone", "new_lg4ff",
+                "lttng", "digimend", "snd_virtmic", "kvmfr", "amneziawg", "ryzen_smu",
+            ]),
+            known_rootkit_modules: s(&[
+                "diamorphine", "reptile", "reptile_module", "suterusu", "knark", "adore", "adore_ng", "rkit",
+                "kovid", "kbeast", "azazel", "enyelkm", "modhide", "phalanx", "mood_nt", "sutekh", "nurupo",
+                "rootkit", "rtkit_hide", "singularity", "puma", "brokepkg",
+            ]),
+            web_roots: s(&["/var/www", "/srv/www", "/srv/http", "/usr/share/nginx/html"]),
             login_days: 7,
             login_fail_threshold: 10,
             external_tool_timeout_secs: 900,

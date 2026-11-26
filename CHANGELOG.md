@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+* Network: unusual outgoing connections, direct DNS (tunnelling), unknown resolvers,
+  `/etc/hosts` redirects, ARP duplicates, default routes, promiscuous interfaces.
+* New **Kernel and modules** check: hidden/rootkit/out-of-tree modules, dangerous sysctls,
+  modprobe commands.
+* New **Web files and containers** check: web shells, container socket/API, privileged containers.
+* New **Logs and clock** check: silenced/empty logs, login records, journal verification,
+  clock and time jumps.
+* Persistence: udev rules, `at` job contents, added certificate authorities, private key rights.
+* Accounts: the baseline records accounts and powerful groups (new accounts, UID/shell/group/
+  password changes); account creation and group additions are read from the logs.
+* Quoted commands (`sh -c 'curl … | sh'`) are recognised.
+
 ## 0.3.4
 * New check **Login attempts** (`auth_logs`): reads the journal (or `auth.log`) for SSH password
   guessing, unknown user names, a login that succeeded after many failures (Critical), root

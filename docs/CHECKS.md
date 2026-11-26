@@ -22,6 +22,45 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-KTHREAD-NAME` | Low | A kernel thread with an unknown name |
 | `NET-ARGV0-MASK` | High/Medium | `argv[0]` does not match the real binary in `/proc/<pid>/exe` |
 
+| `NET-OUTBOUND-UNUSUAL` | Medium/Low | An outgoing internet connection on a port that is not in `common_remote_ports` |
+| `NET-DNS-DIRECT` | Medium | A program talks DNS to a server that is not the system resolver (possible tunnelling) |
+| `NET-RESOLVER` | High/Medium | `resolv.conf` writable or linked oddly, or an unknown public DNS server (`trusted_resolvers`) |
+| `NET-HOSTS-OVERRIDE` | High | `/etc/hosts` redirects Debian, GitHub or security sites |
+| `NET-ARP-DUPLICATE` | High/Low | Several addresses with one hardware address (High when it includes the gateway) |
+| `NET-ROUTE-DEFAULT` | Medium | Two default gateways with the same priority |
+| `NET-PROMISC` | Medium | A network card in promiscuous (sniffing) mode |
+
+## Kernel and modules (`kernel`)
+
+| Rule | Usual level | Meaning |
+|------|-------------|---------|
+| `KERN-MODULE-HIDDEN` | High | A module in `/sys/module` that `/proc/modules` (lsmod) hides |
+| `KERN-ROOTKIT-NAME` | Critical | A known rootkit module name |
+| `KERN-MODULE-UNTRUSTED` | Medium | Out-of-tree, unsigned or forced modules not in `allowed_out_of_tree_modules` |
+| `KERN-SYSCTL` | Critical–Low | Dangerous settings: `kernel.modprobe`, `core_pattern`, `hotplug`, ASLR off, link protection off … |
+| `KERN-MODPROBE-CMD` | Critical/High | A suspicious `install`/`remove` command in `modprobe.d` |
+
+## Web files and containers (`services`)
+
+| Rule | Usual level | Meaning |
+|------|-------------|---------|
+| `SVC-WEBSHELL` | Critical/High | A script in a web folder (`web_roots`) that runs what a visitor sends |
+| `SVC-CONTAINER-SOCKET` | Critical | The Docker/Podman/containerd socket is writable by everyone |
+| `SVC-DOCKER-API` | High | The Docker API listens unencrypted on port 2375 |
+| `SVC-CONTAINER-PRIVILEGED` | High | Processes in a privileged container |
+| `SVC-CONTAINER-SOCKET-MOUNT` | High | The container engine socket is mounted into a container |
+
+## Logs and clock (`integrity`)
+
+| Rule | Usual level | Meaning |
+|------|-------------|---------|
+| `INT-LOG-DEVNULL` | High/Medium | A log or shell history linked to `/dev/null` |
+| `INT-LOG-EMPTY` | Medium | A log empty for days although older logs have content |
+| `INT-WTMP` | Medium/Low | Damaged or blanked login records |
+| `INT-TIME-BACKWARDS` | Medium | Log time jumps back more than an hour |
+| `INT-JOURNAL-CORRUPT` / `-VOLATILE` | Medium/Low | Journal fails verification (root) / not kept across reboots |
+| `INT-CLOCK` | Medium/Low | Automatic time setting off or clock not synchronised |
+
 ## Processes and run paths (`proc_audit`)
 
 | Rule | Usual level | Meaning |
@@ -61,6 +100,10 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PERS-PAM-PERMIT` | Critical | `pam_permit.so` as `sufficient` in auth/account |
 | `PERS-PAM-EXEC` / `-PATH` / `-UNKNOWN` / `-PERMS` | Critical–Medium | Odd PAM modules and permissions |
 | `PERS-SHELLRC` / `PERS-AUTOSTART` | High–Low | Suspicious shell start files and desktop autostart |
+| `PERS-UDEV` | Critical–Medium | A udev rule runs a suspicious command or a program outside the system folders |
+| `PERS-AT-CMD` | Critical/High | A queued `at` job with a suspicious command |
+| `PERS-CA-ADDED` | Low | A locally added certificate authority |
+| `PERS-KEY-PERMS` | High | A private SSH host or TLS key readable by others |
 | `PERS-UID0` | Critical | A second account with UID 0 |
 | `PERS-SYSACCT-SHELL` / `PERS-EMPTY-PASSWORD` / `PERS-SUDO-NOPASSWD` | High–Low | Account and sudo settings |
 
@@ -90,6 +133,8 @@ when the journal is not available (for example on a mounted disk). "Many" means 
 | `AUTH-SUDO-DENIED` | Medium | A user who may not use sudo (for that command) tried to |
 | `AUTH-SU-FAILED` | Medium/Low | Wrong password with `su` |
 | `AUTH-LOCAL-FAILED` | Medium/Low | Wrong password at the console, desktop login, screen lock or password dialog |
+| `AUTH-NEW-USER` | Low | An account was created (from the logs) |
+| `AUTH-GROUP-ADD` | Medium | A user was added to a powerful group (sudo, docker …) |
 
 ## Baseline comparison (`baseline`)
 
@@ -99,6 +144,7 @@ when the journal is not available (for example on a mounted disk). "Many" means 
 | `BASE-SUID-CHANGED` | Critical/Medium | A SUID/SGID file changed. Not reported when verified as an apt upgrade; Medium if it matches its package but apt did not touch it; Critical if it differs or no package owns it |
 | `BASE-SUID-PERMS` / `-REMOVED` | High/Low | Changed permissions / file gone |
 | `BASE-LISTEN-NEW` | High/Medium | A new listening port (random ports of known programs are ignored) |
+| `BASE-ACCOUNT-NEW` / `-UID` / `-SHELL` / `-GROUP` / `-PASSWORD` / `-REMOVED` | Critical–Low | New accounts, changed user id or shell, new powerful group, a locked system account got a password |
 | `BASE-PERSIST-NEW` / `-CHANGED` / `-REMOVED` | High–Low | A persistence file appeared / changed / disappeared |
 
 ### How an apt upgrade is verified

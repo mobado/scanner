@@ -12,10 +12,13 @@ export buttons).
 
 | Module | Looks for |
 |--------|-----------|
-| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), hidden processes, disguised process names |
+| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), unusual outgoing connections, direct DNS, resolvers and `/etc/hosts`, ARP/routing anomalies, sniffing, hidden processes, disguised process names |
+| `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands |
+| `services` | Web shells in web folders, container socket and Docker API exposure, privileged containers |
+| `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps |
 | `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD` |
 | `fs_perms` | SUID/SGID files on local file systems, dangerous permissions |
-| `persistence` | systemd units and timers, cron, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys and `sshd_config`, PAM, shell files, extra UID 0 accounts |
+| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers |
 | `updates` | Pending security updates, other updates, reboot needed, old package lists |
 | `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, wrong sudo/su/desktop passwords |
 | external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed) |
@@ -79,7 +82,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.3.4-1_amd64.deb
+sudo apt install ./scanner_0.4.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -190,7 +193,8 @@ Important fields: `allowed_listen_ports` (`"tcp/22"` or a range `"udp/1714-1764"
 `allowed_listen_processes` (trusted programs under `/usr`), `allowed_suid` (supports `*`),
 `allowed_systemd_units`, `allowed_cron_files`, `allowed_ssh_key_comments`,
 `allowed_ld_preload`, `allowed_argv0_mismatch`, `fs_exclude_paths`,
-`login_days` and `login_fail_threshold` (login check),
+`login_days` and `login_fail_threshold` (login check), `common_remote_ports`,
+`trusted_resolvers`, `allowed_out_of_tree_modules`, `known_rootkit_modules`, `web_roots`,
 `ignore_rules` (rule ids), `ignore_findings` (single findings hidden in the window)
 and `ignore_evidence_containing`.
 

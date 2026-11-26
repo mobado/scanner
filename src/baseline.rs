@@ -6,6 +6,7 @@ use crate::error::ScanError;
 use crate::finding::{Finding, Severity};
 use crate::modules::common::shq;
 use crate::modules::fs_perms::SuidEntry;
+use crate::modules::persistence::extra::{is_login_shell, AccountEntry};
 use crate::modules::Inventory;
 use crate::report::Report;
 use serde::{Deserialize, Serialize};
@@ -35,7 +36,22 @@ pub struct Baseline {
     pub suid: Vec<SuidEntry>,
     pub listeners: Vec<ListenerKey>,
     pub persistence_files: BTreeMap<String, String>,
+    #[serde(default)]
+    pub accounts: Vec<AccountEntry>,
 }
+
+/// Kinds of files that later versions started to track: in a baseline made by an older
+/// version they are new to the baseline, not suspicious.
+pub const NEWLY_TRACKED: [&str; 8] = [
+    "/etc/ld.so.conf",
+    "/etc/udev/",
+    "/etc/modprobe.d/",
+    "/etc/modules",
+    "/usr/local/share/ca-certificates/",
+    "/etc/ssl/private/",
+    "/etc/ssh/ssh_host_",
+    "/var/spool/cron/atjobs/",
+];
 
 pub fn listener_keys(inv: &Inventory) -> Vec<ListenerKey> {
     let set: BTreeSet<ListenerKey> = inv
@@ -64,6 +80,7 @@ impl Baseline {
             suid: r.inventory.suid.clone(),
             listeners: listener_keys(&r.inventory),
             persistence_files: r.inventory.persistence_files.clone(),
+            accounts: r.inventory.accounts.clone(),
         }
     }
 
@@ -205,15 +222,73 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
     } else {
         notes.push("Persistence files were not compared with the baseline (persistence did not run in both scans)".into());
     }
+    if both("persistence") && !base.accounts.is_empty() && !inv.accounts.is_empty() {
+        compare_accounts(&base.accounts, &inv.accounts, &src, &mut out);
+    }
+
     // A baseline made by an older version did not track every kind of file yet (the library
     // path files /etc/ld.so.conf* were added later). Those are "newly tracked", not suspicious.
     if base.scanner_version != env!("CARGO_PKG_VERSION") {
         for f in out.iter_mut() {
-            if f.rule == "BASE-PERSIST-NEW" && f.evidence.starts_with("/etc/ld.so.conf") {
+            if f.rule == "BASE-PERSIST-NEW" && NEWLY_TRACKED.iter().any(|p| f.evidence.starts_with(p)) {
                 f.severity = Severity::Low;
                 f.description = "This kind of file was not tracked yet when the baseline was made by an older scanner version, so it is new to the baseline, not necessarily new on the machine. It is added to the baseline automatically after a clean scan as root.".into();
             }
         }
     }
     (out, notes)
+}
+
+fn describe_account(a: &AccountEntry) -> String {
+    format!(
+        "{}: UID {} shell {} password {} groups [{}]",
+        a.name,
+        a.uid,
+        a.shell,
+        match a.password {
+            Some(true) => "yes",
+            Some(false) => "locked",
+            None => "?",
+        },
+        a.groups.join(", ")
+    )
+}
+
+/// New, removed and changed accounts since the baseline.
+fn compare_accounts(old: &[AccountEntry], new: &[AccountEntry], src: &str, out: &mut Vec<Finding>) {
+    let finding = |sev, rule: &str, title: String, evidence: String, text: &str, name: &str| {
+        Finding::new(sev, MODULE, rule, title)
+            .evidence(format!("{evidence}\n(compared with {src})"))
+            .description(text)
+            .verify(format!("getent passwd {}; id {}", shq(name), shq(name)))
+            .verify("grep -E 'useradd|usermod|groupadd|gpasswd|chsh|passwd' /var/log/auth.log; journalctl -t useradd -t usermod -t groupadd")
+    };
+    for a in new {
+        let Some(o) = old.iter().find(|o| o.name == a.name) else {
+            let system = a.uid < 1000 && a.uid != 0 && !is_login_shell(&a.shell) && a.groups.is_empty() && a.password != Some(true);
+            let sev = if a.uid == 0 { Severity::Critical } else if system { Severity::Low } else { Severity::High };
+            out.push(finding(sev, "BASE-ACCOUNT-NEW", format!("New account since the baseline: {}", a.name), describe_account(a), if system { "A new system account without login – normally created by installing a package." } else { "An account that can log in or has special rights was added. Make sure you created it." }, &a.name));
+            continue;
+        };
+        if o.uid != a.uid {
+            let sev = if a.uid == 0 { Severity::Critical } else { Severity::High };
+            out.push(finding(sev, "BASE-ACCOUNT-UID", format!("User id changed: {}", a.name), format!("UID {} → {}", o.uid, a.uid), "Changing an account's user id (especially to 0, root) is how hidden root accounts are made.", &a.name));
+        }
+        if o.shell != a.shell {
+            let opened = !is_login_shell(&o.shell) && is_login_shell(&a.shell);
+            let sev = if opened && a.uid < 1000 { Severity::Critical } else if opened { Severity::High } else { Severity::Low };
+            out.push(finding(sev, "BASE-ACCOUNT-SHELL", format!("Login shell changed: {}", a.name), format!("{} → {}", o.shell, a.shell), if opened { "An account that could not log in now has a shell – a common way to turn a service account into a backdoor." } else { "The shell of the account changed." }, &a.name));
+        }
+        let gained: Vec<&String> = a.groups.iter().filter(|g| !o.groups.contains(g)).collect();
+        if !gained.is_empty() {
+            let list: Vec<&str> = gained.iter().map(|s| s.as_str()).collect();
+            out.push(finding(Severity::High, "BASE-ACCOUNT-GROUP", format!("Account gained powerful group(s): {}", a.name), format!("{} joined {}", a.name, list.join(", ")), "Membership in these groups gives root or near-root power.", &a.name));
+        }
+        if a.uid != 0 && a.uid < 1000 && o.password == Some(false) && a.password == Some(true) {
+            out.push(finding(Severity::High, "BASE-ACCOUNT-PASSWORD", format!("System account got a password: {}", a.name), describe_account(a), "A service account that was locked can now log in with a password.", &a.name));
+        }
+    }
+    for o in old.iter().filter(|o| !new.iter().any(|a| a.name == o.name)) {
+        out.push(finding(Severity::Low, "BASE-ACCOUNT-REMOVED", format!("Account removed since the baseline: {}", o.name), describe_account(o), "The account no longer exists.", &o.name));
+    }
 }

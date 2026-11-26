@@ -89,7 +89,8 @@ pub fn analyze_command(cmd: &str, cfg: &Config) -> Vec<CmdIssue> {
     if cmd.contains("/dev/tcp/") || cmd.contains("/dev/udp/") {
         add(Severity::Critical, "uses /dev/tcp or /dev/udp (bash networking, typical reverse shell)");
     }
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    // quotes around words must not hide them: sh -c 'curl ... | sh'
+    let tokens: Vec<&str> = cmd.split_whitespace().map(|t| t.trim_matches(|c| c == '\'' || c == '"')).collect();
     let has_tool = |names: &[&str]| {
         tokens
             .iter()

@@ -3,10 +3,14 @@
 pub mod common;
 pub mod auth_logs;
 pub mod fs_perms;
+pub mod integrity;
+pub mod kernel;
 pub mod net_group;
 pub mod net_proc;
+pub mod netwatch;
 pub mod persistence;
 pub mod proc_audit;
+pub mod services;
 pub mod updates;
 
 use crate::config::Config;
@@ -36,6 +40,9 @@ pub struct Inventory {
     /// Path → SHA-256 for files that control persistence (cron, systemd, ssh, pam ...).
     pub persistence_files: BTreeMap<String, String>,
     pub units: Vec<persistence::UnitSummary>,
+    /// Accounts with their privileged groups (compared with the baseline).
+    #[serde(default)]
+    pub accounts: Vec<persistence::extra::AccountEntry>,
     pub process_count: usize,
     pub fs_files_scanned: u64,
 }

@@ -5,7 +5,7 @@ use crate::baseline::{self, Baseline};
 use crate::config::Config;
 use crate::external_tools::{self, Tool};
 use crate::finding::{Finding, Severity};
-use crate::modules::{auth_logs, fs_perms, net_proc, persistence, proc_audit, updates, Collector, ScanCtx};
+use crate::modules::{auth_logs, integrity, kernel, services, fs_perms, net_proc, persistence, proc_audit, updates, Collector, ScanCtx};
 use crate::procinfo;
 use crate::report::Report;
 use crate::sys::{self, SysRoot};
@@ -22,10 +22,23 @@ pub enum ModuleId {
     Persistence,
     Updates,
     AuthLogs,
+    Kernel,
+    Services,
+    Integrity,
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 6] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence, ModuleId::Updates, ModuleId::AuthLogs];
+    pub const ALL: [ModuleId; 9] = [
+        ModuleId::NetProc,
+        ModuleId::ProcAudit,
+        ModuleId::FsPerms,
+        ModuleId::Persistence,
+        ModuleId::Kernel,
+        ModuleId::Services,
+        ModuleId::AuthLogs,
+        ModuleId::Integrity,
+        ModuleId::Updates,
+    ];
     /// The modules a baseline needs (the updates check says nothing about changes).
     pub const CORE: [ModuleId; 4] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence];
 
@@ -37,6 +50,9 @@ impl ModuleId {
             ModuleId::Persistence => "persistence",
             ModuleId::Updates => "updates",
             ModuleId::AuthLogs => "auth_logs",
+            ModuleId::Kernel => "kernel",
+            ModuleId::Services => "services",
+            ModuleId::Integrity => "integrity",
         }
     }
 
@@ -48,6 +64,9 @@ impl ModuleId {
             ModuleId::Persistence => "Persistence (systemd, cron, SSH, PAM)",
             ModuleId::Updates => "Pending updates",
             ModuleId::AuthLogs => "Login attempts",
+            ModuleId::Kernel => "Kernel and modules",
+            ModuleId::Services => "Web files and containers",
+            ModuleId::Integrity => "Logs and clock",
         }
     }
 
@@ -59,6 +78,9 @@ impl ModuleId {
             ModuleId::Persistence => "Services, scheduled jobs, keys and login",
             ModuleId::Updates => "Security updates and reboot needed (apt simulation, installs nothing)",
             ModuleId::AuthLogs => "Wrong passwords, unknown users, break-ins in the system logs",
+            ModuleId::Kernel => "Hidden or unknown modules, dangerous kernel settings",
+            ModuleId::Services => "Web shells, privileged containers, Docker access",
+            ModuleId::Integrity => "Cleared or damaged logs, journal check, clock",
         }
     }
 }
@@ -70,7 +92,7 @@ impl std::str::FromStr for ModuleId {
             .iter()
             .find(|m| m.id().eq_ignore_ascii_case(s.trim()))
             .copied()
-            .ok_or_else(|| format!("unknown module '{s}' (net_proc, proc_audit, fs_perms, persistence, updates, auth_logs)"))
+            .ok_or_else(|| format!("unknown module '{s}' (net_proc, proc_audit, fs_perms, persistence, updates, auth_logs, kernel, services, integrity)"))
     }
 }
 
@@ -140,7 +162,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         col.note("The scanner is not running as root: other users' processes, /var/spool/cron, /root and some /proc files cannot be read. Run with sudo for a complete scan.");
     }
 
-    let need_procs = opts.modules.contains(&ModuleId::NetProc) || opts.modules.contains(&ModuleId::ProcAudit);
+    let need_procs = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::Services].iter().any(|m| opts.modules.contains(m));
     let processes = if need_procs {
         progress("Reading processes in /proc …");
         procinfo::snapshot(sys)
@@ -162,6 +184,9 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
             ModuleId::Persistence => persistence::run(&ctx, &mut col),
             ModuleId::Updates => updates::run(&ctx, &mut col),
             ModuleId::AuthLogs => auth_logs::run(&ctx, &mut col),
+            ModuleId::Kernel => kernel::run(&ctx, &mut col),
+            ModuleId::Services => services::run(&ctx, &mut col),
+            ModuleId::Integrity => integrity::run(&ctx, &mut col),
         }
         modules_run.push(m.id().to_string());
     }

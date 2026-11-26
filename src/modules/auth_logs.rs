@@ -24,6 +24,10 @@ pub enum Kind {
     SuFailed { target: String },
     /// Login on the machine itself: console, desktop login or screen unlock, polkit ...
     LocalFailed { service: String },
+    /// A user or group was created (`user` holds the name).
+    Created { what: &'static str },
+    /// A user was added to a group.
+    GroupAdded { group: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +126,33 @@ pub fn parse_line(line: &str) -> Option<Event> {
             return event(Kind::SuFailed { target: target.to_string() }, user, String::new());
         }
         return None;
+    }
+    if program == "useradd" {
+        if let Some(rest) = message.strip_prefix("new user: name=") {
+            let name = rest.split(',').next().unwrap_or("").to_string();
+            return event(Kind::Created { what: "user" }, name, String::new());
+        }
+    }
+    if program == "groupadd" {
+        if let Some(rest) = message.strip_prefix("new group: name=") {
+            let name = rest.split(',').next().unwrap_or("").to_string();
+            return event(Kind::Created { what: "group" }, name, String::new());
+        }
+    }
+    // usermod: "add 'bob' to group 'sudo'"; gpasswd: "user bob added by root to group sudo"
+    if program == "usermod" {
+        if let Some(rest) = message.strip_prefix("add '") {
+            let (user, rest) = rest.split_once("' to group '")?;
+            let group = rest.trim_end_matches('\'').to_string();
+            return event(Kind::GroupAdded { group }, user.to_string(), String::new());
+        }
+    }
+    if program == "gpasswd" {
+        if let Some(rest) = message.strip_prefix("user ") {
+            let (user, rest) = rest.split_once(" added by ")?;
+            let group = rest.split(" to group ").nth(1)?.to_string();
+            return event(Kind::GroupAdded { group }, user.to_string(), String::new());
+        }
     }
     // Other logins (console, desktop, screen unlock, polkit) report through PAM.
     if let Some(rest) = message.strip_prefix("pam_unix(") {
@@ -294,6 +325,27 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
                 .description("Attempts with made-up user names (admin, test, oracle …) are typical of automated scanners trying to break in.")
                 .verify("sudo journalctl -t sshd -t sshd-session --since=-30days | grep 'Invalid user'"),
         );
+    }
+
+    // New accounts and group memberships.
+    for e in events {
+        match &e.kind {
+            Kind::Created { what: "user" } => col.push(
+                Finding::new(Severity::Low, MODULE, "AUTH-NEW-USER", format!("A user account was created: {}", e.user))
+                    .evidence(clip(&e.line, 300))
+                    .description("Packages create system accounts when they are installed. If you did not add this account, find out who did.")
+                    .verify(format!("getent passwd {}", shq(&e.user)))
+                    .verify("sudo journalctl -t useradd --since=-30days"),
+            ),
+            Kind::GroupAdded { group } if crate::modules::persistence::extra::PRIVILEGED_GROUPS.contains(&group.as_str()) => col.push(
+                Finding::new(Severity::Medium, MODULE, "AUTH-GROUP-ADD", format!("{} was added to the powerful group {group}", e.user))
+                    .evidence(clip(&e.line, 300))
+                    .description("Members of this group have root or near-root power. Make sure this was intended.")
+                    .verify(format!("id {}", shq(&e.user)))
+                    .verify("sudo journalctl -t usermod -t gpasswd --since=-30days"),
+            ),
+            _ => {}
+        }
     }
 
     // Local events, grouped per rule and user.
