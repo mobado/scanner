@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+* The whitelist follows new versions: new default entries apply when the file is loaded and are
+  written into it by `scanner --update-config` (run by the `.deb` on every install and upgrade).
+  Own entries and comments are kept, a `.bak` copy is saved, and removed entries stay removed.
+  `add_new_defaults = false` switches this off.
+
 ## 0.3.2
 * Changed files are verified against apt: if the file matches its package and apt installed or
   upgraded that package after the baseline, it is no longer flagged (listed in the notes and taken

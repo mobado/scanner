@@ -83,7 +83,8 @@ sudo apt install ./scanner_0.3.2-1_amd64.deb
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
 `man scanner` explains the options.
-The package installs the whitelist in `/etc/scanner/whitelist.toml` (kept on upgrades) and
+The package creates the whitelist `/etc/scanner/whitelist.toml` (and adds new default entries
+to it on upgrades, keeping your changes) and
 the nightly timer. On first installation the timer is switched on and runs once right
 away: that first scan saves the **baseline of the machine by itself** (`/var/lib/scanner/baseline.json`),
 and every later scan compares against it. You do not have to do anything.
@@ -177,6 +178,13 @@ scanner --print-config | sudo tee /etc/scanner/whitelist.toml
 
 `/etc/scanner/whitelist.toml` is read automatically if it exists, otherwise
 `~/.config/scanner/whitelist.toml` (or pass `--config`).
+
+**The whitelist follows new versions.** New default entries (a newly recognised harmless
+program, a new PAM module …) apply as soon as the newer program loads your file, and
+`scanner --update-config [FILE]` writes them into it (the `.deb` does this on every install
+and upgrade). Your own entries, settings and comments are kept, the previous file is saved as
+`whitelist.toml.bak`, and entries you remove stay removed (remembered in
+`whitelist.defaults.json`). Set `add_new_defaults = false` to use exactly your own lists.
 Important fields: `allowed_listen_ports` (`"tcp/22"` or a range `"udp/1714-1764"`),
 `allowed_listen_processes` (trusted programs under `/usr`), `allowed_suid` (supports `*`),
 `allowed_systemd_units`, `allowed_cron_files`, `allowed_ssh_key_comments`,

@@ -11,7 +11,7 @@
 #   /usr/bin/scanner                                   the program (window + CLI)
 #   /usr/share/applications/scanner.desktop            menu entry
 #   /usr/share/icons/hicolor/scalable/apps/scanner.svg icon
-#   /etc/scanner/whitelist.toml                        whitelist (kept on upgrade)
+#   /etc/scanner/whitelist.toml                        whitelist (made/updated at install)
 #   /usr/lib/systemd/system/scanner-diff.{service,timer} nightly check (enabled on install; saves the baseline itself)
 #   /usr/share/man/man1/scanner.1.gz                   manual page (man scanner)
 #   /usr/share/doc/scanner/                            README, copyright, changelog, VM test script
@@ -34,7 +34,9 @@ echo "» Putting the files in place …"
 install -D -m 0755 target/release/scanner                     "$PKG/usr/bin/scanner"
 install -D -m 0644 packaging/deb/scanner.desktop              "$PKG/usr/share/applications/scanner.desktop"
 install -D -m 0644 packaging/deb/scanner.svg                  "$PKG/usr/share/icons/hicolor/scalable/apps/scanner.svg"
-install -D -m 0644 packaging/whitelist.toml                   "$PKG/etc/scanner/whitelist.toml"
+# The whitelist in /etc is created and kept up to date by postinst (scanner --update-config),
+# so it is not shipped as a package file; an example goes with the documentation.
+install -D -m 0644 packaging/whitelist.toml                   "$PKG/usr/share/doc/scanner/examples/whitelist.toml"
 install -d -m 0755 "$PKG/usr/lib/systemd/system"
 sed 's|/usr/local/sbin/scanner|/usr/bin/scanner|' packaging/scanner-diff.service > "$PKG/usr/lib/systemd/system/scanner-diff.service"
 chmod 0644 "$PKG/usr/lib/systemd/system/scanner-diff.service"
@@ -89,7 +91,6 @@ Description: read-only intrusion and backdoor scanner for Debian 13
  Comes with a window and a command line (JSON and text reports, baselines) and
  a nightly systemd timer that compares the system against a saved baseline.
 EOF
-echo "/etc/scanner/whitelist.toml" > "$PKG/DEBIAN/conffiles"
 install -m 0755 packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm "$PKG/DEBIAN/"
 
 mkdir -p dist

@@ -632,6 +632,10 @@ impl ScannerApp {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         std::fs::write(&path, text).map_err(|e| e.to_string())?;
+        scanner::config_update::write_record(&path).map_err(|e| e.to_string())?;
+        if !path.starts_with("/etc") {
+            give_to_sudo_user(&scanner::config_update::record_path(&path));
+        }
         // A personal whitelist should stay owned by the person, also when saved through sudo.
         if !path.starts_with("/etc") {
             give_to_sudo_user(&path);

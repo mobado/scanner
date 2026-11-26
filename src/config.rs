@@ -10,6 +10,9 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
+    /// Add default entries that newer versions bring (see `config_update`). Set to false to
+    /// use exactly the lists in this file.
+    pub add_new_defaults: bool,
     /// Expected listening ports, like "tcp/22", "udp/68" or a range "udp/1714-1764".
     pub allowed_listen_ports: Vec<String>,
     /// Programs (exe name) whose listening ports are trusted, as long as the program
@@ -63,6 +66,7 @@ fn s(list: &[&str]) -> Vec<String> {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            add_new_defaults: true,
             allowed_listen_ports: s(&[
                 "tcp/22", "udp/68", "udp/546", "udp/123", "udp/5353", "tcp/631", "udp/631",
                 "udp/323", "tcp/25", "tcp/53", "udp/53", "tcp/5355", "udp/5355",
@@ -235,12 +239,15 @@ impl Config {
             .extension()
             .map(|e| e.eq_ignore_ascii_case("json"))
             .unwrap_or(false);
-        if is_json {
-            serde_json::from_str(&text)
-                .map_err(|e| ScanError::Config(format!("{}: {e}", path.display())))
+        let parsed: Result<Config, String> = if is_json {
+            serde_json::from_str(&text).map_err(|e| e.to_string())
         } else {
-            toml::from_str(&text).map_err(|e| ScanError::Config(format!("{}: {e}", path.display())))
-        }
+            toml::from_str(&text).map_err(|e| e.to_string())
+        };
+        let mut cfg = parsed.map_err(|e| ScanError::Config(format!("{}: {e}", path.display())))?;
+        // Defaults that came with a newer version apply even before the file is rewritten.
+        crate::config_update::merge(&mut cfg, &crate::config_update::read_record(path));
+        Ok(cfg)
     }
 
     pub fn to_toml(&self) -> Result<String, ScanError> {

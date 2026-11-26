@@ -91,6 +91,11 @@ struct Cli {
     #[arg(long)]
     print_config: bool,
 
+    /// Create or update the whitelist with this version's new default entries and exit
+    /// (default file: /etc/scanner/whitelist.toml; your own entries and comments are kept)
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "/etc/scanner/whitelist.toml")]
+    update_config: Option<PathBuf>,
+
     /// Run the safe self-test in a temporary sandbox and exit
     #[arg(long)]
     self_test: bool,
@@ -172,6 +177,21 @@ fn load_config(path: &Option<PathBuf>) -> Result<(Config, Option<PathBuf>)> {
 fn real_main(cli: Cli) -> Result<u8> {
     if cli.print_config {
         print!("{}", Config::default().to_toml()?);
+        return Ok(0);
+    }
+    if let Some(path) = &cli.update_config {
+        use scanner::config_update::{update_file, Update};
+        match update_file(path).with_context(|| format!("could not update {}", path.display()))? {
+            Update::Created => println!("Whitelist created: {}", path.display()),
+            Update::Added { entries, backup } => {
+                println!("Whitelist updated: {} new default entries added to {} (old file saved as {})", entries.len(), path.display(), backup.display());
+                for e in entries {
+                    println!("  + {e}");
+                }
+            }
+            Update::UpToDate => println!("Whitelist is up to date: {}", path.display()),
+            Update::SwitchedOff => println!("Whitelist left unchanged (add_new_defaults = false): {}", path.display()),
+        }
         return Ok(0);
     }
     if cli.list_tools {

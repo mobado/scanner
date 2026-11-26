@@ -699,6 +699,63 @@ fn lynis_suggestions_are_listed_and_many_debsums_docs_are_grouped() {
 }
 
 #[test]
+fn an_old_whitelist_gets_new_defaults_but_keeps_the_persons_changes() {
+    use scanner::config_update::{update_file, Update};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("whitelist.toml");
+    // as written by an older version: no browsers, an own entry and a comment
+    fs::write(
+        &path,
+        "# my own comment\nallowed_listen_processes = [\n    \"avahi-daemon\",\n    \"my-own-service\",\n]\nallowed_listen_ports = [\"tcp/22\", \"tcp/8123\"]\nreport_loopback_listeners = true\n",
+    )
+    .expect("write");
+
+    // loading already applies the new defaults, without touching the file
+    let loaded = Config::load(&path).expect("load");
+    assert!(loaded.allowed_listen_processes.iter().any(|p| p == "firefox-esr"));
+    assert!(fs::read_to_string(&path).expect("read").starts_with("# my own comment"));
+    assert!(!fs::read_to_string(&path).expect("read").contains("firefox-esr"));
+
+    // updating writes them, keeps comment, own entries and settings, and saves a backup
+    let Update::Added { entries, backup } = update_file(&path).expect("update") else { panic!("expected additions") };
+    assert!(entries.iter().any(|e| e == "allowed_listen_processes: firefox-esr"), "{entries:?}");
+    assert!(backup.exists());
+    let text = fs::read_to_string(&path).expect("read");
+    assert!(text.contains("# my own comment") && text.contains("my-own-service") && text.contains("tcp/8123"), "{text}");
+    let cfg = Config::load(&path).expect("load");
+    assert!(cfg.report_loopback_listeners, "own settings kept");
+    assert!(cfg.allowed_listen_processes.iter().any(|p| p == "firefox-esr"));
+    assert!(cfg.allowed_pam_modules.iter().any(|p| p == "pam_wtmpdb"), "missing lists are added");
+    assert_eq!(update_file(&path).expect("again"), Update::UpToDate);
+
+    // an entry the person removes stays removed
+    let without = fs::read_to_string(&path).expect("read").replace("\"firefox-esr\",", "");
+    fs::write(&path, without).expect("write");
+    assert_eq!(update_file(&path).expect("update"), Update::UpToDate);
+    assert!(!Config::load(&path).expect("load").allowed_listen_processes.iter().any(|p| p == "firefox-esr"));
+}
+
+#[test]
+fn whitelist_updates_can_be_switched_off_and_a_missing_file_is_created() {
+    use scanner::config_update::{update_file, Update};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let off = dir.path().join("off.toml");
+    fs::write(&off, "add_new_defaults = false\nallowed_listen_ports = [\"tcp/22\"]\n").expect("write");
+    assert_eq!(update_file(&off).expect("update"), Update::SwitchedOff);
+    assert_eq!(Config::load(&off).expect("load").allowed_listen_ports, vec!["tcp/22".to_string()]);
+
+    let new = dir.path().join("etc/scanner/whitelist.toml");
+    assert_eq!(update_file(&new).expect("create"), Update::Created);
+    assert_eq!(Config::load(&new).expect("load"), Config::default());
+    assert_eq!(update_file(&new).expect("again"), Update::UpToDate);
+
+    let broken = dir.path().join("broken.toml");
+    fs::write(&broken, "allowed_listen_ports = oops").expect("write");
+    assert!(update_file(&broken).is_err());
+    assert_eq!(fs::read_to_string(&broken).expect("read"), "allowed_listen_ports = oops", "a broken file is never rewritten");
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});

@@ -63,6 +63,10 @@ Scan another root file system, for example a mounted disk.
 .B \-\-no\-sudo
 Do not ask for the sudo password.
 .TP
+.BI \-\-update\-config " [FILE]"
+Create the whitelist, or add this version's new default entries to it (default
+/etc/scanner/whitelist.toml). Own entries and comments are kept; removed entries stay removed.
+.TP
 .B \-\-self\-test
 Run the safe self-test in a temporary sandbox.
 .TP

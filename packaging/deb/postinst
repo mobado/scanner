@@ -4,6 +4,10 @@ set -e
 case "$1" in
     configure)
         install -d -m 0700 /var/lib/scanner /var/log/scanner
+        # Create the whitelist, or add this version's new default entries to it. Your own
+        # entries and comments are kept (the previous file is saved as whitelist.toml.bak).
+        /usr/bin/scanner --update-config /etc/scanner/whitelist.toml \
+            || echo "scanner: the whitelist could not be updated; it was left as it is" >&2
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload >/dev/null 2>&1 || true
             # First installation only: switch the nightly check on and let it run once now.

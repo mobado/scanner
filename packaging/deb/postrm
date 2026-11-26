@@ -10,6 +10,8 @@ case "$1" in
     purge)
         # Baselines and reports are only removed on purge (apt purge scanner).
         rm -rf /var/lib/scanner /var/log/scanner
+        rm -f /etc/scanner/whitelist.toml /etc/scanner/whitelist.toml.bak /etc/scanner/whitelist.defaults.json
+        rmdir /etc/scanner 2>/dev/null || true
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload >/dev/null 2>&1 || true
         fi
