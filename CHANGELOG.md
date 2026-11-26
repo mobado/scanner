@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+* Fixed: the scan seemed to hang at *Logs and clock*. Verifying the whole system journal (which
+  can take minutes) now runs only in the full scan, stops after `journal_verify_secs` (90 s) and
+  says so while it runs. Large log files are only read at the end.
+
 ## 0.4.0
 * Network: unusual outgoing connections, direct DNS (tunnelling), unknown resolvers,
   `/etc/hosts` redirects, ARP duplicates, default routes, promiscuous interfaces.

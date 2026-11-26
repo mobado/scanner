@@ -6,6 +6,8 @@
 add_new_defaults = true
 # Login check: days of the journal to read, and failures that raise a finding to Medium.
 login_days = 7
+# Full scan: time limit in seconds for verifying the system journal (0 = never).
+journal_verify_secs = 90
 login_fail_threshold = 10
 allowed_listen_ports = [
     "tcp/22",

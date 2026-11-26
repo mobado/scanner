@@ -59,6 +59,8 @@ pub struct Config {
     pub known_rootkit_modules: Vec<String>,
     /// Folders searched for web shells.
     pub web_roots: Vec<String>,
+    /// Time limit in seconds for verifying the journal in the full scan (0 = never).
+    pub journal_verify_secs: u64,
     /// How many days of the journal the login check reads.
     pub login_days: u32,
     /// Failed logins from one address (or by one user) that raise a finding to Medium.
@@ -260,6 +262,7 @@ impl Default for Config {
                 "rootkit", "rtkit_hide", "singularity", "puma", "brokepkg",
             ]),
             web_roots: s(&["/var/www", "/srv/www", "/srv/http", "/usr/share/nginx/html"]),
+            journal_verify_secs: 90,
             login_days: 7,
             login_fail_threshold: 10,
             external_tool_timeout_secs: 900,

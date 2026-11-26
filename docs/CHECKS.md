@@ -58,7 +58,7 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `INT-LOG-EMPTY` | Medium | A log empty for days although older logs have content |
 | `INT-WTMP` | Medium/Low | Damaged or blanked login records |
 | `INT-TIME-BACKWARDS` | Medium | Log time jumps back more than an hour |
-| `INT-JOURNAL-CORRUPT` / `-VOLATILE` | Medium/Low | Journal fails verification (root) / not kept across reboots |
+| `INT-JOURNAL-CORRUPT` / `-VOLATILE` | Medium/Low | Journal fails verification (root, full scan only, at most `journal_verify_secs` = 90 s) / not kept across reboots |
 | `INT-CLOCK` | Medium/Low | Automatic time setting off or clock not synchronised |
 
 ## Processes and run paths (`proc_audit`)

@@ -4,6 +4,7 @@
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::modules::common::shq;
+use std::io::{Read, Seek, SeekFrom};
 use std::time::{Duration, SystemTime};
 
 pub const MODULE: &str = "integrity";
@@ -78,14 +79,27 @@ pub fn utmp_damage(data: &[u8]) -> (bool, usize) {
     (torn, zero)
 }
 
+/// The last `max` bytes of a file (rounded to start on a multiple of `align`), and its size.
+/// Logs on a server under attack can be gigabytes, so they are never read whole.
+fn read_tail(ctx: &ScanCtx, path: &str, max: u64, align: u64) -> Option<(Vec<u8>, u64)> {
+    let mut f = std::fs::File::open(ctx.sys.path(path)).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut start = len.saturating_sub(max);
+    start -= start % align.max(1);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut data = Vec::new();
+    f.take(max + align).read_to_end(&mut data).ok()?;
+    Some((data, len))
+}
+
 fn check_wtmp(ctx: &ScanCtx, col: &mut Collector) {
     for path in ["/var/log/wtmp", "/var/log/btmp"] {
-        let Ok(data) = ctx.sys.read_bytes(path) else { continue };
+        let Some((data, len)) = read_tail(ctx, path, 16 * 1024 * 1024, UTMP_RECORD as u64) else { continue };
         let (torn, zero) = utmp_damage(&data);
         if torn || zero > 0 {
             col.push(
                 Finding::new(if torn { Severity::Medium } else { Severity::Low }, MODULE, "INT-WTMP", format!("Damaged login records in {path}"))
-                    .evidence(format!("{path}: {} bytes{}, {zero} empty record(s)", data.len(), if torn { " (not a whole number of records)" } else { "" }))
+                    .evidence(format!("{path}: {len} bytes{}, {zero} empty record(s)", if torn { " (not a whole number of records)" } else { "" }))
                     .description("Login history with holes can mean entries were erased to hide a login; a crash or power cut also does it.")
                     .verify("last -x -f /var/log/wtmp | head -40"),
             );
@@ -112,8 +126,8 @@ pub fn backward_jumps(text: &str) -> Vec<String> {
 
 fn check_time_order(ctx: &ScanCtx, col: &mut Collector) {
     for log in ["/var/log/auth.log", "/var/log/syslog"] {
-        let Ok(text) = ctx.sys.read_string(log) else { continue };
-        let jumps = backward_jumps(&text);
+        let Some((data, _)) = read_tail(ctx, log, 16 * 1024 * 1024, 1) else { continue };
+        let jumps = backward_jumps(&String::from_utf8_lossy(&data));
         if !jumps.is_empty() {
             col.push(
                 Finding::new(Severity::Medium, MODULE, "INT-TIME-BACKWARDS", format!("Time jumps backwards in {log}"))
@@ -140,10 +154,19 @@ fn check_journal(ctx: &ScanCtx, col: &mut Collector) {
         col.note("integrity: the journal is only verified as root");
         return;
     }
+    // Verifying reads every journal file and can take minutes on a large journal, so it only
+    // runs in the full (deep) scan and stops after a time limit.
+    let limit = ctx.cfg.journal_verify_secs;
+    if !ctx.deep_pid_scan || limit == 0 {
+        col.note("integrity: the journal is verified only in the full scan (it can take a minute)");
+        return;
+    }
     let Some(journalctl) = crate::external_tools::find_binary("journalctl") else { return };
-    match crate::external_tools::run_capture(&journalctl, &["--verify", "-q"], 180) {
-        Ok(o) if o.timed_out => col.note("integrity: verifying the journal took too long and was stopped"),
+    match crate::external_tools::run_capture(&journalctl, &["--verify", "-q"], limit) {
         Ok(o) => {
+            if o.timed_out {
+                col.note(format!("integrity: verifying the journal was stopped after {limit} s (journal_verify_secs); run 'sudo journalctl --verify' to check all of it"));
+            }
             let failed: Vec<&str> = o.stderr.lines().chain(o.stdout.lines()).filter(|l| l.starts_with("FAIL")).take(10).collect();
             if !failed.is_empty() {
                 col.push(

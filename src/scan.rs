@@ -176,7 +176,13 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         if !opts.modules.contains(&m) {
             continue;
         }
-        progress(&format!("Running {} – {} …", m.id(), m.label()));
+        // Say so when a step is known to take a while, so the window does not look stuck.
+        let slow = if m == ModuleId::Integrity && opts.deep_pid_scan && privileged && sys.is_live() && cfg.journal_verify_secs > 0 {
+            format!(" (verifying the system journal, at most {} s)", cfg.journal_verify_secs)
+        } else {
+            String::new()
+        };
+        progress(&format!("Running {} – {}{slow} …", m.id(), m.label()));
         match m {
             ModuleId::NetProc => net_proc::run(&ctx, &mut col),
             ModuleId::ProcAudit => proc_audit::run(&ctx, &mut col),
