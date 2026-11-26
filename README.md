@@ -82,6 +82,7 @@ src/
 ├── baseline.rs         baseline in JSON and diff (new SUID/SGID files = Critical)
 ├── autobaseline.rs     the automatic baseline: save, complete, take in verified upgrades
 ├── pkgverify.rs        was a changed file changed by apt? (dpkg checksums + dpkg.log)
+├── second_look.rs      checks other tools' warnings (rkhunter, Lynis, chkrootkit) itself
 ├── report.rs           sorted final report (Critical first), verdict, JSON and readable text
 ├── html.rs             self-contained HTML report
 ├── scan.rs             orchestration (run_scan, run_scan_auto)
@@ -105,7 +106,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.11.0-1_amd64.deb
+sudo apt install ./scanner_0.11.1-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and

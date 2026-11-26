@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.1
+Fewer false alarms:
+* KDE screen lock: the password box closing after a fingerprint or smart card unlock is no
+  longer counted as a failed login.
+* rkhunter "file properties have changed": files that match their package and were updated by
+  apt become one Low finding; files that do not match are High.
+* Lynis "apt-get check failed" is tried again; Low when the package system is fine.
+* Journal files set aside after an unclean shutdown are Low.
+* The same gap in the login records is reported once.
+* AppArmor profiles shipped in complain mode and systemd's own eBPF filter are no longer listed.
+
 ## 0.11.0
 * Password stores: programs other than the browser or wallet that have saved passwords,
   cookies or wallet files open.

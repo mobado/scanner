@@ -7,7 +7,7 @@
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{clip, recent_lines, shq};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const MODULE: &str = "auth_logs";
 
@@ -234,12 +234,43 @@ fn read_lines(ctx: &ScanCtx, col: &mut Collector) -> Vec<String> {
     recent.into_iter().map(|l| l.to_string()).collect()
 }
 
+/// The KDE lock screen asks for a password and listens to the fingerprint reader (or smart
+/// card) at once. When the finger unlocks, the waiting password check is cancelled and logs
+/// "authentication failure". Returns the numbers of those lines: a failure of service "kde"
+/// within 3 seconds of a "kde-fingerprint"/"kde-smartcard" success in the same process.
+pub fn closed_password_boxes(lines: &[String]) -> HashSet<usize> {
+    // (the process from "kscreenlocker_greet[91820]:", the time in seconds)
+    let stamp = |line: &str| {
+        let process = line.split_whitespace().find(|w| w.starts_with("kscreenlocker") && w.ends_with("]:"))?.to_string();
+        let time = chrono::DateTime::parse_from_str(line.split_whitespace().next()?, "%Y-%m-%dT%H:%M:%S%.f%z").ok()?;
+        Some((process, time.timestamp()))
+    };
+    let mut unlocked: HashMap<String, Vec<i64>> = HashMap::new();
+    for line in lines {
+        let other = line.contains("(kde-fingerprint:setcred)") || line.contains("(kde-smartcard:setcred)");
+        if let Some((process, time)) = other.then(|| stamp(line)).flatten() {
+            unlocked.entry(process).or_default().push(time);
+        }
+    }
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("pam_unix(kde:auth): authentication failure"))
+        .filter(|(_, line)| stamp(line).map(|(p, t)| unlocked.get(&p).map(|times| times.iter().any(|u| (t - u).abs() <= 3)).unwrap_or(false)).unwrap_or(false))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     if !ctx.privileged {
         col.note("auth_logs: without root only your own log messages may be visible");
     }
     let lines = read_lines(ctx, col);
-    let events: Vec<Event> = lines.iter().filter_map(|l| parse_line(l)).collect();
+    let closed = closed_password_boxes(&lines);
+    if !closed.is_empty() {
+        col.note(format!("auth_logs: {} lock screen \"failure(s)\" are not counted: they are the password box closing after a fingerprint or smart card unlock", closed.len()));
+    }
+    let events: Vec<Event> = lines.iter().enumerate().filter(|(i, _)| !closed.contains(i)).filter_map(|(_, l)| parse_line(l)).collect();
     evaluate(&events, ctx.cfg.login_fail_threshold.max(1), col);
 }
 

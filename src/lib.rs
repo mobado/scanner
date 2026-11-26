@@ -25,6 +25,7 @@ pub mod procinfo;
 pub mod report;
 pub mod sandbox;
 pub mod scan;
+pub mod second_look;
 pub mod sys;
 
 pub use config::Config;

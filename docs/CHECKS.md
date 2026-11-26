@@ -55,11 +55,11 @@ every network, to one address, or only to this computer.
 | `KERN-MODULE-UNTRUSTED` | Medium | Out-of-tree, unsigned or forced modules not in `allowed_out_of_tree_modules` |
 | `KERN-SYSCTL` | Critical–Low | Dangerous settings: `kernel.modprobe`, `core_pattern`, `hotplug`, ASLR off, link protection off … |
 | `KERN-MODPROBE-CMD` | Critical/High | A suspicious `install`/`remove` command in `modprobe.d` |
-| `KERN-EBPF` / `-PINNED` | Medium/Low | Loaded eBPF programs that can watch system calls or traffic (Medium when the holder is unfamiliar or none); pinned objects in `/sys/fs/bpf`. Complete with root and the `bpftool` package, otherwise only programs held by processes |
+| `KERN-EBPF` / `-PINNED` | Medium/Low | Loaded eBPF programs that can watch system calls or traffic (Medium when the holder is unfamiliar or none; systemd's own file system filter is not listed); pinned objects in `/sys/fs/bpf`. Complete with root and the `bpftool` package, otherwise only programs held by processes |
 | `KERN-TAINTED` | High–Low | Why the kernel is "tainted", bit by bit; Medium when the module that caused it is no longer loaded, High after a forced removal |
 | `KERN-SECUREBOOT` | Medium/Low | Secure Boot off, or on without kernel lockdown (with `sig_enforce` and `modules_disabled`) |
 | `KERN-BOOT-ENTRY` | Low | UEFI boot entries that start another loader than Debian's, Windows' or the default one |
-| `KERN-APPARMOR-OFF` / `-PROFILES` | Medium / Low | AppArmor is not active; profiles that only complain or are disabled (listing them needs root) |
+| `KERN-APPARMOR-OFF` / `-PROFILES` | Medium / Low | AppArmor is not active; profiles that only complain or are disabled (listing them needs root). Profiles an unchanged package file ships in complain mode are only counted in the notes |
 | `KERN-SELINUX` | Medium | SELinux is in permissive mode |
 | `KERN-USB-BADUSB` | High | A connected USB device is both a keyboard and a drive (BadUSB, Rubber Ducky) |
 | `KERN-USB-HISTORY` | Medium | The kernel log (last `log_days` days, running system only) shows one USB port registering both |
@@ -87,7 +87,7 @@ every network, to one address, or only to this computer.
 | `INT-GRUB-SCRIPT` | Critical–Medium | An executable boot menu script that no package installed |
 | `INT-KERNEL-FILE` | Critical/Low | `vmlinuz`/`System.map` differs from its package, or a kernel from no package |
 | `INT-DISK-ERRORS` | Low | ext4 error counters and disk I/O errors in the kernel log, which can look like tampering |
-| `INT-JOURNAL-CORRUPT` / `-VOLATILE` | Medium/Low | Journal fails verification (root, full scan only, at most `journal_verify_secs` = 90 s) / not kept across reboots |
+| `INT-JOURNAL-CORRUPT` / `-VOLATILE` | Medium/Low | Journal fails verification (root, full scan only, at most `journal_verify_secs` = 90 s; Low when only the `.journal~` files journald set aside after an unclean shutdown are damaged) / not kept across reboots |
 | `INT-CLOCK` | Medium/Low | Automatic time setting off or clock not synchronised |
 
 ## Processes and run paths (`proc_audit`)
@@ -254,7 +254,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `AUTH-SUDO-FAILED` | Medium/Low | Wrong sudo password |
 | `AUTH-SUDO-DENIED` | Medium | A user who may not use sudo (for that command) tried to |
 | `AUTH-SU-FAILED` | Medium/Low | Wrong password with `su` |
-| `AUTH-LOCAL-FAILED` | Medium/Low | Wrong password at the console, display manager (SDDM, GDM, LightDM), screen lock or password dialog; the evidence says where |
+| `AUTH-LOCAL-FAILED` | Medium/Low | Wrong password at the console, display manager (SDDM, GDM, LightDM), screen lock or password dialog; the evidence says where. The KDE password box closing after a fingerprint or smart card unlock logs a "failure" too; those are not counted |
 | `AUTH-PKEXEC-DENIED` | Medium/Low | A request to run something as root through `pkexec` was refused |
 | `AUTH-POLKIT-FAILED` | Medium/Low | Wrong password in an administrator dialog (polkit) |
 | `AUTH-ADMIN-ACTIONS` | Medium/Low | What was run with `pkexec` and approved in polkit dialogs (Medium for programs from a temporary or home folder) |
@@ -293,9 +293,10 @@ fool it, so run `debsums` or scan from trusted media when in doubt.
 | Rule | Usual level | Meaning |
 |------|-------------|---------|
 | `EXT-DEBSUMS-CHANGED` / `-MISSING` | Critical–Low | A package file differs from its `.deb` / is missing |
-| `EXT-CHKROOTKIT-INFECTED` / `-WARN` / `-WTMP` | High–Low | chkrootkit findings, a second opinion rather than proof (a login-record gap is Low) |
-| `EXT-RKHUNTER-WARN` / `-KNOWN` | Medium/Low | rkhunter warnings, also a second opinion; known Debian false alarms are Low with a command to silence them |
-| `EXT-LYNIS-WARN` / `-SUGGEST` | Medium/Low | Lynis warnings and hardening suggestions |
+| `EXT-CHKROOTKIT-INFECTED` / `-WARN` / `-WTMP` | High–Low | chkrootkit findings, a second opinion rather than proof (a login-record gap is Low, and is folded into `INT-WTMP` when both see it) |
+| `EXT-RKHUNTER-WARN` / `-KNOWN` | High–Low | rkhunter warnings, also a second opinion; known Debian false alarms are Low with a command to silence them. A "file properties have changed" warning is High when the file does not match its package |
+| `EXT-RKHUNTER-UPDATED` | Low | Files rkhunter calls changed that are exactly what their package ships and that apt installed since rkhunter last remembered them (one finding; permission or owner changes are never folded in) |
+| `EXT-LYNIS-WARN` / `-SUGGEST` | Medium/Low | Lynis warnings and hardening suggestions. A failed `apt-get check` (PKGS-7390) is tried again and is Low when it passes |
 
 ## What it cannot see
 

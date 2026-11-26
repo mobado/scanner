@@ -194,16 +194,27 @@ fn check_journal(ctx: &ScanCtx, col: &mut Collector) {
             }
             let failed: Vec<&str> = o.stderr.lines().chain(o.stdout.lines()).filter(|l| l.starts_with("FAIL")).take(10).collect();
             if !failed.is_empty() {
-                col.push(
-                    Finding::new(Severity::Medium, MODULE, "INT-JOURNAL-CORRUPT", "The system journal fails verification")
-                        .evidence(failed.join("\n"))
-                        .description("Journal files are damaged. A crash can cause this; so can someone editing logs.")
-                        .verify("sudo journalctl --verify"),
-                );
+                col.push(journal_finding(&failed));
             }
         }
         Err(e) => col.note(format!("integrity: journalctl --verify could not run: {e}")),
     }
+}
+
+/// The finding for "FAIL: /var/log/journal/…" lines. journald itself renames a file that was
+/// not closed properly (crash, power cut) to "….journal~" and starts a new one.
+pub fn journal_finding(failed: &[&str]) -> Finding {
+    let leftovers = failed.iter().all(|l| l.split_whitespace().nth(1).map(|path| path.ends_with(".journal~")).unwrap_or(false));
+    let (severity, title, text) = if leftovers {
+        (Severity::Low, "Journal files left over from an unclean shutdown", "Only files that journald set aside itself (ending in '~') are damaged. That happens after a crash, a power cut or holding the power button, and old files are removed in time.")
+    } else {
+        (Severity::Medium, "The system journal fails verification", "Journal files are damaged. A crash can cause this; so can someone editing logs.")
+    };
+    Finding::new(severity, MODULE, "INT-JOURNAL-CORRUPT", title)
+        .evidence(failed.join("\n"))
+        .description(text)
+        .verify("sudo journalctl --verify")
+        .verify("last -x | grep -E 'crash|shutdown|reboot' | head -20")
 }
 
 fn check_clock(col: &mut Collector) {

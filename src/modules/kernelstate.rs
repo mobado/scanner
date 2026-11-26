@@ -6,6 +6,7 @@ use super::kernel::{parse_modules, MODULE};
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{clip, shq};
+use crate::pkgverify::{verify_paths, Verdict};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -70,7 +71,10 @@ fn programs_from_proc(ctx: &ScanCtx) -> Vec<BpfProgram> {
             let field = |key: &str| info.lines().find_map(|l| l.strip_prefix(key)?.trim_start_matches(':').trim().parse::<u64>().ok());
             let (Some(kind), Some(id)) = (field("prog_type"), field("prog_id")) else { continue };
             let Some((_, kind)) = WATCHING.iter().find(|(n, _)| *n == kind) else { continue };
-            let entry = found.entry(id).or_insert_with(|| BpfProgram { id, kind: kind.to_string(), name: String::new(), holders: Vec::new() });
+            // systemd's own file system filter, held by the first process
+            let own = p.pid == 1 && *kind == "lsm" && p.exe_path() == Some("/usr/lib/systemd/systemd");
+            let name = if own { "restrict_filesystems" } else { "" };
+            let entry = found.entry(id).or_insert_with(|| BpfProgram { id, kind: kind.to_string(), name: name.to_string(), holders: Vec::new() });
             if !entry.holders.contains(&p.comm) {
                 entry.holders.push(p.comm.clone());
             }
@@ -125,7 +129,8 @@ fn check_ebpf(ctx: &ScanCtx, col: &mut Collector) {
         None => {
             programs = programs_from_proc(ctx);
             if ctx.sys.is_live() {
-                col.note("eBPF: only programs that a process holds open were checked (run as root with the bpftool package for all of them)");
+                let how = if ctx.privileged { "install the bpftool package" } else { "run as root with the bpftool package" };
+                col.note(format!("eBPF: only programs that a process holds open were checked ({how} for all of them)"));
             }
         }
     }
@@ -308,6 +313,45 @@ pub fn apparmor_profiles(text: &str) -> (usize, Vec<String>) {
     (enforcing, complaining)
 }
 
+/// Names of the profiles that a configuration file puts in complain mode
+/// ("profile name /path flags=(complain) {").
+pub fn complain_profiles(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#') && l.ends_with('{'))
+        .filter(|l| l.split_once("flags=(").and_then(|(_, f)| f.split_once(')')).map(|(f, _)| f.split([',', ' ']).any(|w| w == "complain")).unwrap_or(false))
+        .filter_map(|l| {
+            let mut words = l.split_whitespace();
+            let first = words.next()?;
+            let name = if first == "profile" { words.next()? } else { first };
+            Some(name.trim_matches('"').to_string())
+        })
+        .collect()
+}
+
+/// Profiles whose own package ships them in complain mode (the file is unchanged, and nobody
+/// forced complain mode).
+fn shipped_complaining(ctx: &ScanCtx) -> BTreeSet<String> {
+    let declared: Vec<(String, Vec<String>)> = ctx
+        .sys
+        .dir_names("/etc/apparmor.d")
+        .into_iter()
+        .filter(|f| !ctx.sys.exists(format!("/etc/apparmor.d/force-complain/{f}")))
+        .filter_map(|f| {
+            let path = format!("/etc/apparmor.d/{f}");
+            let names = complain_profiles(&ctx.sys.read_string(&path).ok()?);
+            (!names.is_empty()).then_some((path, names))
+        })
+        .collect();
+    let paths: Vec<String> = declared.iter().map(|d| d.0.clone()).collect();
+    let verdicts = verify_paths(ctx.sys, &paths, std::time::SystemTime::UNIX_EPOCH);
+    declared
+        .into_iter()
+        .filter(|(path, _)| matches!(verdicts.get(path), Some(Verdict::Upgraded { .. } | Verdict::MatchesButNoUpgrade { .. })))
+        .flat_map(|(_, names)| names)
+        .collect()
+}
+
 fn check_security_module(ctx: &ScanCtx, col: &mut Collector) {
     if let Ok(enforce) = ctx.sys.read_string("/sys/fs/selinux/enforce") {
         let on = enforce.trim() == "1";
@@ -346,7 +390,13 @@ fn check_security_module(ctx: &ScanCtx, col: &mut Collector) {
             if enforcing == 0 {
                 weak.push("no profile is enforced".to_string());
             }
-            weak.extend(complaining.into_iter().map(|p| format!("only complains: {p}")));
+            let shipped = shipped_complaining(ctx);
+            // "name//child" belongs to the profile "name"
+            let (usual, changed): (Vec<String>, Vec<String>) = complaining.into_iter().partition(|p| shipped.contains(p.split("//").next().unwrap_or(p)));
+            if !usual.is_empty() {
+                col.note(format!("AppArmor: {} profile(s) only log because their package ships them that way: {}", usual.len(), clip(&usual.join(", "), 600)));
+            }
+            weak.extend(changed.into_iter().map(|p| format!("only complains: {p}")));
         }
         Err(_) => col.note("AppArmor is active; its profiles can only be listed as root"),
     }

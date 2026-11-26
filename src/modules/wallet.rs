@@ -182,7 +182,7 @@ pub(crate) fn watch(ctx: &ScanCtx, col: &mut Collector) {
                     .verify(format!("pstree -asp {}", p.pid)),
             );
         }
-        let who = if normal.is_empty() { "no installed program".to_string() } else { normal.into_iter().collect::<Vec<_>>().join(", ") };
+        let who = if normal.is_empty() { "none".to_string() } else { normal.into_iter().collect::<Vec<_>>().join(", ") };
         col.note(format!("Password wallet: listened {secs} s to the session of user {uid}; installed programs that asked for secrets: {who}"));
     }
 }
