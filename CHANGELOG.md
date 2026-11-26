@@ -11,6 +11,10 @@ Fewer false alarms:
 * The same gap in the login records is reported once.
 * AppArmor profiles shipped in complain mode and systemd's own eBPF filter are no longer listed.
 
+Publishing: releases were missing because tags without a message were not pushed. The publish
+script now sends the version tag by name, and GitHub also releases a new version when only
+`main` is pushed.
+
 ## 0.11.0
 * Password stores: programs other than the browser or wallet that have saved passwords,
   cookies or wallet files open.

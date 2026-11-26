@@ -125,16 +125,16 @@ Remove with `sudo apt remove scanner` (`sudo apt purge scanner` also removes bas
 sh scripts/build-deb.sh          # → dist/scanner_<version>-1_amd64.deb
 ```
 
-On GitHub every version tag (`v0.3.1` …) builds the package inside Debian 13, installs it,
-runs the self-test and attaches it to the release.
+GitHub builds the package inside Debian 13, installs it, runs the self-test and puts it on
+the Releases page – when a version tag (`v0.11.1` …) is pushed, or when `main` is pushed with
+a version in `Cargo.toml` that has no release yet.
 
 ### Releasing a new version
 
 ```sh
 # 1. bump `version` in Cargo.toml and add a section to CHANGELOG.md
-cargo test && git commit -am "Release 0.3.2"
-git tag -a v0.3.2 -m "scanner 0.3.2"
-sh scripts/publish-to-github.sh        # pushes the commits and the tag; CI builds the .deb
+cargo test && git commit -am "Release 0.12.0"
+sh scripts/publish-to-github.sh        # tags the version, pushes it; CI builds the .deb
 ```
 
 ## Build
