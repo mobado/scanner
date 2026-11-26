@@ -12,13 +12,13 @@ export buttons).
 
 | Module | Looks for |
 |--------|-----------|
-| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), unusual outgoing connections, direct DNS, resolvers and `/etc/hosts`, ARP/routing anomalies, sniffing, port forwarding, undeclared tunnels, tunnel tools and reverse SSH, hidden processes, disguised process names, Bluetooth, shared folders, DNS settings and VPN leaks |
-| `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands, eBPF programs, taint marks, Secure Boot, lockdown and UEFI boot entries, AppArmor and SELinux |
+| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), unusual outgoing connections, direct DNS, resolvers and `/etc/hosts`, ARP/routing anomalies, sniffing (promiscuous cards and raw packet sockets), port forwarding, undeclared tunnels, tunnel tools and reverse SSH, hidden processes, disguised process names, Bluetooth, shared folders, DNS settings and VPN leaks |
+| `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands, eBPF programs, taint marks, Secure Boot, lockdown and UEFI boot entries, AppArmor and SELinux, USB devices that are both keyboard and drive, Thunderbolt devices |
 | `services` | Web shells in web folders, container socket and Docker API exposure, privileged containers |
 | `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps, kernel start options, GRUB scripts, the kernel file against its package, disk errors |
-| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files, shells and download tools started by browsers or document viewers |
-| `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions, downloads and hidden programs in home folders, browser add-ons and settings, rewritten programs and backdated files |
-| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, network and sleep scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, the boot image (initramfs) |
+| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files, shells and download tools started by browsers or document viewers, other programs holding saved passwords, cookies or wallets open, environment variables that load code, SSH agent sockets, tokens in environments, io_uring and unexplained namespaces |
+| `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions, downloads and hidden programs in home folders, browser add-ons, settings and helper programs (native messaging), private keys, logins and `.env` files that others can read, rewritten programs and backdated files |
+| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, network and sleep scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, environment files that load code, the boot image (initramfs) |
 | `desktop_session` | Autostart, session and login-screen scripts, session D-Bus services and portals, settings of KDE Plasma, GNOME, XFCE and window managers, programs reading the keyboard, remote desktop programs, Flatpak, Snap and AppImage, Wayland or X11. Findings are labelled `[xdg]`, `[kde]`, `[gnome]` …; skipped on servers without a desktop |
 | `updates` | Pending security updates, other updates, reboot needed, old package lists, missing security source, processor microcode and firmware updates |
 | `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords, pkexec and polkit approvals |
@@ -60,6 +60,9 @@ src/
 │   ├── tunnels.rs      tunnel interfaces, WireGuard peers, tunnel tools, reverse SSH
 │   ├── kernelstate.rs  eBPF, taint marks, Secure Boot, lockdown, UEFI boot entries, AppArmor
 │   ├── netlocal.rs     Bluetooth, shared folders, DNS settings, DNS around a VPN
+│   ├── secrets.rs      open password stores, readable keys, environment variables
+│   ├── sandboxes.rs    io_uring, namespaces no known sandbox explains
+│   ├── hardware.rs     USB keyboard-and-drive devices, Thunderbolt
 │   ├── bootchain.rs    kernel start options, GRUB scripts, kernel file, disk errors
 │   ├── desktop_session/    the desktop module (labels, server detection)
 │   │   ├── xdg.rs      autostart, session and login-screen scripts
@@ -101,7 +104,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.10.0-1_amd64.deb
+sudo apt install ./scanner_0.11.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -349,5 +352,7 @@ Licensed under the **GNU General Public License v3.0** – see [LICENSE](LICENSE
 * `/sys/kernel/debug/sched/debug` needs root and a mounted debugfs.
 * Shell histories are read to find suspicious commands. Matching lines appear in the report,
   so treat saved reports as private (a typed password could be on such a line).
+* A scan is a snapshot: D-Bus calls to password wallets are not watched, and a program that read
+  a password store and closed it again is not seen.
 * rkhunter and lynis write their own logs in `/var/log` – the scanner itself writes nothing.
 * The window version cannot be linked statically; the static binary is CLI-only.

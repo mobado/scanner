@@ -48,6 +48,8 @@ pub struct Baseline {
     pub ssh_keys: Option<Vec<String>>,
     #[serde(default)]
     pub bluetooth: Option<Vec<String>>,
+    #[serde(default)]
+    pub peripherals: Option<Vec<String>>,
 }
 
 /// The parts of a recorded key that identify it: the file and the fingerprint.
@@ -73,6 +75,16 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
             );
         }
     }
+    if let (true, Some(old), Some(new)) = (both("kernel"), &base.peripherals, &inv.peripherals) {
+        for device in new.iter().filter(|d| !old.contains(d)) {
+            out.push(
+                Finding::new(Severity::Medium, MODULE, "BASE-DEVICE-NEW", format!("New hardware since the baseline: {device}"))
+                    .evidence(format!("{device}\n(compared with {src})"))
+                    .description("A keyboard can type commands and a Thunderbolt device can reach memory. A new dock, keyboard or receiver of your own is normal; anything else is not.")
+                    .verify("lsusb; ls /sys/bus/thunderbolt/devices"),
+            );
+        }
+    }
     if let (true, Some(old), Some(new)) = (both("net_proc"), &base.bluetooth, &inv.bluetooth) {
         for device in new.iter().filter(|d| !old.contains(d)) {
             let keyboard = device.ends_with("[keyboard]");
@@ -94,12 +106,19 @@ pub fn newly_tracked(path: &str) -> bool {
         || ["/etc/xdg/openbox/", "/etc/xdg/lxsession/", "/etc/sway/", "/usr/local/share/autostart/"].iter().any(|p| path.starts_with(p))
         || path.contains("-generators/")
         || path.contains("/.git/hooks/")
+        || path.contains("/NativeMessagingHosts/")
+        || path.contains("/native-messaging-hosts/")
         || (path.contains("/systemd/") && path.contains(".d/") && path.ends_with(".conf"))
 }
 
 /// Kinds of files that later versions started to track: in a baseline made by an older
 /// version they are new to the baseline, not suspicious.
-pub const NEWLY_TRACKED: [&str; 63] = [
+pub const NEWLY_TRACKED: [&str; 68] = [
+    "/etc/environment.d/",
+    "/usr/local/lib/environment.d/",
+    "/.config/environment.d/",
+    "/.pam_environment",
+    "/.mozilla/native-messaging-hosts/",
     "/etc/default/grub",
     "/etc/grub.d/",
     "/var/lib/flatpak/overrides/",
@@ -197,6 +216,7 @@ impl Baseline {
             desktop: r.inventory.desktop.clone(),
             ssh_keys: r.inventory.ssh_keys.clone(),
             bluetooth: r.inventory.bluetooth.clone(),
+            peripherals: r.inventory.peripherals.clone(),
         }
     }
 

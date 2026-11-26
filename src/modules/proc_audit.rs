@@ -195,6 +195,9 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     super::procwatch::check_tracing(ctx, col);
     super::procwatch::check_mounts(ctx, col);
     super::procwatch::check_app_spawns(ctx, col);
+    super::secrets::check_processes(ctx, col);
+    super::sandboxes::check_io_uring(ctx, col);
+    super::sandboxes::check_namespaces(ctx, col);
     for (dir, users) in library_paths {
         let temp = cfg.is_temp_path(&dir);
         let list: Vec<String> = users.iter().take(8).map(|p| format!("PID {} {}", p.pid, p.display_name())).collect();

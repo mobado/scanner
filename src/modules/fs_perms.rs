@@ -192,6 +192,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     let homes: Vec<String> = super::persistence::home_dirs(ctx, &accounts).into_iter().map(|(_, _, home)| home).collect();
     homefiles::check_home_files(ctx, col, &homes);
     browsers::check_browsers(ctx, col, &homes);
+    super::secrets::check_files(ctx, col, &homes);
     check_sensitive_files(ctx, col);
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     col.inventory.suid = entries;

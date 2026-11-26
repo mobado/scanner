@@ -6,6 +6,7 @@ use super::common::{clip, risky_home_place, shq};
 use super::fs_perms::MODULE;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
+use crate::modules::persistence::history::judge_command;
 use crate::pkgverify::owned_paths;
 use serde_json::Value;
 
@@ -203,12 +204,12 @@ pub fn chromium_settings(data: &Value) -> Vec<(Severity, String)> {
 
 // ---------------------------------------------------------------- native messaging
 
-const NATIVE_HOME: [&str; 6] = [
+pub(crate) const NATIVE_HOME: [&str; 6] = [
     ".mozilla/native-messaging-hosts", ".config/google-chrome/NativeMessagingHosts", ".config/chromium/NativeMessagingHosts",
     ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts", ".config/microsoft-edge/NativeMessagingHosts",
     ".config/vivaldi/NativeMessagingHosts",
 ];
-const NATIVE_SYSTEM: [&str; 6] = [
+pub(crate) const NATIVE_SYSTEM: [&str; 6] = [
     "/etc/opt/chrome/native-messaging-hosts", "/etc/chromium/native-messaging-hosts", "/etc/opt/edge/native-messaging-hosts",
     "/usr/lib/mozilla/native-messaging-hosts", "/usr/local/lib/mozilla/native-messaging-hosts", "/usr/lib64/mozilla/native-messaging-hosts",
 ];
@@ -236,7 +237,17 @@ fn check_native_messaging(ctx: &ScanCtx, col: &mut Collector, homes: &[String]) 
     for (path, own, program) in hosts {
         let odd = ctx.cfg.is_temp_path(&program) || risky_home_place(&program, ctx.cfg).is_some();
         let in_home = program.starts_with("/home/") || program.starts_with("/root/");
-        let (severity, why) = if odd {
+        // a helper that is a script can be read: does it hold a break-in command?
+        let script = ctx.sys.read_bytes(&program).ok().filter(|b| b.starts_with(b"#!") && b.len() < 256 * 1024);
+        let suspicious = script.and_then(|b| {
+            String::from_utf8_lossy(&b).lines().filter(|l| !l.starts_with('#') && !l.contains("grep")).find_map(|l| match judge_command(ctx, l) {
+                Some((Severity::High | Severity::Critical, why)) => Some(why),
+                _ => None,
+            })
+        });
+        let (severity, why) = if suspicious.is_some() {
+            (Severity::Critical, "the program is a script with a command typical of a break-in")
+        } else if odd {
             (Severity::High, "the program is in a temporary, download, cache or hidden place")
         } else if has_dpkg && !in_home && !owned.contains(&program) {
             (Severity::Medium, "no package installed the program")

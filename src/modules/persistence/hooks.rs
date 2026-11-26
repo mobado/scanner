@@ -5,6 +5,7 @@
 use super::{parse_unit, record, EXEC_KEYS, MODULE};
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{analyze_command, analyze_user_command, clip, max_severity, reasons, shq, CmdIssue};
+use crate::modules::secrets::{hide_secrets, judge_variable};
 use crate::modules::{Collector, ScanCtx};
 use crate::pkgverify::owned_paths;
 use std::collections::{BTreeSet, HashSet};
@@ -183,6 +184,71 @@ fn check_transient(ctx: &ScanCtx, col: &mut Collector) {
                 format!("{path}\n{}", clip(&lines.join("\n"), 600)),
                 format!("A service that was created while the system ran, without a unit file on disk. Suspicious: {}.", reasons(&issues)),
             ));
+        }
+    }
+}
+
+/// "NAME=value" (also after `export`) → (name, value without quotes).
+pub fn assignment(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    let line = line.strip_prefix("export ").unwrap_or(line);
+    let (name, value) = line.split_once('=')?;
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(|| (name, value.trim().trim_matches(['"', '\''])))
+}
+
+/// Files that set the environment of every program: `environment.d`, `/etc/environment` and
+/// shell start files. Variables there that load code are persistence.
+fn check_environment_files(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
+    let mut files: Vec<String> = ["/etc/environment", "/etc/profile", "/etc/bash.bashrc", "/etc/zsh/zshenv"].map(String::from).to_vec();
+    let mut folders = vec!["/etc/environment.d".to_string(), "/usr/local/lib/environment.d".to_string()];
+    files.extend(files_below(ctx, "/etc/profile.d", 1));
+    for (_, _, home) in homes {
+        folders.push(format!("{home}/.config/environment.d"));
+        files.extend([".pam_environment", ".profile", ".bashrc", ".bash_profile", ".zshenv", ".zshrc"].iter().map(|f| format!("{home}/{f}")));
+    }
+    for folder in folders {
+        for path in files_below(ctx, &folder, 1) {
+            record(ctx, col, &path);
+            files.push(path);
+        }
+    }
+    for (_, _, home) in homes {
+        let path = format!("{home}/.pam_environment");
+        record(ctx, col, &path);
+    }
+    for path in files {
+        let Ok(text) = ctx.sys.read_string(&path) else { continue };
+        let mut worst = None;
+        let mut lines = Vec::new();
+        for line in text.lines().filter(|l| !l.trim_start().starts_with('#')) {
+            let Some((name, value)) = assignment(line) else { continue };
+            // a line that adds to what is already there ("$PYTHONPATH:/x") still adds the rest
+            if let Some((severity, why)) = judge_variable(ctx.cfg, name, value) {
+                worst = worst.max(Some(severity));
+                lines.push(format!("{}  ← {}", clip(&hide_secrets(line.trim()), 220), hide_secrets(&why)));
+            }
+        }
+        let Some(severity) = worst else { continue };
+        col.push(simple(
+            severity,
+            "PERS-ENV-INJECT",
+            format!("Environment setting loads extra code: {path}"),
+            &path,
+            format!("{path}\n{}", clip(&lines.join("\n"), 700)),
+            "Every program that starts with this environment loads or runs the named code. It is a way to stay on a machine that checks for LD_PRELOAD alone would miss.".into(),
+        ));
+    }
+}
+
+/// The description files of browser helpers are recorded, so that a new one shows up.
+fn record_native_hosts(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
+    let mut folders: Vec<String> = crate::modules::browsers::NATIVE_SYSTEM.iter().map(|d| d.to_string()).collect();
+    for (_, _, home) in homes {
+        folders.extend(crate::modules::browsers::NATIVE_HOME.iter().map(|d| format!("{home}/{d}")));
+    }
+    for folder in folders {
+        for path in files_below(ctx, &folder, 1).into_iter().filter(|p| p.ends_with(".json")) {
+            record(ctx, col, &path);
         }
     }
 }
@@ -580,4 +646,6 @@ pub fn check_hooks(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
         record(ctx, col, &path);
     }
     check_transient(ctx, col);
+    check_environment_files(ctx, col, homes);
+    record_native_hosts(ctx, col, homes);
 }

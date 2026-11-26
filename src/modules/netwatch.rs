@@ -40,6 +40,67 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     check_arp_and_routes(ctx, col);
     check_promiscuous(ctx, col);
     check_nat(ctx, col);
+    check_packet_sockets(ctx, col);
+}
+
+/// Programs that open raw packet sockets to run the network itself.
+const NETWORK_SERVICES: [&str; 11] = [
+    "NetworkManager", "wpa_supplicant", "iwd", "dhclient", "dhcpcd", "systemd-networkd", "dnsmasq", "lldpd", "hostapd",
+    "avahi-autoipd", "ModemManager",
+];
+
+/// (protocol, inode) of the sockets in /proc/net/packet that listen to raw network frames.
+pub fn packet_sockets(text: &str) -> Vec<(u16, u64)> {
+    text.lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            Some((u16::from_str_radix(f.get(3)?, 16).ok()?, f.get(8)?.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Raw packet sockets that see all traffic – how tcpdump and other sniffers work.
+fn check_packet_sockets(ctx: &ScanCtx, col: &mut Collector) {
+    const ALL_PROTOCOLS: u16 = 0x0003;
+    let Ok(text) = ctx.sys.read_string("/proc/net/packet") else { return };
+    let mut seen = BTreeSet::new();
+    let mut unowned = 0;
+    for (protocol, inode) in packet_sockets(&text) {
+        if protocol != ALL_PROTOCOLS {
+            continue;
+        }
+        let owners: Vec<_> = ctx.processes.iter().filter(|p| p.socket_fds.iter().any(|(_, i)| *i == inode)).collect();
+        if owners.is_empty() {
+            unowned += 1;
+        }
+        for p in owners {
+            let exe = p.exe_path().unwrap_or("");
+            let installed = exe.starts_with("/usr/") && !exe.starts_with("/usr/local/");
+            let name = p.display_name();
+            if (installed && NETWORK_SERVICES.contains(&name.as_str())) || !seen.insert(p.pid) {
+                continue;
+            }
+            let capture = installed && ["tcpdump", "dumpcap", "tshark", "wireshark"].contains(&name.as_str());
+            col.push(
+                Finding::new(if capture { Severity::Medium } else { Severity::High }, MODULE, "NET-SNIFFER", format!("Program reads all network traffic: {name}"))
+                    .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\nraw packet socket (all protocols), inode {inode}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300)))
+                    .description("A raw packet socket sees every frame on the network card, including unencrypted logins. tcpdump and Wireshark do that when you run them; anything else doing it needs an explanation.")
+                    .verify("ss -f link -a -p")
+                    .verify(format!("ps -o pid,user,lstart,cmd -p {}", p.pid)),
+            );
+        }
+    }
+    if unowned > 0 {
+        let (severity, why) = if ctx.privileged { (Severity::High, "no process owns it, although the scan runs as root") } else { (Severity::Low, "its owner can only be seen as root") };
+        col.push(
+            Finding::new(severity, MODULE, "NET-SNIFFER", "Something reads all network traffic")
+                .evidence(format!("{unowned} raw packet socket(s) for all protocols; {why}"))
+                .description("A raw packet socket sees every frame on the network card. Run the scan as root to learn which program holds it.")
+                .verify("ss -f link -a -p")
+                .verify("cat /proc/net/packet"),
+        );
+    }
 }
 
 /// Firewall rules in `nft list ruleset` that send traffic somewhere else. Rules that Docker,

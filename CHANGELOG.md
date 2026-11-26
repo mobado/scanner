@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0
+* Password stores: programs other than the browser or wallet that have saved passwords,
+  cookies or wallet files open.
+* Keys and logins that other users can read (`~/.ssh`, `~/.gnupg`, cloud, Kubernetes, GitHub,
+  Docker and package tokens, `.netrc`, `.env`).
+* Environment variables that load code, in running programs and in environment files; SSH agent
+  sockets in unusual places; tokens carried by programs (names only).
+* io_uring in programs outside the system folders; user, network and mount namespaces that no
+  known sandbox explains.
+* Hardware: USB devices that are both keyboard and drive (now and in the kernel log),
+  Thunderbolt security and devices; raw packet sockets that read all traffic.
+* Browser helper scripts with break-in commands are Critical; helper descriptions are recorded.
+* Baseline: new USB keyboards and Thunderbolt devices.
+
 ## 0.10.0
 * Desktop apps: running remote desktop programs, KDE unattended screen sharing and screen lock,
   Flatpak permissions and sources, unsigned and classic snaps, AppImages, Hyprland plugins,

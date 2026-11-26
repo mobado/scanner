@@ -12,6 +12,9 @@ pub mod kernel;
 pub mod kernelstate;
 pub mod bootchain;
 pub mod netlocal;
+pub mod hardware;
+pub mod sandboxes;
+pub mod secrets;
 pub mod procwatch;
 pub mod tunnels;
 pub mod net_group;
@@ -64,6 +67,9 @@ pub struct Inventory {
     /// Paired Bluetooth devices; `None` when they could not be read.
     #[serde(default)]
     pub bluetooth: Option<Vec<String>>,
+    /// USB keyboards and Thunderbolt devices; `None` when the machine's buses were not read.
+    #[serde(default)]
+    pub peripherals: Option<Vec<String>>,
     pub process_count: usize,
     pub fs_files_scanned: u64,
 }

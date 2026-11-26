@@ -12,8 +12,11 @@ suspicious systemd units, cron jobs, SSH keys, sshd and PAM settings, programs a
 capabilities where they do not belong, replaced system programs, apt software sources,
 suspicious shell history, desktop autostart and session scripts, KDE, GNOME and XFCE
 settings, keyboard readers, remote desktop programs, Flatpak and Snap permissions, polkit
-rules, downloads and browser add-ons, Bluetooth, file sharing and DNS settings, boot options,
-AppArmor, failed logins and administrator actions, and pending updates.
+rules, downloads and browser add-ons, programs holding saved passwords or cookies open, keys
+and tokens that others can read, environment variables that load code, io_uring and unexplained
+namespaces, suspicious USB and Thunderbolt devices, packet sniffers, Bluetooth, file sharing
+and DNS settings, boot options, AppArmor, failed logins and administrator actions, and pending
+updates.
 It can also run debsums, chkrootkit, rkhunter and lynis.
 .PP
 It is strictly read-only: it never changes the system. The only files it writes are the

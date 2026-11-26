@@ -21,7 +21,6 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-KTHREAD-FAKE` | Critical | A normal process disguised as a kernel thread (`[kworker/…]`) |
 | `NET-KTHREAD-NAME` | Low | A kernel thread with an unknown name |
 | `NET-ARGV0-MASK` | High/Medium | `argv[0]` does not match the real binary in `/proc/<pid>/exe` |
-
 | `NET-OUTBOUND-UNUSUAL` | Medium/Low | An outgoing internet connection on a port that is not in `common_remote_ports` |
 | `NET-DNS-DIRECT` | Medium | A program talks DNS to a server that is not the system resolver (possible tunnelling) |
 | `NET-RESOLVER` | High/Medium | `resolv.conf` writable or linked oddly, or an unknown public DNS server (`trusted_resolvers`) |
@@ -40,11 +39,12 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-DNS-CONFIG` | High/Medium | Unknown DNS servers in systemd-resolved or NetworkManager settings; dnsmasq redirects of update and developer sites |
 | `NET-DNS-HANDED` | Low | DNS servers handed out by the network or VPN that are not well known |
 | `NET-DNS-LEAK` | Low | Traffic goes through a VPN but a DNS server sits on the local network |
+| `NET-PROMISC` | Medium | A network card in promiscuous (sniffing) mode (`IFF_PROMISC`) |
+| `NET-SNIFFER` | High–Low | A raw packet socket for all protocols (`/proc/net/packet`), mapped to its program; network services such as NetworkManager are skipped, tcpdump and Wireshark are Medium |
+| `NET-NAT-REDIRECT` | Low/Medium | Firewall rules (`nft`; Medium for old `iptables-legacy`) that redirect or forward traffic; Docker/libvirt rules are skipped (needs root; `nft` not in the timer service) |
 
 `NET-LISTEN-UNKNOWN` says who can reach the port, and the notes count how many ports are open to
 every network, to one address, or only to this computer.
-| `NET-PROMISC` | Medium | A network card in promiscuous (sniffing) mode |
-| `NET-NAT-REDIRECT` | Low/Medium | Firewall rules (`nft`; Medium for old `iptables-legacy`) that redirect or forward traffic; Docker/libvirt rules are skipped (needs root; `nft` not in the timer service) |
 
 ## Kernel and modules (`kernel`)
 
@@ -61,6 +61,9 @@ every network, to one address, or only to this computer.
 | `KERN-BOOT-ENTRY` | Low | UEFI boot entries that start another loader than Debian's, Windows' or the default one |
 | `KERN-APPARMOR-OFF` / `-PROFILES` | Medium / Low | AppArmor is not active; profiles that only complain or are disabled (listing them needs root) |
 | `KERN-SELINUX` | Medium | SELinux is in permissive mode |
+| `KERN-USB-BADUSB` | High | A connected USB device is both a keyboard and a drive (BadUSB, Rubber Ducky) |
+| `KERN-USB-HISTORY` | Medium | The kernel log (last `log_days` days, running system only) shows one USB port registering both |
+| `KERN-THUNDERBOLT-OPEN` / `KERN-THUNDERBOLT` | Medium / Low | Thunderbolt security level `none` without IOMMU protection; approved Thunderbolt devices that are connected |
 
 ## Web files and containers (`services`)
 
@@ -105,6 +108,12 @@ every network, to one address, or only to this computer.
 | `PROC-TRACED` | Critical–Low | A process is being traced (`TracerPid`): Critical when an unknown program traces sshd, sudo, a browser, a key agent …; Low for an installed debugger on an ordinary program |
 | `PROC-HIDDEN-MOUNT` | Critical–Medium | A mount over `/proc/<pid>` (hides a process), or over parts of `/etc`, `/usr/bin`, libraries … |
 | `PROC-LD-LIBRARY-PATH` | High/Low | `LD_LIBRARY_PATH` points to a temporary (High) or relative folder (AppImages are skipped) |
+| `PROC-SECRET-ACCESS` | Critical–Low | A program other than the browser (or wallet program) has saved passwords or cookies (`Cookies`, `Login Data`, `logins.json`, `key4.db` …) or a keyring/KWallet file open. Low for backup, search and antivirus programs; Critical from a temporary, download or hidden folder |
+| `PROC-ENV-INJECT` | High–Low | A running program has a variable that loads code: `NODE_OPTIONS=--require`, `PYTHONSTARTUP`, `BASH_ENV`, `LD_AUDIT`, `PERL5OPT`, `RUBYOPT`, `-javaagent`, library paths in temporary folders … |
+| `PROC-SSH-SOCKET` | Medium | `SSH_AUTH_SOCK` points somewhere key agents do not normally put their socket |
+| `PROC-ENV-SECRETS` | Medium/Low | Programs carry API keys, tokens or passwords in their environment (**names only**, values are never reported); Medium when a browser, viewer or temporary program has one |
+| `PROC-IO-URING` | High–Low | A program outside the system folders uses io_uring, which sidesteps system call monitoring |
+| `PROC-NAMESPACE` | High/Medium | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps, Steam), container, Snap or system service explains. A mount namespace alone only counts for programs in home or temporary folders |
 
 ## File permissions (`fs_perms`)
 
@@ -130,7 +139,8 @@ every network, to one address, or only to this computer.
 | `FS-HOME-HIDDEN-PROGRAM` | Medium | A compiled program with a hidden name, or loose in `.cache`, `.config` or `.local/share` |
 | `FS-BROWSER-ADDON` | High/Medium | A Firefox or Chrome/Chromium/Brave/Edge/Vivaldi/Opera add-on that did not come from the store (unsigned, from a file or folder, forced) |
 | `FS-BROWSER-SETTING` | High–Low | Proxy, remote control, unsigned add-ons allowed, unfamiliar search engine or DNS server, dangerous start options in launchers, browser policies |
-| `FS-BROWSER-NATIVE` | High–Low | A native messaging host (a program browser add-ons can start) in an odd place, from no package, or your own |
+| `FS-BROWSER-NATIVE` | Critical–Low | A native messaging host (a program browser add-ons can start) in an odd place, from no package, or your own; Critical when it is a script with a break-in command. The host descriptions are also recorded in the baseline |
+| `FS-SECRET-PERMS` | High–Low | Files in home folders that other users can read: private keys (`~/.ssh`, `~/.gnupg`) High; `.aws/credentials`, `.kube/config`, `gh`, Docker, `.netrc`, npm and PyPI tokens and `.env` files Medium; Low when the files are open but a closed folder keeps others out |
 
 ## Persistence (`persistence`)
 
@@ -170,6 +180,7 @@ every network, to one address, or only to this computer.
 | `PERS-APT-HOOK` | Critical/High | apt runs a suspicious command (`apt.conf.d` hooks) |
 | `PERS-HISTORY` | High–Low | Suspicious commands in a shell history (reverse shells, history switched off, logs deleted, download-and-run …); only those lines are shown |
 | `PERS-TRANSIENT-UNIT` | Critical–Medium | A service created on the fly (`systemd-run`) with a suspicious command |
+| `PERS-ENV-INJECT` | High–Low | `/etc/environment`, `environment.d`, `.pam_environment` or a shell start file sets a variable that loads code (as `PROC-ENV-INJECT`) |
 | `PERS-SYSACCT-SHELL` / `PERS-EMPTY-PASSWORD` / `PERS-SUDO-NOPASSWD` | High–Low | Account and sudo settings |
 
 ## Desktop session (`desktop_session`)
@@ -261,6 +272,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-PERSIST-NEW` / `-CHANGED` / `-REMOVED` | High–Low | A persistence file appeared / changed / disappeared |
 | `BASE-SSH-KEY-NEW` | **Critical** | A new key in an `authorized_keys` file |
 | `BASE-BLUETOOTH-NEW` | High/Medium | A new paired Bluetooth device (High for a keyboard) |
+| `BASE-DEVICE-NEW` | Medium | A USB keyboard or Thunderbolt device that was not connected before |
 | `BASE-APPARMOR-OFF` | High | AppArmor or SELinux stopped protecting |
 | `BASE-DESKTOP-NEW` | High/Medium | A graphical desktop appeared on a machine that had none; a virtual or remote screen (Xvnc, x11vnc, Xvfb) started running |
 | `BASE-SECUREBOOT-OFF` / `BASE-LOCKDOWN-OFF` | High | Secure Boot or the kernel lockdown was switched off |
@@ -291,6 +303,11 @@ fool it, so run `debsums` or scan from trusted media when in doubt.
   media with `--root /mnt/disk`.
 * Without **root**, other users' processes, `/root`, `/var/spool/cron` and debugfs are
   unreadable. The report says what was skipped.
+* **D-Bus calls** to the Secret Service, KWallet or GNOME Keyring are not watched: a scan is a
+  snapshot, and who asked a running wallet for a password cannot be seen afterwards. Only
+  programs that have wallet or browser files open at the time of the scan are found.
+* The same goes for other short moments: a program that read a password store and closed it
+  before the scan leaves no open file.
 * A **baseline** only shows change. If the machine was already compromised when it was made,
   the intrusion looks normal – which is why it is not saved automatically when the first scan
   has critical or high findings.
