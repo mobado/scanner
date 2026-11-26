@@ -19,7 +19,13 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
 
 /// Rules the self-test expects, with a short explanation.
-pub const EXPECTED: [(&str, &str); 30] = [
+pub const EXPECTED: [(&str, &str); 36] = [
+    ("AUTH-SSH-PUBLIC", "SSH login from an address on the internet"),
+    ("FS-TMP-EXEC", "program file hidden in a temporary folder"),
+    ("PROC-LD-LIBRARY-PATH", "process with libraries from /tmp"),
+    ("PERS-APT-UNSIGNED", "software source without signature check"),
+    ("PERS-HISTORY", "shell history that was switched off"),
+    ("PERS-DUP-ID", "two accounts with the same UID"),
     ("AUTH-SSH-SUCCESS-AFTER-FAIL", "SSH login that succeeded after many failed attempts"),
     ("AUTH-SSH-BRUTEFORCE", "many failed SSH logins from one address"),
     ("NET-REVSHELL", "bash with fd 0–2 connected to a TCP connection"),
@@ -173,7 +179,7 @@ pub fn build_fixture(root: &Path) -> Result<()> {
         FakeProc { pid: 4101, ppid: 1, uid: 1000, comm: "bash", cmdline: &["bash", "-i"], exe: Some("/usr/bin/bash"), kthread: false, fds: &[(0, 50001), (1, 50001), (2, 50001)], environ: &[] },
         FakeProc { pid: 4102, ppid: 1, uid: 0, comm: "backdoor", cmdline: &["/tmp/.x/backdoor"], exe: Some("/tmp/.x/backdoor (deleted)"), kthread: false, fds: &[(3, 50002)], environ: &[] },
         FakeProc { pid: 4103, ppid: 1, uid: 0, comm: "kw", cmdline: &["[kworker/0:2]"], exe: Some("/var/tmp/kw"), kthread: false, fds: &[], environ: &[] },
-        FakeProc { pid: 4104, ppid: 1, uid: 1000, comm: "cupsd", cmdline: &["/usr/sbin/cupsd", "-l"], exe: Some("/opt/tools/miner"), kthread: false, fds: &[], environ: &["PATH=/usr/bin", "LD_PRELOAD=/usr/lib/libhide.so"] },
+        FakeProc { pid: 4104, ppid: 1, uid: 1000, comm: "cupsd", cmdline: &["/usr/sbin/cupsd", "-l"], exe: Some("/opt/tools/miner"), kthread: false, fds: &[], environ: &["PATH=/usr/bin", "LD_PRELOAD=/usr/lib/libhide.so", "LD_LIBRARY_PATH=/tmp/.libs"] },
         FakeProc { pid: 4105, ppid: 1, uid: 0, comm: "3", cmdline: &["payload"], exe: Some("/memfd:payload (deleted)"), kthread: false, fds: &[], environ: &[] },
     ];
     for p in &procs {
@@ -189,7 +195,7 @@ pub fn build_fixture(root: &Path) -> Result<()> {
     write(
         root,
         "/etc/passwd",
-        "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\nsshd:x:100:65534::/run/sshd:/usr/sbin/nologin\nanna:x:1000:1000:Anna,,,:/home/anna:/bin/bash\ntoor:x:0:0::/root:/bin/sh\n",
+        "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\nsshd:x:100:65534::/run/sshd:/usr/sbin/nologin\nanna:x:1000:1000:Anna,,,:/home/anna:/bin/bash\ntoor:x:0:0::/root:/bin/sh\nshadowanna:x:1000:1000::/home/anna:/bin/bash\n",
     )?;
     fs::create_dir_all(root.join("home/anna"))?;
     fs::create_dir_all(root.join("root"))?;
@@ -240,6 +246,12 @@ pub fn build_fixture(root: &Path) -> Result<()> {
     }
     auth.push_str("2026-01-02T03:05:00+01:00 sandbox sshd-session[901]: Accepted password for anna from 203.0.113.66 port 41000 ssh2\n");
     write(root, "/var/log/auth.log", &auth)?;
+
+    // --- software source, shell history and a hidden program
+    write(root, "/etc/apt/sources.list.d/extra.list", "deb [trusted=yes] http://198.51.100.7/debian trixie main\n")?;
+    write(root, "/root/.bash_history", "ls\nunset HISTFILE\n")?;
+    write(root, "/var/tmp/.cache/agent", "\u{7f}ELF dummy program\n")?;
+    chmod(root, "/var/tmp/.cache/agent", 0o755)?;
 
     // --- SUID files
     write(root, "/usr/bin/passwd", "ELF-dummy passwd\n")?;

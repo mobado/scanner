@@ -1,6 +1,6 @@
 [package]
 name = "scanner"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 description = "Read-only intrusion and backdoor scanner for Debian 13 (Trixie)"
 license = "GPL-3.0-only"
@@ -30,6 +30,7 @@ clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 sha2 = "0.10"
 md5 = { package = "md-5", version = "0.10" }
+rustix = { version = "1", features = ["fs"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 tempfile = "3"
 eframe = { version = "0.37", optional = true }

@@ -39,6 +39,59 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     check_hosts(ctx, col);
     check_arp_and_routes(ctx, col);
     check_promiscuous(ctx, col);
+    check_nat(ctx, col);
+}
+
+/// Firewall rules in `nft list ruleset` that send traffic somewhere else. Rules that Docker,
+/// libvirt and other virtualisation tools manage are left out.
+pub fn nat_redirects(ruleset: &str) -> Vec<String> {
+    const MANAGED: [&str; 5] = ["docker", "libvirt", "incus", "lxc", "netavark"];
+    let managed = |name: &str| MANAGED.iter().any(|m| name.to_lowercase().contains(m));
+    let (mut table, mut chain) = (String::new(), String::new());
+    let mut out = Vec::new();
+    for line in ruleset.lines().map(|l| l.trim()) {
+        if let Some(rest) = line.strip_prefix("table ") {
+            table = rest.trim_end_matches('{').trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("chain ") {
+            chain = rest.trim_end_matches('{').trim().to_string();
+        } else if !managed(&table) && !managed(&chain) {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            // "dnat to …", "dnat ip to …" or "redirect to :port" (not "icmp type redirect")
+            let redirect = words.iter().position(|w| *w == "redirect").map(|i| i == 0 || words[i - 1] != "type").unwrap_or(false);
+            if (words.contains(&"dnat") || redirect) && !line.starts_with("type ") {
+                out.push(format!("table {table}, chain {chain}: {line}"));
+            }
+        }
+    }
+    out
+}
+
+fn check_nat(ctx: &ScanCtx, col: &mut Collector) {
+    if !ctx.sys.is_live() || !ctx.privileged {
+        return;
+    }
+    let Some(nft) = crate::external_tools::find_binary("nft") else { return };
+    let ruleset = match crate::external_tools::run_capture(&nft, &["list", "ruleset"], 30) {
+        Ok(o) if o.status == Some(0) => o.stdout,
+        Ok(_) => {
+            // the read-only timer service deliberately lacks the network administration right
+            col.note("The firewall rules could not be read (nft needs network administration rights), so port forwarding was not checked");
+            return;
+        }
+        Err(e) => {
+            col.note(format!("nft could not list the firewall rules: {e}"));
+            return;
+        }
+    };
+    let rules = nat_redirects(&ruleset);
+    if !rules.is_empty() {
+        col.push(
+            Finding::new(Severity::Low, MODULE, "NET-NAT-REDIRECT", "Firewall rules redirect or forward traffic")
+                .evidence(clip(&rules.join("\n"), 1200))
+                .description("These rules send incoming or outgoing traffic to another address or port. Port forwarding for your own services does this; an attacker uses it to open a way in or to reroute your connections.")
+                .verify("nft list ruleset"),
+        );
+    }
 }
 
 fn describe(c: &Connection) -> String {

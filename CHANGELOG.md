@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+* Files: executable programs in temporary folders (also when `/tmp` is held in memory, including
+  SUID files there), file capabilities, locked (immutable) files, SUID shells and interpreters,
+  and system programs and PAM modules compared with their package checksums.
+* Processes: long-running high CPU use, `LD_LIBRARY_PATH` into temporary folders.
+* Persistence: apt software sources (unsigned, outside Debian) and apt hooks, suspicious
+  commands in shell histories, accounts or groups that share an ID or name. The apt files are
+  part of the baseline.
+* Logins and network: SSH logins from the internet, firewall port forwarding.
+* New settings `allowed_capability_files`, `trusted_apt_hosts`, `high_cpu_percent`.
+
 ## 0.4.2
 * The log checks look back four weeks (28 days) and no further, for the journal and for
   `auth.log`/`syslog` files. The setting is now called `log_days` (it replaces `login_days`).

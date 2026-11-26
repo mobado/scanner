@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 
 /// The lists that new versions may add entries to. Lists that only the person fills
 /// (ignored findings, own units, key comments, roots to scan) are never touched.
-const GROWING_LISTS: [&str; 19] = [
+const GROWING_LISTS: [&str; 21] = [
+    "allowed_capability_files",
+    "trusted_apt_hosts",
     "common_remote_ports",
     "trusted_resolvers",
     "allowed_out_of_tree_modules",

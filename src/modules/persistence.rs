@@ -9,7 +9,9 @@
 //! Every file that controls persistence is hashed (SHA-256) into the inventory so that
 //! a baseline can show what changed.
 
+pub mod apt;
 pub mod extra;
+pub mod history;
 pub mod ssh;
 pub mod system;
 
@@ -61,6 +63,9 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     extra::check_udev(ctx, col);
     extra::check_at_jobs(ctx, col);
     extra::check_keys_and_certificates(ctx, col);
+    apt::check_apt(ctx, col);
+    history::check_histories(ctx, col, &homes);
+    system::check_duplicate_ids(ctx, col, &accounts);
     col.inventory.accounts = extra::collect_accounts(ctx, &accounts);
 }
 

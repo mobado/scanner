@@ -235,6 +235,33 @@ fn level(count: usize, threshold: usize) -> Severity {
     }
 }
 
+/// Logins that succeeded from an address on the internet.
+fn public_logins(source: &str, list: &[&Event], col: &mut Collector, journal: &dyn Fn(&str) -> String) {
+    if !source.parse().map(|ip| super::netwatch::is_public(&ip)).unwrap_or(false) {
+        return;
+    }
+    let accepted: Vec<(&Event, &str)> = list
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::SshAccepted { method } => Some((*e, method.as_str())),
+            _ => None,
+        })
+        .collect();
+    let Some((last, _)) = accepted.last() else { return };
+    let mut who: Vec<String> = accepted.iter().map(|(e, method)| format!("{} ({method})", e.user)).collect();
+    who.sort();
+    who.dedup();
+    // a password can be guessed or stolen; a key cannot be guessed
+    let password = accepted.iter().any(|(_, m)| *m != "publickey");
+    col.push(
+        Finding::new(if password { Severity::Medium } else { Severity::Low }, MODULE, "AUTH-SSH-PUBLIC", format!("SSH login from the internet: {source}"))
+            .evidence(format!("{} login(s): {}\nlatest: {}", accepted.len(), clip(&who.join(", "), 300), clip(&last.line, 300)))
+            .description("Someone logged in to this machine from an address on the internet. Check that it was you. If SSH does not need to be reachable from outside, close the port in the router or firewall.")
+            .verify(journal(source))
+            .verify("sudo last -i | head -40"),
+    );
+}
+
 /// Turn the events into findings.
 pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
     let journal = |filter: &str| format!("sudo journalctl --since=-28days SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 | grep -F -- {}", shq(filter));
@@ -281,6 +308,7 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
                     .verify(format!("sudo grep -rn . /root/.ssh/authorized_keys /home/{}/.ssh/authorized_keys", shq(&e.user))),
             );
         }
+        public_logins(source, list, col, &journal);
         let failures: Vec<&Event> = list.iter().copied().filter(|e| !matches!(e.kind, Kind::SshAccepted { .. })).collect();
         let attempts = failed.max(invalid);
         if attempts >= threshold {

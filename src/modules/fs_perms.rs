@@ -4,6 +4,7 @@
 //! and by `st_dev`: only devices of local file systems in /proc/mounts are walked.
 
 use super::common::{mode_string, shq};
+use super::filemarks;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::sys::sha256_file;
@@ -137,19 +138,15 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
             };
             let mode = meta.mode();
             let shown = ctx.sys.display(entry.path());
+            if ft.is_file() && mode & 0o111 != 0 && !ctx.cfg.is_temp_path(&shown) {
+                filemarks::check_capabilities(ctx, col, &shown, entry.path(), &meta);
+            }
+            if ft.is_file() || ft.is_dir() {
+                filemarks::check_immutable(col, &shown, entry.path());
+            }
 
             if ft.is_file() && mode & (S_ISUID | S_ISGID) != 0 {
-                let e = SuidEntry {
-                    path: shown.clone(),
-                    mode: mode_string(mode),
-                    uid: meta.uid(),
-                    gid: meta.gid(),
-                    size: meta.size(),
-                    mtime: meta.mtime(),
-                    suid: mode & S_ISUID != 0,
-                    sgid: mode & S_ISGID != 0,
-                    sha256: sha256_file(entry.path(), 256 * 1024 * 1024),
-                };
+                let e = suid_entry(&shown, entry.path(), &meta);
                 judge_suid(ctx, &e, mode, cfg.is_suid_allowed(&shown), col);
                 entries.push(e);
             }
@@ -181,10 +178,34 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
         col.note(format!("{errors} files/directories could not be read during the file system walk{}", if ctx.privileged { "" } else { " (run as root)" }));
     }
 
+    // Temporary folders are often memory file systems that the walk above skips.
+    for t in filemarks::check_temp_programs(ctx, col) {
+        if !entries.iter().any(|e| e.path == t.path) {
+            let e = suid_entry(&t.path, &t.real, &t.meta);
+            judge_suid(ctx, &e, t.meta.mode(), cfg.is_suid_allowed(&t.path), col);
+            entries.push(e);
+        }
+    }
+    filemarks::check_system_programs(ctx, col);
     check_sensitive_files(ctx, col);
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     col.inventory.suid = entries;
     col.inventory.fs_files_scanned = scanned;
+}
+
+fn suid_entry(shown: &str, real: &std::path::Path, meta: &std::fs::Metadata) -> SuidEntry {
+    let mode = meta.mode();
+    SuidEntry {
+        path: shown.to_string(),
+        mode: mode_string(mode),
+        uid: meta.uid(),
+        gid: meta.gid(),
+        size: meta.size(),
+        mtime: meta.mtime(),
+        suid: mode & S_ISUID != 0,
+        sgid: mode & S_ISGID != 0,
+        sha256: sha256_file(real, 256 * 1024 * 1024),
+    }
 }
 
 fn judge_suid(ctx: &ScanCtx, e: &SuidEntry, mode: u32, whitelisted: bool, col: &mut Collector) {
@@ -229,6 +250,15 @@ fn judge_suid(ctx: &ScanCtx, e: &SuidEntry, mode: u32, whitelisted: bool, col: &
         return;
     }
     if whitelisted {
+        return;
+    }
+    if e.suid && e.uid == 0 && filemarks::runs_any_command(&e.path) {
+        col.push(
+            Finding::new(Severity::Critical, MODULE, "FS-SUID-SHELL", format!("SUID shell or interpreter: {}", e.path))
+                .evidence(ev)
+                .description("This program can run any command, and with SUID root it does so as root for every user. Debian never installs it that way; it is one of the most common backdoors. Remove the bit with chmod u-s and find out who set it.")
+                .verify_all(verify),
+        );
         return;
     }
     if e.suid && e.uid != 0 {

@@ -49,6 +49,12 @@ pub struct Config {
     pub allowed_pam_modules: Vec<String>,
     /// Known harmless LD_PRELOAD libraries (substring of the path), e.g. Firefox sandbox and Flatpak.
     pub allowed_ld_preload: Vec<String>,
+    /// Programs that may have file capabilities (full path; '*' matches one path segment).
+    pub allowed_capability_files: Vec<String>,
+    /// Software source hosts that are not reported ("*.debian.org" covers every mirror).
+    pub trusted_apt_hosts: Vec<String>,
+    /// Report processes that used this much CPU on average for 10 minutes or more (0 = off).
+    pub high_cpu_percent: u32,
     /// Remote ports that normal outgoing connections use (others are listed per program).
     pub common_remote_ports: Vec<u16>,
     /// Public DNS servers that are fine to find in /etc/resolv.conf.
@@ -195,6 +201,18 @@ impl Default for Config {
                 // Electron/Chromium apps ship their own SUID sandbox ('*' matches one directory level)
                 "/usr/lib/*/chrome-sandbox", "/opt/*/chrome-sandbox", "/usr/share/*/chrome-sandbox",
             ]),
+            allowed_capability_files: s(&[
+                "/usr/bin/ping", "/usr/bin/fping", "/usr/bin/mtr-packet", "/usr/sbin/arping", "/usr/bin/arping",
+                "/usr/bin/newuidmap", "/usr/bin/newgidmap", "/usr/bin/dumpcap", "/usr/bin/i3status",
+                "/usr/bin/kwin_wayland", "/usr/bin/gnome-shell", "/usr/bin/gnome-keyring-daemon", "/usr/bin/sway",
+                "/usr/lib/*/gstreamer1.0/gstreamer-1.0/gst-ptp-helper", "/usr/lib/*/libexec/ksystemstats_intel_helper",
+                "/usr/lib/*/libexec/ksgrd_network_helper", "/usr/lib/*/libexec/ksysguard/ksgrd_network_helper",
+                "/usr/lib/*/libexec/org_kde_powerdevil","/usr/lib/*/libexec/kf6/ksystemstats_intel_helper",
+                "/usr/lib/*/libexec/kf6/kdenetwork-filesharing", "/usr/libexec/ksysguard/ksgrd_network_helper",
+                "/usr/lib/nmap/nmap", "/usr/bin/rcp", "/usr/bin/rsh", "/usr/bin/rlogin",
+            ]),
+            trusted_apt_hosts: s(&["*.debian.org"]),
+            high_cpu_percent: 70,
             fs_roots: s(&["/"]),
             fs_exclude_paths: s(&[
                 "/proc", "/sys", "/dev", "/run", "/var/lib/docker/overlay2",
@@ -300,6 +318,11 @@ impl Config {
     /// Is the path in allowed_suid? '*' matches a name (not '/').
     pub fn is_suid_allowed(&self, path: &str) -> bool {
         self.allowed_suid.iter().any(|p| glob_match(p, path))
+    }
+
+    /// Is the path in allowed_capability_files?
+    pub fn is_capability_allowed(&self, path: &str) -> bool {
+        self.allowed_capability_files.iter().any(|p| glob_match(p, path))
     }
 
     /// Should the path be skipped during the file system walk? Supports '*' like is_suid_allowed.

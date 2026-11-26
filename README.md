@@ -16,11 +16,11 @@ export buttons).
 | `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands |
 | `services` | Web shells in web folders, container socket and Docker API exposure, privileged containers |
 | `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps |
-| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD` |
-| `fs_perms` | SUID/SGID files on local file systems, dangerous permissions |
-| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers |
+| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners) |
+| `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions |
+| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories |
 | `updates` | Pending security updates, other updates, reboot needed, old package lists |
-| `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, wrong sudo/su/desktop passwords |
+| `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords |
 | external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed) |
 
 Every rule is listed in [docs/CHECKS.md](docs/CHECKS.md). What changed between versions is in
@@ -82,7 +82,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.4.2-1_amd64.deb
+sudo apt install ./scanner_0.5.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -191,6 +191,7 @@ and upgrade). Your own entries, settings and comments are kept, the previous fil
 `whitelist.defaults.json`). Set `add_new_defaults = false` to use exactly your own lists.
 Important fields: `allowed_listen_ports` (`"tcp/22"` or a range `"udp/1714-1764"`),
 `allowed_listen_processes` (trusted programs under `/usr`), `allowed_suid` (supports `*`),
+`allowed_capability_files`, `trusted_apt_hosts`, `high_cpu_percent` (0 = off),
 `allowed_systemd_units`, `allowed_cron_files`, `allowed_ssh_key_comments`,
 `allowed_ld_preload`, `allowed_argv0_mismatch`, `fs_exclude_paths`,
 `log_days` (how far back the log checks look, 28) and `login_fail_threshold` (login check), `common_remote_ports`,
@@ -282,7 +283,7 @@ Critical findings give exit code 2 and the service is marked as failed – add
 
 ```sh
 cargo test                     # unit and integration tests (mocked /proc and systemd files)
-scanner --self-test            # builds a made-up system in a temporary directory, 30 rules
+scanner --self-test            # builds a made-up system in a temporary directory, 36 rules
 ```
 
 For a test against a real system, use a **disposable VM or container** with Debian 13:
@@ -311,5 +312,7 @@ Licensed under the **GNU General Public License v3.0** – see [LICENSE](LICENSE
   `ss` ↔ `/proc/net` and `sched_debug` ↔ `/proc` catch simpler variants; for full
   certainty, scan the disk from trusted boot media with `--root /mnt/disk`.
 * `/sys/kernel/debug/sched/debug` needs root and a mounted debugfs.
+* Shell histories are read to find suspicious commands. Matching lines appear in the report,
+  so treat saved reports as private (a typed password could be on such a line).
 * rkhunter and lynis write their own logs in `/var/log` – the scanner itself writes nothing.
 * The window version cannot be linked statically; the static binary is CLI-only.

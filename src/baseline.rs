@@ -42,7 +42,8 @@ pub struct Baseline {
 
 /// Kinds of files that later versions started to track: in a baseline made by an older
 /// version they are new to the baseline, not suspicious.
-pub const NEWLY_TRACKED: [&str; 8] = [
+pub const NEWLY_TRACKED: [&str; 9] = [
+    "/etc/apt/",
     "/etc/ld.so.conf",
     "/etc/udev/",
     "/etc/modprobe.d/",

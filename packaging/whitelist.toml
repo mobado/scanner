@@ -496,6 +496,38 @@ allowed_suid = [
     "/usr/share/*/chrome-sandbox",
 ]
 fs_roots = ["/"]
+# Software source hosts that are not reported ("*.debian.org" covers every Debian mirror).
+trusted_apt_hosts = ["*.debian.org"]
+# Report processes that used this much CPU on average for 10 minutes or more (0 = never).
+high_cpu_percent = 70
+# Programs that may have file capabilities ('*' matches one name).
+allowed_capability_files = [
+    "/usr/bin/ping",
+    "/usr/bin/fping",
+    "/usr/bin/mtr-packet",
+    "/usr/sbin/arping",
+    "/usr/bin/arping",
+    "/usr/bin/newuidmap",
+    "/usr/bin/newgidmap",
+    "/usr/bin/dumpcap",
+    "/usr/bin/i3status",
+    "/usr/bin/kwin_wayland",
+    "/usr/bin/gnome-shell",
+    "/usr/bin/gnome-keyring-daemon",
+    "/usr/bin/sway",
+    "/usr/lib/*/gstreamer1.0/gstreamer-1.0/gst-ptp-helper",
+    "/usr/lib/*/libexec/ksystemstats_intel_helper",
+    "/usr/lib/*/libexec/ksgrd_network_helper",
+    "/usr/lib/*/libexec/ksysguard/ksgrd_network_helper",
+    "/usr/lib/*/libexec/org_kde_powerdevil",
+    "/usr/lib/*/libexec/kf6/ksystemstats_intel_helper",
+    "/usr/lib/*/libexec/kf6/kdenetwork-filesharing",
+    "/usr/libexec/ksysguard/ksgrd_network_helper",
+    "/usr/lib/nmap/nmap",
+    "/usr/bin/rcp",
+    "/usr/bin/rsh",
+    "/usr/bin/rlogin",
+]
 fs_exclude_paths = [
     "/proc",
     "/sys",

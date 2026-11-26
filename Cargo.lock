@@ -2960,7 +2960,7 @@ dependencies = [
 
 [[package]]
 name = "scanner"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2968,6 +2968,7 @@ dependencies = [
  "eframe",
  "image",
  "md-5",
+ "rustix 1.1.6",
  "serde",
  "serde_json",
  "sha2",

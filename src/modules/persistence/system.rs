@@ -5,7 +5,7 @@ use crate::finding::{Finding, Severity};
 use crate::modules::common::{analyze_command, clip, max_severity, mode_string, reasons, shq, split_quoted, writable_by_others, CmdIssue};
 use crate::modules::{Collector, ScanCtx};
 use crate::procinfo::Account;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::os::unix::fs::MetadataExt;
 
 // ---------------------------------------------------------------- PAM
@@ -224,6 +224,46 @@ pub fn check_shell_files(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u
 }
 
 // ---------------------------------------------------------------- accounts and sudo
+
+/// Two accounts or groups with the same number or name share their files and rights.
+pub fn check_duplicate_ids(ctx: &ScanCtx, col: &mut Collector, accounts: &[Account]) {
+    let groups: Vec<(String, u32)> = ctx
+        .sys
+        .read_string("/etc/group")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            Some((f.first()?.to_string(), f.get(2)?.parse().ok()?))
+        })
+        .collect();
+    let users: Vec<(String, u32)> = accounts.iter().map(|a| (a.name.clone(), a.uid)).collect();
+    for (list, file, thing, number, severity) in [(users, "/etc/passwd", "account", "UID", Severity::High), (groups, "/etc/group", "group", "GID", Severity::Medium)] {
+        let mut by_id: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
+        let mut by_name: BTreeMap<&str, usize> = BTreeMap::new();
+        for (name, id) in &list {
+            by_id.entry(*id).or_default().push(name);
+            *by_name.entry(name).or_default() += 1;
+        }
+        // extra UID 0 accounts have their own, more serious finding
+        for (id, names) in by_id.iter().filter(|(id, n)| n.len() > 1 && !(thing == "account" && **id == 0)) {
+            col.push(
+                Finding::new(severity, MODULE, "PERS-DUP-ID", format!("Several {thing}s share {number} {id}: {}", names.join(", ")))
+                    .evidence(format!("{file}: {number} {id} is used by {}", names.join(", ")))
+                    .description(format!("To the system, {thing}s with the same {number} are the same: they can read and change each other's files. A hidden second name for an existing {thing} is a way to keep access."))
+                    .verify(format!("awk -F: '$3 == {id}' {file}")),
+            );
+        }
+        for (name, count) in by_name.iter().filter(|(_, c)| **c > 1) {
+            col.push(
+                Finding::new(Severity::High, MODULE, "PERS-DUP-ID", format!("The {thing} name {name} appears {count} times in {file}"))
+                    .evidence(format!("{file}: {count} lines for {name}"))
+                    .description("A name should appear once. A second line can give the same name other rights, and is usually added by hand.")
+                    .verify(format!("grep -n '^{name}:' {file}")),
+            );
+        }
+    }
+}
 
 pub fn check_accounts(ctx: &ScanCtx, col: &mut Collector, accounts: &[Account]) {
     for p in ["/etc/passwd", "/etc/group", "/etc/sudoers"] {

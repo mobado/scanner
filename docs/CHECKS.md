@@ -29,6 +29,7 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-ARP-DUPLICATE` | High/Low | Several addresses with one hardware address (High when it includes the gateway) |
 | `NET-ROUTE-DEFAULT` | Medium | Two default gateways with the same priority |
 | `NET-PROMISC` | Medium | A network card in promiscuous (sniffing) mode |
+| `NET-NAT-REDIRECT` | Low | Firewall rules (`nft`) that redirect or forward traffic; Docker/libvirt rules are skipped (needs root; not in the timer service) |
 
 ## Kernel and modules (`kernel`)
 
@@ -72,6 +73,8 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PROC-MALWARE-NAME` | Critical | A known malware name (miners …) |
 | `PROC-SHM-CWD` | Medium | A process works in `/dev/shm` |
 | `PROC-ROOT-ODD-PATH` | Medium/Low | A root process from outside the package folders |
+| `PROC-HIGH-CPU` | Medium/Low | At least `high_cpu_percent` (70) CPU on average for 10 minutes or more (a miner sign; Low for programs in system folders) |
+| `PROC-LD-LIBRARY-PATH` | High/Low | `LD_LIBRARY_PATH` points to a temporary (High) or relative folder (AppImages are skipped) |
 
 ## File permissions (`fs_perms`)
 
@@ -83,6 +86,12 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `FS-SUID-WRITABLE` | Critical | A world-writable SUID/SGID file |
 | `FS-WORLD-WRITABLE` | High | A world-writable file or folder in a system location |
 | `FS-SENSITIVE-PERMS` | Critical/High | Wrong permissions on `passwd`, `shadow`, `sudoers` … |
+| `FS-SUID-SHELL` | Critical | A shell, interpreter, `find`, `vim` … with SUID root |
+| `FS-TMP-EXEC` | High–Low | Executable programs or scripts in `temp_dirs`, grouped per folder (High in `/dev/shm` or hidden); also when `/tmp` is held in memory |
+| `FS-CAPABILITY` | Critical–Low | A file with capabilities that is not in `allowed_capability_files`; Critical for root-level rights on a shell/interpreter or in a temporary or home folder |
+| `FS-IMMUTABLE` | High/Low | A locked (`chattr +i`) file in `/etc`, system program folders, `/root`, cron or `.ssh` (Low for `resolv.conf`) |
+| `FS-SYSTEM-CHANGED` | Critical | `su`, `sudo`, `sshd`, `ps`, `ls`, a PAM module … differs from the checksum its package ships |
+| `FS-SYSTEM-UNPACKAGED` | High | A PAM module that no package installed |
 
 ## Persistence (`persistence`)
 
@@ -105,6 +114,11 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PERS-CA-ADDED` | Low | A locally added certificate authority |
 | `PERS-KEY-PERMS` | High | A private SSH host or TLS key readable by others |
 | `PERS-UID0` | Critical | A second account with UID 0 |
+| `PERS-DUP-ID` | High/Medium | Two accounts share a UID, two groups a GID, or a name appears twice |
+| `PERS-APT-UNSIGNED` | Medium | A software source with `trusted=yes` or `allow-insecure=yes` |
+| `PERS-APT-THIRDPARTY` | Low | A software source whose host is not in `trusted_apt_hosts` (`*.debian.org`) |
+| `PERS-APT-HOOK` | Critical/High | apt runs a suspicious command (`apt.conf.d` hooks) |
+| `PERS-HISTORY` | High–Low | Suspicious commands in a shell history (reverse shells, history switched off, logs deleted, download-and-run …); only those lines are shown |
 | `PERS-SYSACCT-SHELL` / `PERS-EMPTY-PASSWORD` / `PERS-SUDO-NOPASSWD` | High–Low | Account and sudo settings |
 
 ## Pending updates (`updates`)
@@ -127,6 +141,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 |------|-------------|---------|
 | `AUTH-SSH-SUCCESS-AFTER-FAIL` | **Critical** | An address made 5 or more failed SSH attempts and then logged in |
 | `AUTH-SSH-ROOT-PASSWORD` | High | root logged in over SSH with a password |
+| `AUTH-SSH-PUBLIC` | Medium/Low | A successful SSH login from an internet address (Low with a key) |
 | `AUTH-SSH-BRUTEFORCE` | Medium | Many failed SSH logins from one address |
 | `AUTH-SSH-FAILED` | Low | A few failed SSH logins (all addresses in one finding) |
 | `AUTH-SSH-INVALID-USER` | Medium/Low | SSH attempts with user names that do not exist |

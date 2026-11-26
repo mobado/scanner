@@ -24,6 +24,9 @@ pub struct ProcInfo {
     pub socket_fds: Vec<(u32, u64)>,
     /// Value of LD_PRELOAD in the process environment, if it can be read.
     pub ld_preload: Option<String>,
+    /// Value of LD_LIBRARY_PATH in the process environment, if it can be read.
+    #[serde(default)]
+    pub ld_library_path: Option<String>,
     /// Could the fd directory be read? (Needs root for other users' processes.)
     pub fds_readable: bool,
 }
@@ -201,6 +204,11 @@ pub fn read_proc(sys: &SysRoot, pid: u32) -> Option<ProcInfo> {
             if let Some(v) = var.strip_prefix("LD_PRELOAD=") {
                 if !v.trim().is_empty() {
                     info.ld_preload = Some(v.to_string());
+                }
+            }
+            if let Some(v) = var.strip_prefix("LD_LIBRARY_PATH=") {
+                if !v.trim().is_empty() {
+                    info.ld_library_path = Some(v.to_string());
                 }
             }
         }
