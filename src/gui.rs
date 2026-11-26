@@ -87,7 +87,7 @@ pub struct ScannerApp {
 }
 
 impl ScannerApp {
-    fn new(cc: &eframe::CreationContext<'_>, cfg: Config, cfg_path: Option<PathBuf>, shot: Option<PathBuf>, sudo_note: Option<String>) -> Self {
+    fn new(egui_ctx: &egui::Context, cfg: Config, cfg_path: Option<PathBuf>, shot: Option<PathBuf>, sudo_note: Option<String>) -> Self {
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = PANEL;
         visuals.window_fill = PANEL;
@@ -97,9 +97,9 @@ impl ScannerApp {
         visuals.widgets.inactive.bg_fill = CARD_HI;
         visuals.widgets.inactive.weak_bg_fill = CARD_HI;
         visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x30, 0x3b, 0x49);
-        cc.egui_ctx.set_theme(egui::Theme::Dark);
-        cc.egui_ctx.set_visuals_of(egui::Theme::Dark, visuals);
-        cc.egui_ctx.all_styles_mut(|s| {
+        egui_ctx.set_theme(egui::Theme::Dark);
+        egui_ctx.set_visuals_of(egui::Theme::Dark, visuals);
+        egui_ctx.all_styles_mut(|s| {
             s.spacing.item_spacing = egui::vec2(8.0, 6.0);
             s.spacing.button_padding = egui::vec2(10.0, 5.0);
         });
@@ -133,7 +133,7 @@ impl ScannerApp {
         if let Some(note) = sudo_note {
             app.status = note;
         }
-        app.start_scan(&cc.egui_ctx);
+        app.start_scan(egui_ctx);
         app
     }
 
@@ -935,7 +935,13 @@ impl eframe::App for ScannerApp {
         if self.busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
         }
+        self.draw(ui);
+    }
+}
 
+impl ScannerApp {
+    /// The whole window content.
+    fn draw(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("top").frame(egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(14, 4))).show(ui, |ui| self.top_bar(ui));
         egui::Panel::bottom("bottom").frame(egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(14, 2))).show(ui, |ui| self.bottom_bar(ui));
         egui::Panel::left("left")
@@ -1184,12 +1190,58 @@ pub fn run(cfg: Config, cfg_path: Option<PathBuf>, screenshot: Option<PathBuf>, 
         viewport = viewport.with_active(false);
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
+    // Set when the window has saved its picture.
+    let pictured = Arc::new(AtomicBool::new(false));
+    if let Some(path) = screenshot.clone() {
+        picture_without_screen_after(WINDOW_PATIENCE, pictured.clone(), cfg.clone(), cfg_path.clone(), path);
+    }
     eframe::run_native(
         "scanner",
         options,
-        Box::new(move |cc| Ok(Box::new(ScannerApp::new(cc, cfg, cfg_path, screenshot, sudo_note)))),
+        Box::new(move |cc| {
+            let mut app = ScannerApp::new(&cc.egui_ctx, cfg, cfg_path, screenshot, sudo_note);
+            if let Some(shot) = &mut app.shot {
+                shot.done = pictured;
+            }
+            Ok(Box::new(app))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("the window could not start: {e}"))
+}
+
+/// How long `--screenshot` waits for the window to paint itself.
+const WINDOW_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// If the window has not saved its picture in time (a locked screen takes no frames and painting
+/// then blocks), draw the same content without a screen, save that and end the program.
+fn picture_without_screen_after(wait: std::time::Duration, pictured: Arc<AtomicBool>, cfg: Config, cfg_path: Option<PathBuf>, path: PathBuf) {
+    std::thread::spawn(move || {
+        std::thread::sleep(wait);
+        if pictured.load(Ordering::SeqCst) {
+            return;
+        }
+        eprintln!("scanner: the window could not be painted (is the screen locked?) – drawing the picture without a screen");
+        let ctx = egui::Context::default();
+        // arrows and icons come from the system's fonts, which the window adds the same way
+        ctx.add_font_provider(Arc::new(egui_system_font_provider::SystemFontProvider::new()));
+        let mut app = ScannerApp::new(&ctx, cfg, cfg_path, None, None);
+        // a failure in here must end the program too, not leave it hanging behind the window
+        let saved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::offscreen::save_picture(&ctx, [1360, 860], BG, &path, |ui| {
+                app.poll();
+                app.draw(ui);
+                !app.busy()
+            })
+        }))
+        .unwrap_or_else(|_| Err("drawing the picture failed".into()));
+        match saved {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("scanner: could not save the screenshot: {e}");
+                std::process::exit(1);
+            }
+        }
+    });
 }
 
 // ------------------------------------------------------------------ password window

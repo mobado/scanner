@@ -1,6 +1,6 @@
 [package]
 name = "scanner"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 description = "Read-only intrusion and backdoor scanner for Debian 13 (Trixie)"
 license = "GPL-3.0-only"
@@ -17,7 +17,7 @@ path = "src/main.rs"
 [features]
 default = ["gui"]
 # The window (egui). Build with --no-default-features for a plain, static CLI binary.
-gui = ["dep:eframe", "dep:image"]
+gui = ["dep:eframe", "dep:image", "dep:egui_system_font_provider"]
 
 [dependencies]
 anyhow = "1"
@@ -35,6 +35,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 tempfile = "3"
 eframe = { version = "0.37", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+# the symbol fonts the window falls back to (the same crate eframe uses), for offscreen pictures
+egui_system_font_provider = { version = "0.37", optional = true, default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

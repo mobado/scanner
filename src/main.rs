@@ -7,6 +7,8 @@
 mod elevate;
 #[cfg(feature = "gui")]
 mod gui;
+#[cfg(feature = "gui")]
+mod offscreen;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;

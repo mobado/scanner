@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+* `--screenshot` also works when the screen is locked or the window cannot be painted: after
+  20 seconds the same content is drawn without a screen and saved.
+
 ## 0.9.0
 * New module `desktop_session`: all desktop checks (autostart, session and login-screen
   scripts, D-Bus services, portals, KDE, GNOME, XFCE, window managers, keyboard readers,

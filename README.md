@@ -41,6 +41,7 @@ src/
 ├── lib.rs              the library (all detection)
 ├── main.rs             CLI with clap (+ the window with the "gui" feature)
 ├── gui.rs              the window (eframe/egui) and the sudo password window
+├── offscreen.rs        draws the window's picture without a screen (--screenshot when locked)
 ├── elevate.rs          asks for the sudo password and restarts as root
 ├── finding.rs          Finding { severity, module, rule, title, evidence, description, verify }
 ├── error.rs            ScanError (thiserror); anyhow is only used in main
@@ -98,7 +99,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.9.0-1_amd64.deb
+sudo apt install ./scanner_0.9.1-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
