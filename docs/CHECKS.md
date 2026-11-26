@@ -87,7 +87,6 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PROC-APPIMAGE` | Low | A program running from a mounted AppImage |
 | `PROC-TRACED` | Critical–Low | A process is being traced (`TracerPid`): Critical when an unknown program traces sshd, sudo, a browser, a key agent …; Low for an installed debugger on an ordinary program |
 | `PROC-HIDDEN-MOUNT` | Critical–Medium | A mount over `/proc/<pid>` (hides a process), or over parts of `/etc`, `/usr/bin`, libraries … |
-| `PROC-INPUT-READER` | High/Medium | A program that reads `/dev/input` directly and is not a known compositor, key or mouse tool (High from outside the system folders), known keyloggers, or `xinput test`. The report's notes also say whether each session is Wayland or X11 |
 | `PROC-LD-LIBRARY-PATH` | High/Low | `LD_LIBRARY_PATH` points to a temporary (High) or relative folder (AppImages are skipped) |
 
 ## File permissions (`fs_perms`)
@@ -131,17 +130,7 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PERS-PAM-PERMIT` | Critical | `pam_permit.so` as `sufficient` in auth/account |
 | `PERS-PAM-EXEC` / `-PATH` / `-UNKNOWN` / `-PERMS` | Critical–Medium | Odd PAM modules and permissions |
 | `PERS-SHELLRC` | High+ | Suspicious shell start files |
-| `PERS-AUTOSTART` | Critical–Low | XDG autostart (`/etc/xdg`, `/usr/share/autostart`, GNOME and user folders): suspicious commands; own scripts, programs no package installed, or a user entry that replaces a system entry (Medium); installed programs in a user's autostart (Low) |
-| `PERS-DBUS-SERVICE` | Critical–Low | Session D-Bus services in home folders or `/usr/local` (Medium when they replace a system service, such as a portal) |
-| `PERS-PORTAL` | Medium | A desktop portal that no package installed |
-| `PERS-DESKTOP-COMMAND` | Critical–Medium | A command from a desktop's own settings that is suspicious or runs from an odd place: KDE saved session, notification actions and shortcuts; GNOME shortcuts and saved session; XFCE session, shortcuts, saved session and panel; sway, i3, Hyprland, swayidle, openbox, LXDE, labwc, wayfire, fluxbox, xscreensaver |
-| `PERS-KWIN-SCRIPT` / `-RULE` | Medium/Low | An own KWin script is on (Medium when it can start programs); window rules that make windows invisible |
-| `PERS-DESKTOP-PROXY` | Medium | KDE or GNOME settings send traffic through a proxy (passwords are not shown) |
-| `PERS-REMOTE-DESKTOP` / `PERS-SCREEN-LOCK` | Medium / Low | GNOME remote desktop is on / the screen lock is off |
-| `PERS-GNOME-EXTENSION` | Low | Own GNOME Shell extensions that are switched on (read from the dconf database) |
-| `PERS-X11-OPEN` | Medium | `xhost +` opens the X11 display to others |
-| `PERS-SESSION-SCRIPT` | Critical–Low | Login, logout, sleep and network scripts (X11, GDM, SDDM, NetworkManager, system-sleep, Plasma, XFCE `xinitrc`): suspicious commands, or not installed by a package |
-| `PERS-DM-SCRIPT` | Critical–Medium | LightDM/SDDM/GDM settings that run an unusual command |
+| `PERS-SESSION-SCRIPT` | Critical–Low | Network (NetworkManager) and sleep scripts: suspicious commands, or not installed by a package |
 | `PERS-POLKIT` | Critical–Low | polkit rules that no package installed (above all ones that allow actions without a password), polkit files in home folders |
 | `PERS-UDEV` | Critical–Medium | A udev rule runs a suspicious command or a program outside the system folders |
 | `PERS-SYSTEMD-GENERATOR` | Critical/High | A systemd generator that no package installed |
@@ -163,6 +152,40 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PERS-APT-HOOK` | Critical/High | apt runs a suspicious command (`apt.conf.d` hooks) |
 | `PERS-HISTORY` | High–Low | Suspicious commands in a shell history (reverse shells, history switched off, logs deleted, download-and-run …); only those lines are shown |
 | `PERS-SYSACCT-SHELL` / `PERS-EMPTY-PASSWORD` / `PERS-SUDO-NOPASSWD` | High–Low | Account and sudo settings |
+
+## Desktop session (`desktop_session`)
+
+Everything tied to a graphical session. Each title starts with a label: `[xdg]` (shared
+standards), `[kde]`, `[gnome]`, `[xfce]`, `[wm]` (sway, i3 and other window managers),
+`[login]` (login screen), `[x11]` and `[input]`.
+
+**Servers.** If the machine has no desktop session, login screen or X server installed and no
+graphical program running, only the keyboard check runs and the report notes it. A baseline
+made then reports `BASE-DESKTOP-NEW` (High) when a desktop appears.
+
+**How findings are graded**
+
+| Level | Meaning | Examples |
+|-------|---------|----------|
+| Critical / High | What runs is itself suspicious | download-and-run, reverse shell, program in `/tmp`, unknown keyboard reader outside the system folders |
+| Medium | It works, but changes what runs or who sees your data | program no package installed, entry replacing a system one, proxy, remote desktop, `xhost +`, own portal |
+| Low (information) | Your own ordinary things, worth knowing | own session scripts, installed programs in autostart, extensions, screen lock off |
+| Baseline difference | A startup file is new or changed | Medium in a home folder, High for system files; state that changes at every logout is not recorded |
+
+| Rule | Usual level | Meaning |
+|------|-------------|---------|
+| `PERS-AUTOSTART` | Critical–Low | `[xdg]` autostart (`/etc/xdg`, `/usr/share/autostart`, GNOME and user folders): suspicious commands; own scripts, programs no package installed, or a user entry that replaces a system entry (Medium); installed programs in a user's autostart (Low) |
+| `PERS-SESSION-SCRIPT` | Critical–Low | X11 and login-screen scripts, `~/.xprofile`, `~/.xinitrc`, `~/.xsessionrc`, Plasma `env` and `shutdown`, XFCE `xinitrc` |
+| `PERS-DM-SCRIPT` | Critical–Medium | `[login]` LightDM, SDDM or GDM settings that run an unusual command |
+| `PERS-DBUS-SERVICE` | Critical–Low | Session D-Bus services in home folders or `/usr/local` (Medium when they replace a system service, such as a portal) |
+| `PERS-PORTAL` | Medium | A desktop portal that no package installed |
+| `PERS-DESKTOP-COMMAND` | Critical–Medium | A command from a desktop's own settings that is suspicious or runs from an odd place: KDE saved session, notification actions and shortcuts; GNOME shortcuts and saved session; XFCE session, shortcuts, saved session and panel; sway, i3, Hyprland, swayidle, openbox, LXDE, labwc, wayfire, fluxbox, xscreensaver |
+| `PERS-KWIN-SCRIPT` / `-RULE` | Medium/Low | `[kde]` an own KWin script is on (Medium when it can start programs); window rules that make windows invisible |
+| `PERS-DESKTOP-PROXY` | Medium | KDE or GNOME settings send traffic through a proxy (passwords are not shown) |
+| `PERS-REMOTE-DESKTOP` / `PERS-SCREEN-LOCK` | Medium / Low | `[gnome]` remote desktop is on / the screen lock is off |
+| `PERS-GNOME-EXTENSION` | Low | Own GNOME Shell extensions that are switched on (read from the dconf database) |
+| `PERS-X11-OPEN` | Medium | `xhost +` opens the X11 display to others |
+| `PROC-INPUT-READER` | High/Medium | A program that reads `/dev/input` directly and is not a known compositor, key or mouse tool (High from outside the system folders), known keyloggers, or `xinput test`. The report's notes also say whether each session is Wayland or X11 |
 
 ## Pending updates (`updates`)
 
@@ -206,6 +229,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-LISTEN-NEW` | High/Medium | A new listening port (random ports of known programs are ignored) |
 | `BASE-ACCOUNT-NEW` / `-UID` / `-SHELL` / `-GROUP` / `-PASSWORD` / `-REMOVED` | Critical–Low | New accounts, changed user id or shell, new powerful group, a locked system account got a password |
 | `BASE-PERSIST-NEW` / `-CHANGED` / `-REMOVED` | High–Low | A persistence file appeared / changed / disappeared |
+| `BASE-DESKTOP-NEW` | High/Medium | A graphical desktop appeared on a machine that had none; a virtual or remote screen (Xvnc, x11vnc, Xvfb) started running |
 | `BASE-SECUREBOOT-OFF` / `BASE-LOCKDOWN-OFF` | High | Secure Boot or the kernel lockdown was switched off |
 | `BASE-BOOT-ENTRY-NEW` / `-CHANGED` / `BASE-BOOT-ORDER` | Medium/Low | UEFI boot entries or their order changed |
 

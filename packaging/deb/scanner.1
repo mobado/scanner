@@ -43,8 +43,9 @@ Show only what changed since a baseline (without
 the automatic one, which needs root). The baseline is not modified.
 .TP
 .BI \-\-modules " LIST"
-Comma separated: net_proc, proc_audit, fs_perms, persistence, kernel, services,
-auth_logs, integrity, updates.
+Comma separated: net_proc, proc_audit, fs_perms, persistence, desktop_session, kernel,
+services, auth_logs, integrity, updates. desktop_session is skipped by itself on machines
+without a graphical desktop.
 .TP
 .BI \-\-tools " LIST"
 Comma separated: debsums, chkrootkit, rkhunter, lynis, or "all".

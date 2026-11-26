@@ -4,9 +4,10 @@
 //! the screen to others or switch the screen lock off.
 
 use super::gvdb::{self, Setting};
-use super::{parse_unit, record, MODULE};
+use super::MODULE;
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{analyze_user_command, clip, shq};
+use crate::modules::persistence::{parse_unit, record};
 use crate::modules::{Collector, ScanCtx};
 use crate::pkgverify::owned_paths;
 use std::collections::{BTreeMap, HashSet};

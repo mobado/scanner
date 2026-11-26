@@ -172,6 +172,7 @@ fn baseline_compare_skips_modules_not_scanned() {
         persistence_files: Default::default(),
         accounts: vec![],
         boot: Default::default(),
+        desktop: None,
     };
     let (f, notes) = baseline::compare(&b, &Default::default(), &["fs_perms".to_string()]);
     assert!(f.is_empty());
@@ -581,6 +582,7 @@ fn random_ports_of_a_known_program_are_not_new_listeners() {
         persistence_files: Default::default(),
         accounts: vec![],
         boot: Default::default(),
+        desktop: None,
     };
     let mut inv = scanner::modules::Inventory::default();
     for p in [35622, 37707, 45314] {
@@ -609,7 +611,7 @@ fn an_incomplete_baseline_is_completed_after_a_clean_root_scan() {
     let mut full = Report { running_as_root: true, scan_root: "/".into(), modules: ModuleId::CORE.iter().map(|m| m.id().to_string()).collect(), ..Report::default() };
     full.finalize();
     match auto_save_to(&full, &path) {
-        AutoBaseline::Completed(_, parts) => assert_eq!(parts, vec!["proc_audit".to_string(), "fs_perms".to_string()]),
+        AutoBaseline::Completed(_, parts) => assert_eq!(parts, vec!["proc_audit".to_string(), "fs_perms".to_string(), "desktop_session".to_string()]),
         other => panic!("{other:?}"),
     }
     assert!(Baseline::load(&path).expect("load").modules.iter().any(|m| m == "fs_perms"));

@@ -52,7 +52,7 @@ struct Cli {
     #[arg(long, short = 'c', value_name = "FILE")]
     config: Option<PathBuf>,
 
-    /// Modules to run, comma separated (net_proc,proc_audit,fs_perms,persistence,kernel,services,auth_logs,integrity,updates). Default: all
+    /// Modules to run, comma separated (net_proc,proc_audit,fs_perms,persistence,desktop_session,kernel,services,auth_logs,integrity,updates). Default: all
     #[arg(long, value_delimiter = ',', value_name = "MODULES")]
     modules: Option<Vec<String>>,
 

@@ -3,8 +3,8 @@
 //! `dconf compile` from made-up values.
 
 use scanner::config::Config;
-use scanner::modules::persistence::environments::{hiding_window_rules, opens_x11, window_manager_commands, xfconf_commands};
-use scanner::modules::persistence::gvdb::{read_database, read_keyfile, Setting};
+use scanner::modules::desktop_session::environments::{hiding_window_rules, opens_x11, window_manager_commands, xfconf_commands};
+use scanner::modules::desktop_session::gvdb::{read_database, read_keyfile, Setting};
 use scanner::report::Report;
 use scanner::{run_scan, ModuleId, ScanOptions, Severity, SysRoot};
 use std::fs;
@@ -95,7 +95,8 @@ fn desktop_settings_that_run_commands_or_reroute() {
     write(root, "/usr/share/dbus-1/services/portal.service", "[D-BUS Service]\nName=org.freedesktop.portal.Desktop\nExec=/usr/libexec/xdg-desktop-portal\n");
     file(".local/share/dbus-1/services/p.service", "[D-BUS Service]\nName=org.freedesktop.portal.Desktop\nExec=/home/anna/.cache/portal\n");
     file(".local/share/xdg-desktop-portal/portals/x.portal", "[portal]\nDBusName=x\n");
-    let report = scan(root, &[ModuleId::Persistence]);
+    write(root, "/usr/share/xsessions/test.desktop", "");
+    let report = scan(root, &[ModuleId::DesktopSession]);
 
     let commands = of(&report, "PERS-DESKTOP-COMMAND");
     let has = |end: &str| commands.iter().any(|(_, t)| t.ends_with(end));
@@ -131,7 +132,8 @@ fn autostart_replacements_and_unknown_programs() {
     write(root, "/home/anna/.config/autostart/notify.desktop", "[Desktop Entry]\nExec=other --quiet\n");
     write(root, "/home/anna/.config/autostart/helper.desktop", "[Desktop Entry]\nExec=helper\n");
     write(root, "/home/anna/.config/autostart/app.desktop", "[Desktop Entry]\nExec=app\n");
-    let report = scan(root, &[ModuleId::Persistence]);
+    write(root, "/usr/share/xsessions/test.desktop", "");
+    let report = scan(root, &[ModuleId::DesktopSession]);
     let auto = of(&report, "PERS-AUTOSTART");
     assert_eq!(auto.len(), 3, "{auto:?}");
     assert!(auto.iter().any(|(s, t)| *s == Severity::Medium && t.contains("replaces a system entry")));
@@ -157,7 +159,7 @@ fn keyboard_readers_and_session_type() {
             symlink("/dev/input/event3", root.join(format!("proc/{pid}/fd/5"))).expect("fd");
         }
     }
-    let report = scan(root, &[ModuleId::ProcAudit]);
+    let report = scan(root, &[ModuleId::DesktopSession]);
     let readers = of(&report, "PROC-INPUT-READER");
     assert_eq!(readers.len(), 2, "{readers:?}");
     assert!(readers.iter().all(|(s, _)| *s == Severity::High));

@@ -1,6 +1,7 @@
 //! The four internal detection modules and what they share.
 
 pub mod common;
+pub mod desktop_session;
 pub mod auth_logs;
 pub mod browsers;
 pub mod filemarks;
@@ -52,6 +53,9 @@ pub struct Inventory {
     /// Secure Boot, lockdown and the firmware's boot entries (compared with the baseline).
     #[serde(default)]
     pub boot: BTreeMap<String, String>,
+    /// Signs of a graphical desktop (empty on a server); `None` when desktop_session did not run.
+    #[serde(default)]
+    pub desktop: Option<Vec<String>>,
     pub process_count: usize,
     pub fs_files_scanned: u64,
 }

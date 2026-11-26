@@ -5,7 +5,7 @@ use crate::baseline::{self, Baseline};
 use crate::config::Config;
 use crate::external_tools::{self, Tool};
 use crate::finding::{Finding, Severity};
-use crate::modules::{auth_logs, integrity, kernel, services, fs_perms, net_proc, persistence, proc_audit, updates, Collector, ScanCtx};
+use crate::modules::{auth_logs, desktop_session,integrity, kernel, services, fs_perms, net_proc, persistence, proc_audit, updates, Collector, ScanCtx};
 use crate::procinfo;
 use crate::report::Report;
 use crate::sys::{self, SysRoot};
@@ -20,6 +20,7 @@ pub enum ModuleId {
     ProcAudit,
     FsPerms,
     Persistence,
+    DesktopSession,
     Updates,
     AuthLogs,
     Kernel,
@@ -28,11 +29,12 @@ pub enum ModuleId {
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 9] = [
+    pub const ALL: [ModuleId; 10] = [
         ModuleId::NetProc,
         ModuleId::ProcAudit,
         ModuleId::FsPerms,
         ModuleId::Persistence,
+        ModuleId::DesktopSession,
         ModuleId::Kernel,
         ModuleId::Services,
         ModuleId::AuthLogs,
@@ -40,7 +42,7 @@ impl ModuleId {
         ModuleId::Updates,
     ];
     /// The modules a baseline needs (the updates check says nothing about changes).
-    pub const CORE: [ModuleId; 4] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence];
+    pub const CORE: [ModuleId; 5] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence, ModuleId::DesktopSession];
 
     pub fn id(&self) -> &'static str {
         match self {
@@ -48,6 +50,7 @@ impl ModuleId {
             ModuleId::ProcAudit => "proc_audit",
             ModuleId::FsPerms => "fs_perms",
             ModuleId::Persistence => "persistence",
+            ModuleId::DesktopSession => "desktop_session",
             ModuleId::Updates => "updates",
             ModuleId::AuthLogs => "auth_logs",
             ModuleId::Kernel => "kernel",
@@ -62,6 +65,7 @@ impl ModuleId {
             ModuleId::ProcAudit => "Processes and run paths",
             ModuleId::FsPerms => "File permissions and SUID/SGID",
             ModuleId::Persistence => "Persistence (systemd, cron, SSH, PAM)",
+            ModuleId::DesktopSession => "Desktop session (autostart, KDE, GNOME, XFCE)",
             ModuleId::Updates => "Pending updates",
             ModuleId::AuthLogs => "Login attempts",
             ModuleId::Kernel => "Kernel and modules",
@@ -76,6 +80,7 @@ impl ModuleId {
             ModuleId::ProcAudit => "Programs from /tmp or /dev/shm, deleted binaries, LD_PRELOAD",
             ModuleId::FsPerms => "Walks local file systems (takes the longest)",
             ModuleId::Persistence => "Services, scheduled jobs, keys and login",
+            ModuleId::DesktopSession => "What starts with the desktop, keyboard readers; skipped on servers",
             ModuleId::Updates => "Security updates and reboot needed (apt simulation, installs nothing)",
             ModuleId::AuthLogs => "Wrong passwords, unknown users, break-ins in the system logs",
             ModuleId::Kernel => "Hidden or unknown modules, dangerous kernel settings",
@@ -92,7 +97,7 @@ impl std::str::FromStr for ModuleId {
             .iter()
             .find(|m| m.id().eq_ignore_ascii_case(s.trim()))
             .copied()
-            .ok_or_else(|| format!("unknown module '{s}' (net_proc, proc_audit, fs_perms, persistence, updates, auth_logs, kernel, services, integrity)"))
+            .ok_or_else(|| format!("unknown module '{s}' (net_proc, proc_audit, fs_perms, persistence, desktop_session, updates, auth_logs, kernel, services, integrity)"))
     }
 }
 
@@ -162,7 +167,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         col.note("The scanner is not running as root: other users' processes, /var/spool/cron, /root and some /proc files cannot be read. Run with sudo for a complete scan.");
     }
 
-    let need_procs = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::Services, ModuleId::Kernel].iter().any(|m| opts.modules.contains(m));
+    let need_procs = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::Services, ModuleId::Kernel, ModuleId::DesktopSession].iter().any(|m| opts.modules.contains(m));
     let processes = if need_procs {
         progress("Reading processes in /proc …");
         procinfo::snapshot(sys)
@@ -188,6 +193,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
             ModuleId::ProcAudit => proc_audit::run(&ctx, &mut col),
             ModuleId::FsPerms => fs_perms::run(&ctx, &mut col),
             ModuleId::Persistence => persistence::run(&ctx, &mut col),
+            ModuleId::DesktopSession => desktop_session::run(&ctx, &mut col),
             ModuleId::Updates => updates::run(&ctx, &mut col),
             ModuleId::AuthLogs => auth_logs::run(&ctx, &mut col),
             ModuleId::Kernel => kernel::run(&ctx, &mut col),

@@ -396,6 +396,12 @@ impl Config {
         format!("{}|{}", f.rule, f.title)
     }
 
+    /// The key a desktop finding had before it got its [label], so hidden findings stay hidden.
+    fn unlabelled_key(f: &crate::finding::Finding) -> Option<String> {
+        let rest = f.title.strip_prefix('[')?.split_once("] ")?.1;
+        (f.module == crate::modules::desktop_session::MODULE).then(|| format!("{}|{rest}", f.rule))
+    }
+
     pub fn is_temp_path(&self, path: &str) -> bool {
         self.temp_dirs
             .iter()
@@ -420,7 +426,7 @@ impl Config {
     /// Should the finding be hidden according to the whitelist?
     pub fn suppresses(&self, f: &crate::finding::Finding) -> bool {
         self.ignore_rules.iter().any(|r| r == &f.rule)
-            || self.ignore_findings.iter().any(|k| *k == Config::finding_key(f))
+            || self.ignore_findings.iter().any(|k| *k == Config::finding_key(f) || Config::unlabelled_key(f).as_ref() == Some(k))
             || self
                 .ignore_evidence_containing
                 .iter()

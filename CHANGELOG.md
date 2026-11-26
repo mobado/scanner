@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0
+* New module `desktop_session`: all desktop checks (autostart, session and login-screen
+  scripts, D-Bus services, portals, KDE, GNOME, XFCE, window managers, keyboard readers,
+  Wayland/X11) are gathered there, with titles labelled `[xdg]`, `[kde]`, `[gnome]` and so on.
+  Findings you hid earlier stay hidden. `persistence` keeps network and sleep scripts and
+  polkit rules.
+* Servers without a graphical desktop skip the desktop checks; the baseline reports a desktop
+  that appears (`BASE-DESKTOP-NEW`).
+* A new or changed desktop startup file in a home folder is a Medium difference from the
+  baseline (system files stay High).
+* The baseline now needs `desktop_session` too; older automatic baselines are completed after
+  the next clean root scan.
+
 ## 0.8.0
 * Autostart: more system folders, programs that no package installed, and user entries that
   replace system entries.

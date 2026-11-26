@@ -159,7 +159,7 @@ pub fn check_shell_files(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u
         files.push(format!("/etc/profile.d/{n}"));
     }
     for (_, _, home) in homes {
-        for f in [".bashrc", ".profile", ".bash_profile", ".bash_login", ".bash_logout", ".zshrc", ".zprofile", ".zshenv", ".xprofile", ".xsessionrc"] {
+        for f in [".bashrc", ".profile", ".bash_profile", ".bash_login", ".bash_logout", ".zshrc", ".zprofile", ".zshenv"] {
             files.push(format!("{home}/{f}"));
         }
     }

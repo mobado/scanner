@@ -5,6 +5,7 @@
 use crate::error::ScanError;
 use crate::finding::{Finding, Severity};
 use crate::modules::common::shq;
+use crate::modules::desktop_session::is_desktop_path;
 use crate::modules::fs_perms::SuidEntry;
 use crate::modules::persistence::extra::{is_login_shell, AccountEntry};
 use crate::modules::Inventory;
@@ -40,6 +41,9 @@ pub struct Baseline {
     pub accounts: Vec<AccountEntry>,
     #[serde(default)]
     pub boot: BTreeMap<String, String>,
+    /// Signs of a graphical desktop; empty means the machine had none.
+    #[serde(default)]
+    pub desktop: Option<Vec<String>>,
 }
 
 /// Is this a kind of file that some earlier version did not record yet?
@@ -146,6 +150,7 @@ impl Baseline {
             persistence_files: r.inventory.persistence_files.clone(),
             accounts: r.inventory.accounts.clone(),
             boot: r.inventory.boot.clone(),
+            desktop: r.inventory.desktop.clone(),
         }
     }
 
@@ -256,8 +261,12 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
         notes.push("Listening ports were not compared with the baseline (net_proc did not run in both scans)".into());
     }
 
-    if both("persistence") {
-        for (path, hash) in &inv.persistence_files {
+    // Desktop files are recorded by desktop_session (by persistence in older versions).
+    let now = |m: &str| modules_now.iter().any(|x| x == m);
+    let desktop = now("desktop_session") && base.modules.iter().any(|m| m == "desktop_session" || m == "persistence");
+    let covered = |path: &str| if is_desktop_path(path) { desktop } else { both("persistence") };
+    if both("persistence") || desktop {
+        for (path, hash) in inv.persistence_files.iter().filter(|(p, _)| covered(p)) {
             match base.persistence_files.get(path) {
                 None => out.push(
                     Finding::new(Severity::High, MODULE, "BASE-PERSIST-NEW", format!("New persistence file since the baseline: {path}"))
@@ -276,7 +285,7 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
                 _ => {}
             }
         }
-        for path in base.persistence_files.keys().filter(|p| !inv.persistence_files.contains_key(*p)) {
+        for path in base.persistence_files.keys().filter(|p| covered(p) && !inv.persistence_files.contains_key(*p)) {
             out.push(
                 Finding::new(Severity::Low, MODULE, "BASE-PERSIST-REMOVED", format!("Persistence file gone since the baseline: {path}"))
                     .evidence(format!("{path} was in {src}"))
@@ -289,6 +298,18 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
     }
     if both("persistence") && !base.accounts.is_empty() && !inv.accounts.is_empty() {
         compare_accounts(&base.accounts, &inv.accounts, &src, &mut out);
+    }
+
+    // a user's own desktop settings change in daily use; system files and everything else do not
+    for f in out.iter_mut().filter(|f| f.rule == "BASE-PERSIST-NEW" || f.rule == "BASE-PERSIST-CHANGED") {
+        let path = f.evidence.lines().next().unwrap_or("").split(" sha256 ").next().unwrap_or("");
+        if is_desktop_path(path) && (path.starts_with("/home/") || path.starts_with("/root/")) {
+            f.severity = Severity::Medium;
+            f.description = "A file that starts things in a desktop session is new or changed. Adding an autostart entry or changing a desktop setting does this; check that it was you.".into();
+        }
+    }
+    if both("desktop_session") {
+        compare_desktop(base.desktop.as_deref(), inv.desktop.as_deref(), &src, &mut out);
     }
 
     if both("kernel") && !base.boot.is_empty() && !inv.boot.is_empty() {
@@ -309,6 +330,32 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
         }
     }
     (out, notes)
+}
+
+/// A graphical desktop on a machine that had none, or a new program that shows the screen to
+/// others.
+fn compare_desktop(old: Option<&[String]>, new: Option<&[String]>, src: &str, out: &mut Vec<Finding>) {
+    let (Some(old), Some(new)) = (old, new) else { return };
+    let fresh: Vec<&str> = new
+        .iter()
+        .filter(|s| !old.contains(s) && (old.is_empty() || ["x11vnc", "Xvnc", "Xvfb"].iter().any(|r| s.ends_with(r))))
+        .map(String::as_str)
+        .collect();
+    if fresh.is_empty() {
+        return;
+    }
+    let (severity, title) = if old.is_empty() {
+        (Severity::High, "A graphical desktop appeared on a machine that had none")
+    } else {
+        (Severity::Medium, "A virtual or remote screen is running that was not there before")
+    };
+    out.push(
+        Finding::new(severity, MODULE, "BASE-DESKTOP-NEW", title)
+            .evidence(format!("{}\n(compared with {src})", fresh.join("\n")))
+            .description("Servers do not grow a desktop by themselves. Someone installed or started graphical software, which can be a way to control the machine remotely.")
+            .verify("grep ' install ' /var/log/dpkg.log | tail -30")
+            .verify("ps -e -o pid,user,lstart,cmd | grep -iE 'xorg|vnc|wayland|xvfb'"),
+    );
 }
 
 /// Secure Boot, lockdown and the firmware's boot entries.

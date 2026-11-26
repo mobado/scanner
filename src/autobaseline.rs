@@ -111,7 +111,17 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
         match m {
             ModuleId::FsPerms => base.suid = report.inventory.suid.clone(),
             ModuleId::NetProc => base.listeners = crate::baseline::listener_keys(&report.inventory),
-            ModuleId::Persistence => base.persistence_files = report.inventory.persistence_files.clone(),
+            ModuleId::Persistence => base.persistence_files.extend(report.inventory.persistence_files.clone()),
+            ModuleId::DesktopSession => {
+                // older versions recorded the same files under persistence; only add what is missing
+                let had_persistence = base.modules.iter().any(|x| x == "persistence");
+                for (path, hash) in &report.inventory.persistence_files {
+                    if crate::modules::desktop_session::is_desktop_path(path) && (!had_persistence || crate::baseline::newly_tracked(path)) {
+                        base.persistence_files.entry(path.clone()).or_insert_with(|| hash.clone());
+                    }
+                }
+                base.desktop = report.inventory.desktop.clone();
+            }
             _ => {}
         }
         base.modules.push(id.to_string());

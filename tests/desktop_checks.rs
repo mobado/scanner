@@ -6,7 +6,7 @@ use scanner::modules::auth_logs::{parse_line, service_name, Kind};
 use scanner::modules::browsers::{browser_options, chromium_addons, firefox_addons, firefox_settings};
 use scanner::modules::common::{analyze_command, analyze_user_command, program_words, risky_home_place};
 use scanner::modules::homefiles::is_disguised;
-use scanner::modules::persistence::desktop::judge_polkit_rule;
+use scanner::modules::persistence::rules::judge_polkit_rule;
 use scanner::modules::{Collector, ScanCtx};
 use scanner::report::Report;
 use scanner::{run_scan, ModuleId, ScanOptions, Severity, SysRoot};
@@ -83,7 +83,8 @@ fn autostart_session_scripts_and_polkit() {
     write(root, "/home/anna/.local/share/polkit-1/rules.d/a.rules", "x\n");
     write(root, "/home/anna/.config/systemd/user/sync.service", "[Service]\nExecStart=%h/.local/bin/sync\n");
     write(root, "/home/anna/.bashrc", "source /home/anna/.cargo/env\n");
-    let report = scan(root, &[ModuleId::Persistence]);
+    write(root, "/usr/share/xsessions/test.desktop", "");
+    let report = scan(root, &[ModuleId::Persistence, ModuleId::DesktopSession]);
 
     let auto = of(&report, "PERS-AUTOSTART");
     assert_eq!(auto.len(), 4, "{auto:?}");

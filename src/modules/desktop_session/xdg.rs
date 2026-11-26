@@ -1,22 +1,25 @@
-//! What starts with a desktop: XDG autostart entries, login-session and sleep scripts, display
-//! manager hooks and polkit rules.
+//! Shared XDG standards: autostart entries, session scripts and display manager hooks.
 
-use super::{check_perms, record, MODULE};
+use super::MODULE;
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{analyze_command, analyze_user_command, clip, max_severity, program_words, reasons, shq, CmdIssue};
+use crate::modules::persistence::record;
+use crate::modules::persistence::rules::{check_system_scripts, files_at, script_issues, session_finding};
 use crate::modules::{Collector, ScanCtx};
 use crate::pkgverify::owned_paths;
 use std::collections::{HashMap, HashSet};
-use walkdir::WalkDir;
 
-/// Folders with scripts that the system runs at login, logout, sleep or network changes.
-const SESSION_DIRS: [&str; 10] = [
+/// Folders and files with scripts that run when a graphical session or login screen starts.
+const SESSION_DIRS: [&str; 9] = [
     "/etc/X11/Xsession.d", "/etc/X11/xinit/xinitrc.d", "/etc/gdm3/Init", "/etc/gdm3/PostLogin", "/etc/gdm3/PreSession",
-    "/etc/gdm3/PostSession", "/etc/sddm", "/etc/NetworkManager/dispatcher.d", "/etc/systemd/system-sleep", "/usr/lib/systemd/system-sleep",
+    "/etc/gdm3/PostSession", "/etc/sddm", "/etc/X11/xinit/xinitrc", "/etc/X11/Xsession",
 ];
 
 /// The same in a home folder.
-const HOME_SESSION: [&str; 6] = [".config/plasma-workspace/env", ".config/plasma-workspace/shutdown", ".config/autostart-scripts", ".config/xfce4/xinitrc", ".xinitrc", ".xsession"];
+const HOME_SESSION: [&str; 8] = [
+    ".config/plasma-workspace/env", ".config/plasma-workspace/shutdown", ".config/autostart-scripts", ".config/xfce4/xinitrc",
+    ".xinitrc", ".xsession", ".xsessionrc", ".xprofile",
+];
 
 const DM_KEYS: [&str; 9] = [
     "greeter-setup-script", "session-setup-script", "session-cleanup-script", "display-setup-script", "display-stopped-script",
@@ -25,81 +28,8 @@ const DM_KEYS: [&str; 9] = [
 
 const SYSTEM_PREFIXES: [&str; 6] = ["/usr/", "/bin/", "/sbin/", "/opt/", "/snap/", "/var/lib/flatpak/"];
 
-/// The files at or below a path.
-fn files_at(ctx: &ScanCtx, path: &str) -> Vec<String> {
-    let mut out: Vec<String> = WalkDir::new(ctx.sys.path(path))
-        .max_depth(3)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| !e.file_type().is_dir())
-        .take(500)
-        .map(|e| ctx.sys.display(e.path()))
-        .collect();
-    out.sort();
-    out
-}
-
-/// Serious problems on any non-comment line of a script: (problems, lines).
-fn script_issues(ctx: &ScanCtx, text: &str, in_home: bool) -> (Vec<CmdIssue>, Vec<String>) {
-    let mut issues: Vec<CmdIssue> = Vec::new();
-    let mut lines = Vec::new();
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let found = if in_home { analyze_user_command(line, ctx.cfg) } else { analyze_command(line, ctx.cfg) };
-        let found: Vec<CmdIssue> = found.into_iter().filter(|i| i.severity >= Severity::High).collect();
-        if !found.is_empty() {
-            lines.push(line.to_string());
-        }
-        for i in found {
-            if !issues.contains(&i) {
-                issues.push(i);
-            }
-        }
-    }
-    (issues, lines)
-}
-
-fn session_finding(severity: Severity, title: String, evidence: String, description: String, path: &str) -> Finding {
-    Finding::new(severity, MODULE, "PERS-SESSION-SCRIPT", title)
-        .evidence(evidence)
-        .description(description)
-        .verify(format!("cat {}", shq(path)))
-        .verify(format!("dpkg -S {}", shq(path)))
-}
-
 fn check_session_scripts(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)], has_dpkg: bool) {
-    let system: Vec<String> = SESSION_DIRS
-        .iter()
-        .chain(["/etc/X11/xinit/xinitrc", "/etc/X11/Xsession"].iter())
-        .flat_map(|d| files_at(ctx, d))
-        .collect();
-    let owned = owned_paths(ctx.sys, &system);
-    for path in system {
-        let Ok(text) = ctx.sys.read_string(&path) else { continue };
-        record(ctx, col, &path);
-        check_perms(ctx, col, &path, "PERS-SESSION-PERMS", "Session script");
-        let (issues, lines) = script_issues(ctx, &text, false);
-        if let Some(severity) = max_severity(&issues) {
-            // package scripts are checked against their package elsewhere; show only clear backdoors
-            if !owned.contains(&path) || severity == Severity::Critical {
-                col.push(session_finding(
-                    severity,
-                    format!("Suspicious command in a session script: {path}"),
-                    format!("{path}\n{}", clip(&lines.join("\n"), 600)),
-                    format!("The system runs this script by itself at login, sleep or network changes. Suspicious: {}.", reasons(&issues)),
-                    &path,
-                ));
-            }
-        } else if has_dpkg && !owned.contains(&path) {
-            col.push(session_finding(
-                Severity::Low,
-                format!("Session script that no package installed: {path}"),
-                path.clone(),
-                "The system runs this script by itself, and it was not installed by a package. Check that you or an administrator added it.".into(),
-                &path,
-            ));
-        }
-    }
+    check_system_scripts(ctx, col, &SESSION_DIRS, has_dpkg);
     for (user, _, home) in homes {
         for place in HOME_SESSION {
             for path in files_at(ctx, &format!("{home}/{place}")) {
@@ -156,81 +86,6 @@ fn check_display_manager(ctx: &ScanCtx, col: &mut Collector) {
                     .description("The display manager runs this command, often as root, every time the login screen starts or someone logs in. An unusual program here is a way to survive reboots.")
                     .verify(format!("cat {}", shq(&path)))
                     .verify(format!("ls -l {}", shq(program))),
-            );
-        }
-    }
-}
-
-/// What a polkit rule does that is worth knowing: (severity, why). `None` for harmless rules.
-pub fn judge_polkit_rule(text: &str) -> Option<(Severity, &'static str)> {
-    // drop comments so an explanation does not count as code
-    let mut code = String::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("/*") {
-        code.push_str(&rest[..start]);
-        rest = rest[start..].find("*/").map(|end| &rest[start + end + 2..]).unwrap_or("");
-    }
-    code.push_str(rest);
-    let code: String = code.lines().map(|l| if l.trim_start().starts_with("//") { "" } else { l }).collect::<Vec<_>>().join("\n");
-    if code.contains("polkit.spawn(") {
-        return Some((Severity::High, "runs a program when someone asks for permission"));
-    }
-    if code.contains("polkit.Result.YES") || code.contains("return \"yes\"") {
-        let limits_action = code.contains("action.id") || code.contains("action.lookup");
-        let limits_who = code.contains("subject.");
-        return Some(match (limits_action, limits_who) {
-            (false, false) => (Severity::Critical, "lets everyone do everything without a password"),
-            (false, true) => (Severity::High, "lets a user or group do every administrator action without a password"),
-            _ => (Severity::Medium, "allows some administrator actions without a password"),
-        });
-    }
-    code.contains("addAdminRule").then_some((Severity::Medium, "changes who counts as administrator"))
-}
-
-fn check_polkit(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)], has_dpkg: bool) {
-    let files: Vec<String> = ["/etc/polkit-1", "/usr/local/share/polkit-1", "/run/polkit-1"].iter().flat_map(|d| files_at(ctx, d)).collect();
-    let owned = owned_paths(ctx.sys, &files);
-    for path in files {
-        let Ok(text) = ctx.sys.read_string(&path) else { continue };
-        record(ctx, col, &path);
-        check_perms(ctx, col, &path, "PERS-POLKIT-PERMS", "polkit file");
-        if owned.contains(&path) {
-            continue;
-        }
-        let judged = if path.ends_with(".rules") {
-            judge_polkit_rule(&text)
-        } else if path.ends_with(".pkla") && text.lines().any(|l| l.trim().starts_with("Result") && l.trim().ends_with("=yes")) {
-            Some((Severity::Medium, "allows actions without a password"))
-        } else {
-            None
-        };
-        let (severity, why) = match judged {
-            Some(found) => found,
-            None if has_dpkg && (path.ends_with(".rules") || path.ends_with(".policy")) => (Severity::Low, "is a local rule that no package installed"),
-            None => continue,
-        };
-        col.push(
-            Finding::new(severity, MODULE, "PERS-POLKIT", format!("polkit rule to check: {path}"))
-                .evidence(format!("{path}: {why}\n{}", clip(text.trim(), 600)))
-                .description(format!("polkit decides who may do administrator tasks from the desktop. This rule {why}. Attackers add such rules to get root back without a password."))
-                .verify(format!("cat {}", shq(&path)))
-                .verify(format!("dpkg -S {}", shq(&path))),
-        );
-    }
-    for (_, _, home) in homes {
-        for place in [".local/share/polkit-1", ".config/polkit-1"] {
-            let found = files_at(ctx, &format!("{home}/{place}"));
-            if found.is_empty() {
-                continue;
-            }
-            for path in &found {
-                record(ctx, col, path);
-            }
-            col.push(
-                Finding::new(Severity::Low, MODULE, "PERS-POLKIT", format!("polkit files in a home folder: {home}/{place}"))
-                    .evidence(clip(&found.join("\n"), 600))
-                    .description("polkit does not read rules from home folders, so these have no effect there. Something put them there anyway; check what.")
-                    .verify(format!("ls -laR {}", shq(&format!("{home}/{place}")))),
             );
         }
     }
@@ -390,10 +245,9 @@ fn check_autostart(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, St
     }
 }
 
-pub fn check_desktop(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)]) {
+pub(super) fn check_xdg(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)]) {
     let has_dpkg = !ctx.sys.dir_names("/var/lib/dpkg/info").is_empty();
     check_autostart(ctx, col, homes, has_dpkg);
     check_session_scripts(ctx, col, homes, has_dpkg);
     check_display_manager(ctx, col);
-    check_polkit(ctx, col, homes, has_dpkg);
 }
