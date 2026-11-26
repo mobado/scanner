@@ -19,7 +19,9 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
 
 /// Rules the self-test expects, with a short explanation.
-pub const EXPECTED: [(&str, &str); 28] = [
+pub const EXPECTED: [(&str, &str); 30] = [
+    ("AUTH-SSH-SUCCESS-AFTER-FAIL", "SSH login that succeeded after many failed attempts"),
+    ("AUTH-SSH-BRUTEFORCE", "many failed SSH logins from one address"),
     ("NET-REVSHELL", "bash with fd 0–2 connected to a TCP connection"),
     ("NET-SUSP-PORT", "connection to port 4444"),
     ("NET-TMP-SOCKET", "binary in /tmp holds a listening socket"),
@@ -230,6 +232,14 @@ pub fn build_fixture(root: &Path) -> Result<()> {
     // --- PAM
     write(root, "/etc/pam.d/common-auth", "auth\t[success=1 default=ignore]\tpam_unix.so nullok\nauth\trequisite\t\t\tpam_deny.so\nauth\trequired\t\t\tpam_permit.so\n")?;
     write(root, "/etc/pam.d/sshd", "@include common-auth\nauth sufficient pam_permit.so\naccount required pam_nologin.so\n")?;
+
+    // --- login log
+    let mut auth = String::new();
+    for i in 0..12 {
+        auth.push_str(&format!("2026-01-02T03:04:{i:02}+01:00 sandbox sshd-session[900]: Failed password for invalid user admin{i} from 203.0.113.66 port 4000{i} ssh2\n"));
+    }
+    auth.push_str("2026-01-02T03:05:00+01:00 sandbox sshd-session[901]: Accepted password for anna from 203.0.113.66 port 41000 ssh2\n");
+    write(root, "/var/log/auth.log", &auth)?;
 
     // --- SUID files
     write(root, "/usr/bin/passwd", "ELF-dummy passwd\n")?;

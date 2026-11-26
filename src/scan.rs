@@ -5,7 +5,7 @@ use crate::baseline::{self, Baseline};
 use crate::config::Config;
 use crate::external_tools::{self, Tool};
 use crate::finding::{Finding, Severity};
-use crate::modules::{fs_perms, net_proc, persistence, proc_audit, updates, Collector, ScanCtx};
+use crate::modules::{auth_logs, fs_perms, net_proc, persistence, proc_audit, updates, Collector, ScanCtx};
 use crate::procinfo;
 use crate::report::Report;
 use crate::sys::{self, SysRoot};
@@ -21,10 +21,11 @@ pub enum ModuleId {
     FsPerms,
     Persistence,
     Updates,
+    AuthLogs,
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 5] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence, ModuleId::Updates];
+    pub const ALL: [ModuleId; 6] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence, ModuleId::Updates, ModuleId::AuthLogs];
     /// The modules a baseline needs (the updates check says nothing about changes).
     pub const CORE: [ModuleId; 4] = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::FsPerms, ModuleId::Persistence];
 
@@ -35,6 +36,7 @@ impl ModuleId {
             ModuleId::FsPerms => "fs_perms",
             ModuleId::Persistence => "persistence",
             ModuleId::Updates => "updates",
+            ModuleId::AuthLogs => "auth_logs",
         }
     }
 
@@ -45,6 +47,7 @@ impl ModuleId {
             ModuleId::FsPerms => "File permissions and SUID/SGID",
             ModuleId::Persistence => "Persistence (systemd, cron, SSH, PAM)",
             ModuleId::Updates => "Pending updates",
+            ModuleId::AuthLogs => "Login attempts",
         }
     }
 
@@ -55,6 +58,7 @@ impl ModuleId {
             ModuleId::FsPerms => "Walks local file systems (takes the longest)",
             ModuleId::Persistence => "Services, scheduled jobs, keys and login",
             ModuleId::Updates => "Security updates and reboot needed (apt simulation, installs nothing)",
+            ModuleId::AuthLogs => "Wrong passwords, unknown users, break-ins in the system logs",
         }
     }
 }
@@ -66,7 +70,7 @@ impl std::str::FromStr for ModuleId {
             .iter()
             .find(|m| m.id().eq_ignore_ascii_case(s.trim()))
             .copied()
-            .ok_or_else(|| format!("unknown module '{s}' (net_proc, proc_audit, fs_perms, persistence, updates)"))
+            .ok_or_else(|| format!("unknown module '{s}' (net_proc, proc_audit, fs_perms, persistence, updates, auth_logs)"))
     }
 }
 
@@ -157,6 +161,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
             ModuleId::FsPerms => fs_perms::run(&ctx, &mut col),
             ModuleId::Persistence => persistence::run(&ctx, &mut col),
             ModuleId::Updates => updates::run(&ctx, &mut col),
+            ModuleId::AuthLogs => auth_logs::run(&ctx, &mut col),
         }
         modules_run.push(m.id().to_string());
     }

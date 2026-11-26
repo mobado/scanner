@@ -4,6 +4,9 @@
 # '*' in allowed_suid and fs_exclude_paths matches one name (not '/').
 
 add_new_defaults = true
+# Login check: days of the journal to read, and failures that raise a finding to Medium.
+login_days = 7
+login_fail_threshold = 10
 allowed_listen_ports = [
     "tcp/22",
     "udp/68",

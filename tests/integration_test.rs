@@ -756,6 +756,70 @@ fn whitelist_updates_can_be_switched_off_and_a_missing_file_is_created() {
 }
 
 #[test]
+fn login_lines_are_parsed_and_cannot_be_spoofed_by_user_names() {
+    use scanner::modules::auth_logs::{parse_line, Kind};
+    let e = parse_line("2026-11-25T10:00:00+0100 laptop sshd-session[12]: Failed password for invalid user oracle from 198.51.100.7 port 5000 ssh2").expect("ssh");
+    assert_eq!((e.kind, e.user.as_str(), e.source.as_str()), (Kind::SshFailed, "oracle", "198.51.100.7"));
+    let e = parse_line("Nov 25 10:00:01 laptop sshd[13]: Accepted publickey for anna from 192.168.1.5 port 22 ssh2: ED25519 SHA256:x").expect("accepted");
+    assert_eq!(e.kind, Kind::SshAccepted { method: "publickey".into() });
+    assert_eq!(e.time, "Nov 25 10:00:01");
+    // a user name made to look like a success is still an invalid-user attempt from the real address
+    let e = parse_line("2026-11-25T10:00:02+0100 h sshd[1]: Invalid user x Accepted password for root from 10.0.0.1 from 198.51.100.9 port 1").expect("spoof");
+    assert_eq!(e.kind, Kind::SshInvalidUser);
+    assert_eq!(e.source, "198.51.100.9");
+    let e = parse_line("2026-11-25T10:00:03+0100 h sudo[2]:     bob : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/bin/ls").expect("wrong password");
+    assert_eq!((e.kind, e.user.as_str()), (Kind::SudoWrongPassword { attempts: 3 }, "bob"));
+    let e = parse_line("2026-11-25T10:00:04+0100 h sudo:  eve : user NOT in sudoers ; TTY=pts/1 ; USER=root ; COMMAND=/bin/sh").expect("denied");
+    assert_eq!(e.kind, Kind::SudoDenied);
+    let e = parse_line("2026-11-25T10:00:05+0100 h su[3]: FAILED SU (to root) bob on pts/0").expect("switch user");
+    assert_eq!(e.kind, Kind::SuFailed { target: "root".into() });
+    let e = parse_line("2026-11-25T10:00:06+0100 h sddm-helper[4]: pam_unix(sddm:auth): authentication failure; logname= uid=0 euid=0 tty= ruser= rhost=  user=anna").expect("desktop");
+    assert_eq!((e.kind, e.user.as_str()), (Kind::LocalFailed { service: "sddm".into() }, "anna"));
+    // SSH PAM lines are not counted twice; ordinary lines are ignored
+    assert!(parse_line("2026-11-25T10:00:07+0100 h sshd[5]: pam_unix(sshd:auth): authentication failure; user=x").is_none());
+    assert!(parse_line("2026-11-25T10:00:08+0100 h CRON[6]: pam_unix(cron:session): session opened for user root").is_none());
+    assert!(parse_line("garbage").is_none());
+}
+
+#[test]
+fn login_findings_have_sensible_levels() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut log = String::new();
+    for i in 0..3 {
+        log.push_str(&format!("2026-11-25T09:00:0{i}+0100 h sshd[1]: Failed password for anna from 192.168.1.20 port 1 ssh2\n"));
+    }
+    log.push_str("2026-11-25T09:01:00+0100 h sshd[1]: Accepted password for anna from 192.168.1.20 port 1 ssh2\n");
+    log.push_str("2026-11-25T09:02:00+0100 h sudo[2]: bob : 1 incorrect password attempt ; TTY=pts/0 ; USER=root ; COMMAND=/bin/ls\n");
+    write(root, "/var/log/auth.log", &log);
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::AuthLogs]), &|_| {});
+    assert!(!report.has_rule("AUTH-SSH-SUCCESS-AFTER-FAIL"), "three typos then success is normal");
+    assert!(!report.has_rule("AUTH-SSH-BRUTEFORCE"));
+    let low: Vec<_> = report.findings.iter().filter(|f| f.rule == "AUTH-SSH-FAILED" || f.rule == "AUTH-SUDO-FAILED").collect();
+    assert_eq!(low.len(), 2, "{:?}", report.findings);
+    assert!(low.iter().all(|f| f.severity == Severity::Low));
+
+    // many guesses and then a success is critical
+    for i in 0..20 {
+        log.push_str(&format!("2026-11-25T10:00:{i:02}+0100 h sshd[1]: Failed password for root from 203.0.113.5 port 1 ssh2\n"));
+    }
+    log.push_str("2026-11-25T10:05:00+0100 h sshd[1]: Accepted password for root from 203.0.113.5 port 1 ssh2\n");
+    write(root, "/var/log/auth.log", &log);
+    let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::AuthLogs]), &|_| {});
+    assert_eq!(report.findings[0].rule, "AUTH-SSH-SUCCESS-AFTER-FAIL");
+    assert_eq!(report.findings[0].severity, Severity::Critical);
+    assert!(report.has_rule("AUTH-SSH-BRUTEFORCE") && report.has_rule("AUTH-SSH-ROOT-PASSWORD"));
+}
+
+#[test]
+fn no_login_log_is_a_note_not_a_crash() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::AuthLogs]), &|_| {});
+    assert!(report.findings.is_empty());
+    assert!(report.notes.iter().any(|n| n.contains("no login log")), "{:?}", report.notes);
+}
+
+#[test]
 fn updates_module_is_skipped_for_a_test_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let report = run_scan(&SysRoot::new(dir.path()), &Config::default(), &opts(&[ModuleId::Updates]), &|_| {});

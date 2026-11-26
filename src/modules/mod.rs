@@ -1,6 +1,7 @@
 //! The four internal detection modules and what they share.
 
 pub mod common;
+pub mod auth_logs;
 pub mod fs_perms;
 pub mod net_group;
 pub mod net_proc;

@@ -49,6 +49,10 @@ pub struct Config {
     pub allowed_pam_modules: Vec<String>,
     /// Known harmless LD_PRELOAD libraries (substring of the path), e.g. Firefox sandbox and Flatpak.
     pub allowed_ld_preload: Vec<String>,
+    /// How many days of the journal the login check reads.
+    pub login_days: u32,
+    /// Failed logins from one address (or by one user) that raise a finding to Medium.
+    pub login_fail_threshold: usize,
     /// Timeout in seconds for external tools.
     pub external_tool_timeout_secs: u64,
     /// Ignore findings with these rule ids entirely.
@@ -222,6 +226,8 @@ impl Default for Config {
                 "vgpreload", "libgamemodeauto", "libMangoHud", "libvkbasalt", "libsnoopy", "libfaketime",
                 "libsteam", "steamclient",
             ]),
+            login_days: 7,
+            login_fail_threshold: 10,
             external_tool_timeout_secs: 900,
             ignore_rules: Vec::new(),
             ignore_evidence_containing: Vec::new(),

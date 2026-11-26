@@ -73,6 +73,24 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `UPD-REBOOT` | Medium/Low | A reboot is needed to finish installed updates |
 | `UPD-STALE-LISTS` | Low | The package lists are more than a week old |
 
+## Login attempts (`auth_logs`)
+
+Reads the systemd journal (the last `login_days` days, default 7), or `/var/log/auth.log*`
+when the journal is not available (for example on a mounted disk). "Many" means at least
+`login_fail_threshold` (default 10).
+
+| Rule | Usual level | Meaning |
+|------|-------------|---------|
+| `AUTH-SSH-SUCCESS-AFTER-FAIL` | **Critical** | An address made 5 or more failed SSH attempts and then logged in |
+| `AUTH-SSH-ROOT-PASSWORD` | High | root logged in over SSH with a password |
+| `AUTH-SSH-BRUTEFORCE` | Medium | Many failed SSH logins from one address |
+| `AUTH-SSH-FAILED` | Low | A few failed SSH logins (all addresses in one finding) |
+| `AUTH-SSH-INVALID-USER` | Medium/Low | SSH attempts with user names that do not exist |
+| `AUTH-SUDO-FAILED` | Medium/Low | Wrong sudo password |
+| `AUTH-SUDO-DENIED` | Medium | A user who may not use sudo (for that command) tried to |
+| `AUTH-SU-FAILED` | Medium/Low | Wrong password with `su` |
+| `AUTH-LOCAL-FAILED` | Medium/Low | Wrong password at the console, desktop login, screen lock or password dialog |
+
 ## Baseline comparison (`baseline`)
 
 | Rule | Usual level | Meaning |

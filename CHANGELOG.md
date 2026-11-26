@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4
+* New check **Login attempts** (`auth_logs`): reads the journal (or `auth.log`) for SSH password
+  guessing, unknown user names, a login that succeeded after many failures (Critical), root
+  password logins, and wrong or refused sudo, su, console, desktop and screen-lock passwords.
+  New settings `login_days` (7) and `login_fail_threshold` (10).
+
 ## 0.3.3
 * The whitelist follows new versions: new default entries apply when the file is loaded and are
   written into it by `scanner --update-config` (run by the `.deb` on every install and upgrade).
