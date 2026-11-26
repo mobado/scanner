@@ -10,12 +10,13 @@
 //! a baseline can show what changed.
 
 pub mod apt;
+pub mod desktop;
 pub mod extra;
 pub mod history;
 pub mod ssh;
 pub mod system;
 
-use super::common::{analyze_command, clip, max_severity, mode_string, reasons, shq, writable_by_others, CmdIssue};
+use super::common::{analyze_command, analyze_user_command, clip,max_severity, mode_string, reasons, shq, writable_by_others, CmdIssue};
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::procinfo::{read_accounts, Account};
@@ -63,6 +64,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     extra::check_udev(ctx, col);
     extra::check_at_jobs(ctx, col);
     extra::check_keys_and_certificates(ctx, col);
+    desktop::check_desktop(ctx, col, &homes);
     apt::check_apt(ctx, col);
     history::check_histories(ctx, col, &homes);
     system::check_duplicate_ids(ctx, col, &accounts);
@@ -71,7 +73,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
 
 /// (user name, uid, home directory) for root, normal users, directories under /home
 /// and service accounts that have a .ssh directory. uid = u32::MAX when the account is not in passwd.
-fn home_dirs(ctx: &ScanCtx, accounts: &[Account]) -> Vec<(String, u32, String)> {
+pub(crate) fn home_dirs(ctx: &ScanCtx, accounts: &[Account]) -> Vec<(String, u32, String)> {
     let mut out: Vec<(String, u32, String)> = Vec::new();
     let mut seen = HashSet::new();
     for a in accounts {
@@ -300,9 +302,11 @@ fn check_systemd(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, Stri
         }
 
         let mut issues = Vec::new();
+        // a user's own services naturally point into the home folder
+        let own = u.scope == "user" && (u.abs.starts_with("/home/") || u.abs.starts_with("/root/"));
         for line in exec.iter().chain(envs.iter()) {
             let cmd = line.split_once('=').map(|(_, v)| v.trim_start_matches(['-', '@', ':', '+', '!', '|'])).unwrap_or(line);
-            merge_issues(&mut issues, analyze_command(cmd, ctx.cfg));
+            merge_issues(&mut issues, if own { analyze_user_command(cmd, ctx.cfg) } else { analyze_command(cmd, ctx.cfg) });
         }
         if !u.local {
             // Units from packages (/usr/lib/systemd) – changes are caught by debsums; only alert on clear backdoor patterns
@@ -441,8 +445,8 @@ fn check_cron(ctx: &ScanCtx, col: &mut Collector) {
         for line in text.lines() {
             let Some((sched, user, cmd)) = parse_cron_line(line, has_user) else { continue };
             entries.push(line.trim().to_string());
-            let issues = analyze_command(&cmd, ctx.cfg);
-            let who = user.clone().unwrap_or_else(|| fname.clone());
+            let issues = if system { analyze_command(&cmd, ctx.cfg) } else { analyze_user_command(&cmd, ctx.cfg) };
+            let who =user.clone().unwrap_or_else(|| fname.clone());
             if let Some(f) = issue_finding(
                 "PERS-CRON-CMD",
                 format!("Suspicious cron job in {path}"),

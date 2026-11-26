@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+* Desktop startup: XDG autostart is judged by what it runs, plus login, sleep and network
+  scripts, login-screen settings and polkit rules (all part of the baseline).
+* Home folders: downloads (programs, disguised files, suspicious scripts), hidden programs, and
+  browser add-ons, proxy and remote-control settings, launchers and policies.
+* Fewer false alarms on desktops: users' own services, scripts and cron jobs may point into
+  their home folder; sockets under `/run/user` are normal; AppImages are Low; high CPU needs an
+  hour for installed programs and skips browsers, compilers and indexers; more cloud sync, music,
+  Bluetooth and printing programs are trusted; link-local listeners are not reported.
+* `chkrootkit` and `rkhunter` findings are a second opinion: at most High and Medium.
+* Login messages say where it happened (display manager, screen lock …); refused `pkexec`.
+* New settings `high_cpu_minutes`, `cpu_heavy_programs`, `download_dirs`.
+
 ## 0.5.0
 * Files: executable programs in temporary folders (also when `/tmp` is held in memory, including
   SUID files there), file capabilities, locked (immutable) files, SUID shells and interpreters,

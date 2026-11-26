@@ -2,7 +2,9 @@
 
 pub mod common;
 pub mod auth_logs;
+pub mod browsers;
 pub mod filemarks;
+pub mod homefiles;
 pub mod fs_perms;
 pub mod integrity;
 pub mod kernel;

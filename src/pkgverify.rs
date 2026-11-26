@@ -156,6 +156,33 @@ pub fn verify_paths(sys: &SysRoot, paths: &[String], baseline_time: SystemTime) 
         .collect()
 }
 
+/// Which of these paths does an installed package own (listed in its file list, shipped
+/// with a checksum, or registered as a configuration file)?
+pub fn owned_paths(sys: &SysRoot, paths: &[String]) -> HashSet<String> {
+    if paths.is_empty() {
+        return HashSet::new();
+    }
+    let mut owned: HashSet<String> = package_records(sys, paths).into_keys().collect();
+    let mut wanted: HashMap<String, &String> = HashMap::new(); // dpkg name → path
+    for p in paths {
+        for n in dpkg_names(p) {
+            wanted.insert(n, p);
+        }
+    }
+    for file in sys.dir_names("/var/lib/dpkg/info") {
+        if !file.ends_with(".list") {
+            continue;
+        }
+        let Ok(text) = sys.read_string(format!("/var/lib/dpkg/info/{file}")) else { continue };
+        for line in text.lines() {
+            if let Some(path) = wanted.get(line.trim_start_matches('/')) {
+                owned.insert((*path).clone());
+            }
+        }
+    }
+    owned
+}
+
 /// The path a baseline finding is about (it starts the evidence).
 fn path_of(f: &Finding) -> Option<String> {
     let first = f.evidence.lines().next()?;

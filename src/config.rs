@@ -53,8 +53,15 @@ pub struct Config {
     pub allowed_capability_files: Vec<String>,
     /// Software source hosts that are not reported ("*.debian.org" covers every mirror).
     pub trusted_apt_hosts: Vec<String>,
-    /// Report processes that used this much CPU on average for 10 minutes or more (0 = off).
+    /// Report processes that used this much CPU on average since they started (0 = off).
+    /// Programs outside the system folders after 10 minutes, installed ones after
+    /// `high_cpu_minutes`.
     pub high_cpu_percent: u32,
+    pub high_cpu_minutes: u32,
+    /// Installed programs that are busy by nature (browsers, compilers, players, indexers).
+    pub cpu_heavy_programs: Vec<String>,
+    /// Names of the download folder inside a home folder.
+    pub download_dirs: Vec<String>,
     /// Remote ports that normal outgoing connections use (others are listed per program).
     pub common_remote_ports: Vec<u16>,
     /// Public DNS servers that are fine to find in /etc/resolv.conf.
@@ -101,6 +108,11 @@ impl Default for Config {
                 "avahi-daemon", "kdeconnectd", "chronyd", "systemd-resolved", "systemd-timesyncd",
                 "systemd-networkd", "NetworkManager", "dhclient", "cupsd", "cups-browsed", "tailscaled",
                 "pipewire", "wireplumber", "gsd-sharing", "firefox-esr", "firefox", "chromium", "thunderbird", "chrome",
+                "brave", "msedge", "vivaldi-bin", "opera",
+                // cloud sync, music, chat
+                "syncthing", "nextcloud", "dropbox", "insync", "megasync", "spotify", "Discord", "discord", "zoom",
+                // Bluetooth and printing
+                "bluetoothd", "obexd", "ipp-usb",
             ]),
             report_loopback_listeners: false,
             suspicious_remote_ports: vec![
@@ -213,6 +225,22 @@ impl Default for Config {
             ]),
             trusted_apt_hosts: s(&["*.debian.org"]),
             high_cpu_percent: 70,
+            high_cpu_minutes: 60,
+            cpu_heavy_programs: s(&[
+                // browsers
+                "firefox", "firefox-esr", "chromium", "chrome", "brave", "msedge", "vivaldi-bin", "opera", "thunderbird",
+                // building software
+                "cc1", "cc1plus", "rustc", "cargo", "ld", "lto1", "make", "ninja", "cmake", "javac", "go", "clang", "gcc", "g++",
+                // video, sound, pictures
+                "ffmpeg", "mpv", "vlc", "obs", "HandBrakeCLI", "ghb", "melt", "kdenlive", "blender", "gimp", "darktable",
+                "pipewire",
+                // file indexing, archives, virus scans
+                "baloo_file", "baloo_file_extractor", "tracker-miner-fs-3", "tracker-extract-3", "localsearch-3",
+                "tracker-extract", "updatedb", "clamscan", "7z", "xz", "zstd", "rsync", "borg", "restic",
+                // virtual machines and desktops
+                "qemu-system-x86_64", "VirtualBoxVM", "vmware-vmx", "Xorg", "kwin_wayland", "gnome-shell",
+            ]),
+            download_dirs: s(&["Downloads", "downloads", "Hämtningar", "Hämtade", "Hämtade filer"]),
             fs_roots: s(&["/"]),
             fs_exclude_paths: s(&[
                 "/proc", "/sys", "/dev", "/run", "/var/lib/docker/overlay2",
@@ -262,6 +290,8 @@ impl Default for Config {
                 3478, 3479, 5222, 5223, 5228, 5229, 5230, 19302, 8883,
                 // web alternatives, git, printing, sync
                 8080, 8443, 9418, 11371, 631, 2049, 111, 445,
+                // Syncthing, Spotify, Zoom, Google push
+                22000, 21027, 4070, 8801, 8802, 5230,
             ],
             trusted_resolvers: s(&[
                 "1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112", "208.67.222.222",

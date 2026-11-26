@@ -4,7 +4,7 @@
 //! and by `st_dev`: only devices of local file systems in /proc/mounts are walked.
 
 use super::common::{mode_string, shq};
-use super::filemarks;
+use super::{browsers, filemarks, homefiles};
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::sys::sha256_file;
@@ -187,6 +187,10 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
         }
     }
     filemarks::check_system_programs(ctx, col);
+    let accounts = crate::procinfo::read_accounts(ctx.sys);
+    let homes: Vec<String> = super::persistence::home_dirs(ctx, &accounts).into_iter().map(|(_, _, home)| home).collect();
+    homefiles::check_home_files(ctx, col, &homes);
+    browsers::check_browsers(ctx, col, &homes);
     check_sensitive_files(ctx, col);
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     col.inventory.suid = entries;

@@ -206,6 +206,10 @@ pub fn ip_is_loopback(ip: &IpAddr) -> bool {
     }
 }
 
+fn ip_is_link_local(ip: &IpAddr) -> bool {
+    matches!(ip, IpAddr::V6(v6) if v6.segments()[0] & 0xffc0 == 0xfe80)
+}
+
 /// A connection mapped to its process (shown in the window and in JSON).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Connection {
@@ -413,7 +417,8 @@ fn check_socket_owner(
             && !cfg.is_listen_allowed(s.proto.family(), s.local.port())
             && !cfg.is_listen_process_allowed(&p.display_name(), p.exe_path())
             && !(p.display_name() == "dnsmasq" && p.exe_path().map(|e| e.starts_with("/usr/")).unwrap_or(false) && p.cmdline_str().contains("--conf-file=/var/lib/libvirt/dnsmasq/"))
-            && (cfg.report_loopback_listeners || !ip_is_loopback(&s.local.ip()))
+            // only this machine (loopback) or only the directly attached link (fe80::)
+            && (cfg.report_loopback_listeners || !(ip_is_loopback(&s.local.ip()) || ip_is_link_local(&s.local.ip())))
         {
             let user_app = p.uid != 0 && p.exe_path().map(|e| ["/usr/", "/opt/", "/app/", "/snap/"].iter().any(|d| e.starts_with(d))).unwrap_or(false);
             col.push(
@@ -429,7 +434,7 @@ fn check_socket_owner(
 
     // Processes that hold sockets and run from odd places
     if let Some(exe) = p.exe_path() {
-        if cfg.is_temp_path(exe) {
+        if cfg.is_temp_path(exe) && !super::common::is_appimage_mount(ctx.sys, exe) {
             once(
                 "NET-TMP-SOCKET",
                 Finding::new(Severity::Critical, MODULE, "NET-TMP-SOCKET", format!("Process from a temporary directory holds a network socket: {exe}"))

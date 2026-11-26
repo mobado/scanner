@@ -1,6 +1,6 @@
 //! proc_audit: running processes and suspicious run paths.
 
-use super::common::{clip, shq};
+use super::common::{clip, is_appimage_mount, risky_home_place, shq};
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::procinfo::ProcInfo;
@@ -70,9 +70,14 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
             }
         }
 
-        if let Some(percent) = uptime.and_then(|up| average_cpu(ctx, p.pid, up)) {
-            if cfg.high_cpu_percent > 0 && percent >= f64::from(cfg.high_cpu_percent) {
-                let system = STANDARD_PREFIXES.iter().any(|d| exe.starts_with(d));
+        if let Some((percent, alive)) = uptime.and_then(|up| average_cpu(ctx, p.pid, up)) {
+            // compilers installed by rustup live in the home folder but are installed programs
+            let system = STANDARD_PREFIXES.iter().any(|d| exe.starts_with(d)) || exe.contains("/.rustup/toolchains/") || is_appimage_mount(ctx.sys, exe);
+            // browsers, compilers, players and indexers are busy by nature (only the installed ones)
+            let heavy = system && names.iter().any(|n| cfg.cpu_heavy_programs.contains(n));
+            // an installed program has to stay busy much longer than an unknown one
+            let needed = if system { f64::from(cfg.high_cpu_minutes) * 60.0 } else { CPU_MIN_SECONDS };
+            if !heavy && cfg.high_cpu_percent > 0 && alive >= needed && percent >= f64::from(cfg.high_cpu_percent) {
                 col.push(
                     Finding::new(if system { Severity::Low } else { Severity::Medium }, MODULE, "PROC-HIGH-CPU", format!("Process using a lot of CPU: {}", p.display_name()))
                         .evidence(format!("{}\naverage CPU since it started: {percent:.0} % (100 % = one core)", evidence(p)))
@@ -94,7 +99,27 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
             continue;
         }
 
-        if cfg.is_temp_path(exe) {
+        if let Some(place) = risky_home_place(exe, cfg) {
+            // programs unpack helpers into caches; downloads and hidden files are less expected
+            let severity = if place == "a cache folder" { Severity::Low } else { Severity::Medium };
+            col.push(
+                Finding::new(severity, MODULE, "PROC-HOME-EXE", format!("Process running from {place}: {exe}"))
+                    .evidence(evidence(p))
+                    .description("The program was started from a place where programs are not normally installed. Something you downloaded and ran yourself looks like this; so does malware that arrived as a download.")
+                    .verify_all(verify(p))
+                    .verify(format!("ls -l --time-style=full-iso {}", shq(exe))),
+            );
+        }
+
+        if is_appimage_mount(ctx.sys, exe) {
+            col.push(
+                Finding::new(Severity::Low, MODULE, "PROC-APPIMAGE", format!("Program running from an AppImage: {}", p.display_name()))
+                    .evidence(evidence(p))
+                    .description("AppImages mount themselves under /tmp while they run. That is how they work; check that you started this one.")
+                    .verify_all(verify(p))
+                    .verify("grep mount_ /proc/mounts"),
+            );
+        } else if cfg.is_temp_path(exe) {
             let hidden = exe.rsplit('/').next().map(|n| n.starts_with('.')).unwrap_or(false);
             col.push(
                 Finding::new(
@@ -183,15 +208,16 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
 /// Processes younger than this are not judged by their CPU use.
 const CPU_MIN_SECONDS: f64 = 600.0;
 
-/// Average CPU use of a process since it started, in percent of one core.
-fn average_cpu(ctx: &ScanCtx, pid: u32, uptime: f64) -> Option<f64> {
+/// Average CPU use of a process since it started, in percent of one core, and its age in
+/// seconds. `None` for young processes.
+fn average_cpu(ctx: &ScanCtx, pid: u32, uptime: f64) -> Option<(f64, f64)> {
     let stat = ctx.sys.read_string(format!("/proc/{pid}/stat")).ok()?;
     let rest: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
     let ticks = |i: usize| rest.get(i).and_then(|v| v.parse::<f64>().ok());
     // fields 14, 15 and 22 of stat; Linux reports them in 1/100 seconds
     let (user, system, started) = (ticks(11)?, ticks(12)?, ticks(19)?);
     let alive = uptime - started / 100.0;
-    (alive >= CPU_MIN_SECONDS).then(|| (user + system) / 100.0 / alive * 100.0)
+    (alive >= CPU_MIN_SECONDS).then(|| ((user + system) / 100.0 / alive * 100.0, alive))
 }
 
 /// After updates many running programs have a replaced binary. Several of those (Low, from

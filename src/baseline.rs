@@ -42,8 +42,24 @@ pub struct Baseline {
 
 /// Kinds of files that later versions started to track: in a baseline made by an older
 /// version they are new to the baseline, not suspicious.
-pub const NEWLY_TRACKED: [&str; 9] = [
+pub const NEWLY_TRACKED: [&str; 25] = [
+    "/.local/share/polkit-1/",
+    "/.config/polkit-1/",
+    "/.xinitrc",
+    "/.xsession",
     "/etc/apt/",
+    "/etc/X11/",
+    "/etc/gdm3/",
+    "/etc/sddm",
+    "/etc/lightdm/",
+    "/etc/NetworkManager/dispatcher.d/",
+    "/etc/systemd/system-sleep/",
+    "/usr/lib/systemd/system-sleep/",
+    "/etc/polkit-1/",
+    "/usr/local/share/polkit-1/",
+    "/run/polkit-1/",
+    "/.config/plasma-workspace/",
+    "/.config/autostart-scripts/",
     "/etc/ld.so.conf",
     "/etc/udev/",
     "/etc/modprobe.d/",
@@ -231,7 +247,10 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
     // path files /etc/ld.so.conf* were added later). Those are "newly tracked", not suspicious.
     if base.scanner_version != env!("CARGO_PKG_VERSION") {
         for f in out.iter_mut() {
-            if f.rule == "BASE-PERSIST-NEW" && NEWLY_TRACKED.iter().any(|p| f.evidence.starts_with(p)) {
+            let first = f.evidence.lines().next().unwrap_or("");
+            // entries starting "/." are folders inside any home folder
+            let newly = NEWLY_TRACKED.iter().any(|p| if p.starts_with("/.") { first.contains(p) } else { first.starts_with(p) });
+            if f.rule == "BASE-PERSIST-NEW" && newly {
                 f.severity = Severity::Low;
                 f.description = "This kind of file was not tracked yet when the baseline was made by an older scanner version, so it is new to the baseline, not necessarily new on the machine. It is added to the baseline automatically after a clean scan as root.".into();
             }

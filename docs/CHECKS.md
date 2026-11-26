@@ -73,7 +73,9 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PROC-MALWARE-NAME` | Critical | A known malware name (miners …) |
 | `PROC-SHM-CWD` | Medium | A process works in `/dev/shm` |
 | `PROC-ROOT-ODD-PATH` | Medium/Low | A root process from outside the package folders |
-| `PROC-HIGH-CPU` | Medium/Low | At least `high_cpu_percent` (70) CPU on average for 10 minutes or more (a miner sign; Low for programs in system folders) |
+| `PROC-HIGH-CPU` | Medium/Low | At least `high_cpu_percent` (70) CPU on average (a miner sign): after 10 minutes for programs outside the system folders, after `high_cpu_minutes` (60) for installed ones; `cpu_heavy_programs` (browsers, compilers, players, indexers) are skipped |
+| `PROC-HOME-EXE` | Medium/Low | A process started from the download folder, the wastebasket or a hidden file (Low from a cache folder) |
+| `PROC-APPIMAGE` | Low | A program running from a mounted AppImage |
 | `PROC-LD-LIBRARY-PATH` | High/Low | `LD_LIBRARY_PATH` points to a temporary (High) or relative folder (AppImages are skipped) |
 
 ## File permissions (`fs_perms`)
@@ -92,6 +94,12 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `FS-IMMUTABLE` | High/Low | A locked (`chattr +i`) file in `/etc`, system program folders, `/root`, cron or `.ssh` (Low for `resolv.conf`) |
 | `FS-SYSTEM-CHANGED` | Critical | `su`, `sudo`, `sshd`, `ps`, `ls`, a PAM module … differs from the checksum its package ships |
 | `FS-SYSTEM-UNPACKAGED` | High | A PAM module that no package installed |
+| `FS-DOWNLOAD-PROGRAM` | Low | Files in the download folder that are allowed to run (one finding per folder; `download_dirs` and the XDG setting) |
+| `FS-DOWNLOAD-DISGUISED` | Medium | A download that looks like a document but runs (`invoice.pdf.desktop`) |
+| `FS-SCRIPT-SUSPICIOUS` | High | A script in the download folder or `~/.local/bin` with a command typical of a break-in |
+| `FS-HOME-HIDDEN-PROGRAM` | Medium | A compiled program with a hidden name, or loose in `.cache`, `.config` or `.local/share` |
+| `FS-BROWSER-ADDON` | High/Medium | A Firefox or Chrome/Chromium/Brave/Edge/Vivaldi/Opera add-on that did not come from the store (unsigned, from a file or folder, forced) |
+| `FS-BROWSER-SETTING` | High/Medium | Proxy, remote control, unsigned add-ons allowed, dangerous start options in launchers, browser policies |
 
 ## Persistence (`persistence`)
 
@@ -108,7 +116,11 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PERS-SSH-COMMAND` / `-ENV` / `-TUNNEL` / `-WEAK` / `-NOCOMMENT` / `-UNKNOWN-KEY` / `-KEYS` / `-RC` / `-PERMS` | High–Low | Suspicious `authorized_keys` entries and `~/.ssh/rc` |
 | `PERS-PAM-PERMIT` | Critical | `pam_permit.so` as `sufficient` in auth/account |
 | `PERS-PAM-EXEC` / `-PATH` / `-UNKNOWN` / `-PERMS` | Critical–Medium | Odd PAM modules and permissions |
-| `PERS-SHELLRC` / `PERS-AUTOSTART` | High–Low | Suspicious shell start files and desktop autostart |
+| `PERS-SHELLRC` | High+ | Suspicious shell start files |
+| `PERS-AUTOSTART` | Critical–Low | XDG autostart: suspicious commands; own scripts or unknown programs (Medium); installed programs in a user's autostart (Low); entries for all users that no package installed (Medium) |
+| `PERS-SESSION-SCRIPT` | Critical–Low | Login, logout, sleep and network scripts (X11, GDM, SDDM, NetworkManager, system-sleep, Plasma): suspicious commands, or not installed by a package |
+| `PERS-DM-SCRIPT` | Critical–Medium | LightDM/SDDM/GDM settings that run an unusual command |
+| `PERS-POLKIT` | Critical–Low | polkit rules that no package installed (above all ones that allow actions without a password), polkit files in home folders |
 | `PERS-UDEV` | Critical–Medium | A udev rule runs a suspicious command or a program outside the system folders |
 | `PERS-AT-CMD` | Critical/High | A queued `at` job with a suspicious command |
 | `PERS-CA-ADDED` | Low | A locally added certificate authority |
@@ -148,7 +160,8 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `AUTH-SUDO-FAILED` | Medium/Low | Wrong sudo password |
 | `AUTH-SUDO-DENIED` | Medium | A user who may not use sudo (for that command) tried to |
 | `AUTH-SU-FAILED` | Medium/Low | Wrong password with `su` |
-| `AUTH-LOCAL-FAILED` | Medium/Low | Wrong password at the console, desktop login, screen lock or password dialog |
+| `AUTH-LOCAL-FAILED` | Medium/Low | Wrong password at the console, display manager (SDDM, GDM, LightDM), screen lock or password dialog; the evidence says where |
+| `AUTH-PKEXEC-DENIED` | Medium/Low | A request to run something as root through `pkexec` was refused |
 | `AUTH-NEW-USER` | Low | An account was created (from the logs) |
 | `AUTH-GROUP-ADD` | Medium | A user was added to a powerful group (sudo, docker …) |
 
@@ -177,8 +190,8 @@ fool it, so run `debsums` or scan from trusted media when in doubt.
 | Rule | Usual level | Meaning |
 |------|-------------|---------|
 | `EXT-DEBSUMS-CHANGED` / `-MISSING` | Critical–Low | A package file differs from its `.deb` / is missing |
-| `EXT-CHKROOTKIT-INFECTED` / `-WARN` / `-WTMP` | Critical–Low | chkrootkit findings (a login-record gap is Low) |
-| `EXT-RKHUNTER-WARN` / `-KNOWN` | High–Low | rkhunter warnings; known Debian false alarms are Low with a command to silence them |
+| `EXT-CHKROOTKIT-INFECTED` / `-WARN` / `-WTMP` | High–Low | chkrootkit findings, a second opinion rather than proof (a login-record gap is Low) |
+| `EXT-RKHUNTER-WARN` / `-KNOWN` | Medium/Low | rkhunter warnings, also a second opinion; known Debian false alarms are Low with a command to silence them |
 | `EXT-LYNIS-WARN` / `-SUGGEST` | Medium/Low | Lynis warnings and hardening suggestions |
 
 ## What it cannot see

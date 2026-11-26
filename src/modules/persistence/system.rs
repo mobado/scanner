@@ -1,8 +1,8 @@
-//! PAM, shell files, desktop autostart, accounts and sudo.
+//! PAM, shell files, accounts and sudo.
 
 use super::{check_perms, issue_finding, record, MODULE};
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{analyze_command, clip, max_severity, mode_string, reasons, shq, split_quoted, writable_by_others, CmdIssue};
+use crate::modules::common::{analyze_command, analyze_user_command,clip, max_severity, mode_string, reasons, shq, split_quoted, writable_by_others, CmdIssue};
 use crate::modules::{Collector, ScanCtx};
 use crate::procinfo::Account;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -148,7 +148,7 @@ pub fn check_pam(ctx: &ScanCtx, col: &mut Collector) {
     }
 }
 
-// ---------------------------------------------------------------- shell files and autostart
+// ---------------------------------------------------------------- shell files
 
 pub fn check_shell_files(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)]) {
     let mut files: Vec<String> = ["/etc/profile", "/etc/bash.bashrc", "/etc/environment", "/etc/zsh/zshrc", "/etc/zsh/zprofile", "/etc/zsh/zshenv"]
@@ -169,7 +169,10 @@ pub fn check_shell_files(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u
         let mut issues: Vec<CmdIssue> = Vec::new();
         let mut lines = Vec::new();
         for line in text.lines().map(|l| l.trim()).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-            let mut found: Vec<CmdIssue> = analyze_command(line, ctx.cfg).into_iter().filter(|i| i.severity >= Severity::High).collect();
+            // files in a home folder naturally mention that folder
+            let own = path.starts_with("/home/") || path.starts_with("/root/");
+            let judged = if own { analyze_user_command(line, ctx.cfg) } else { analyze_command(line, ctx.cfg) };
+            let mut found: Vec<CmdIssue> = judged.into_iter().filter(|i| i.severity >= Severity::High).collect();
             let words = split_quoted(line);
             if words.first().map(|w| w == "alias").unwrap_or(false) {
                 let target = words.get(1).map(|s| s.as_str()).unwrap_or("");
@@ -191,34 +194,6 @@ pub fn check_shell_files(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u
         }
         if let Some(f) = issue_finding("PERS-SHELLRC", format!("Suspicious content in {path}"), &issues, format!("{path}\n{}", clip(&lines.join("\n"), 800)), "The file runs every time a shell or a login starts.") {
             col.push(f.verify(format!("cat {}", shq(&path))).verify(format!("dpkg -S {} 2>/dev/null || echo 'not from any package'", shq(&path))));
-        }
-    }
-
-    // XDG-autostart (skrivbord)
-    let mut dirs: Vec<(String, bool)> = vec![("/etc/xdg/autostart".into(), false)];
-    for (_, _, home) in homes {
-        dirs.push((format!("{home}/.config/autostart"), true));
-    }
-    for (dir, user_dir) in dirs {
-        for name in ctx.sys.dir_names(&dir) {
-            if !name.ends_with(".desktop") {
-                continue;
-            }
-            let path = format!("{dir}/{name}");
-            let Ok(text) = ctx.sys.read_string(&path) else { continue };
-            record(ctx, col, &path);
-            let exec: Vec<String> = text.lines().filter_map(|l| l.trim().strip_prefix("Exec=")).map(|s| s.to_string()).collect();
-            let issues: Vec<CmdIssue> = exec.iter().flat_map(|e| analyze_command(e, ctx.cfg)).collect();
-            if let Some(f) = issue_finding("PERS-AUTOSTART", format!("Suspicious autostart entry: {path}"), &issues, format!("{path}\nExec={}", exec.join(" | ")), "The program starts automatically when a user logs in to the desktop.") {
-                col.push(f.verify(format!("cat {}", shq(&path))));
-            } else if user_dir {
-                col.push(
-                    Finding::new(Severity::Low, MODULE, "PERS-AUTOSTART", format!("Autostart entry in a home directory: {name}"))
-                        .evidence(format!("{path}\nExec={}", exec.join(" | ")))
-                        .description("The program starts when the user logs in to the desktop. Usually normal programs, but check that it is known.")
-                        .verify(format!("cat {}", shq(&path))),
-                );
-            }
         }
     }
 }

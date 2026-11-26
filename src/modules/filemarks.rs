@@ -171,7 +171,7 @@ fn foreign_mounts(ctx: &ScanCtx) -> HashSet<String> {
 }
 
 /// "ELF program", "script" or `None` for ordinary data.
-fn program_kind(real: &Path) -> Option<&'static str> {
+pub(crate) fn program_kind(real: &Path) -> Option<&'static str> {
     let mut head = [0u8; 4];
     let n = fs::File::open(real).ok()?.read(&mut head).ok()?;
     if n == 4 && head == *b"\x7fELF" {
@@ -220,7 +220,8 @@ pub(crate) fn check_temp_programs(ctx: &ScanCtx, col: &mut Collector) -> Vec<Tem
                 check_capabilities(ctx, col, &path, entry.path(), &meta);
             }
             if executable {
-                if let Some(kind) = program_kind(entry.path()) {
+                // /run/user holds each desktop session's own files; scripts there are ordinary
+                if let Some(kind) = program_kind(entry.path()).filter(|k| !(root == "/run/user" && *k == "script")) {
                     let below = path.strip_prefix(&format!("{root}/")).unwrap_or(&path);
                     let hidden = below.split('/').any(|part| part.starts_with('.'));
                     let severity = if root.ends_with("/shm") || (hidden && kind == "ELF program") {

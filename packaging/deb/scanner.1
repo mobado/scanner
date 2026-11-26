@@ -10,7 +10,8 @@ looks for signs of intrusion, backdoors and persistence: reverse and bind shells
 disguised processes, programs running from /tmp or deleted from disk, new SUID/SGID files,
 suspicious systemd units, cron jobs, SSH keys, sshd and PAM settings, programs and file
 capabilities where they do not belong, replaced system programs, apt software sources,
-suspicious shell history, failed logins, and pending updates.
+suspicious shell history, desktop autostart and session scripts, polkit rules, downloads and
+browser add-ons, failed logins, and pending updates.
 It can also run debsums, chkrootkit, rkhunter and lynis.
 .PP
 It is strictly read-only: it never changes the system. The only files it writes are the

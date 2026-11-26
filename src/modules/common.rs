@@ -31,6 +31,91 @@ fn is_b64_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='
 }
 
+const HOME_REASON: &str = "points to a home directory (/home)";
+
+/// The words of a command that name something that gets run: the first one of every command,
+/// and what a shell, interpreter or wrapper is given.
+pub fn program_words(cmd: &str) -> Vec<String> {
+    const WRAPPERS: [&str; 15] = [
+        "sh", "bash", "dash", "zsh", "env", "nohup", "setsid", "exec", "nice", "ionice", "python", "python3", "perl", "source", ".",
+    ];
+    let mut out = Vec::new();
+    let mut expect = true;
+    for word in split_quoted(cmd) {
+        if matches!(word.as_str(), "&&" | "||" | ";" | "|" | "&") {
+            expect = true;
+            continue;
+        }
+        // options and NAME=value settings come between a wrapper and its program
+        if !expect || word.starts_with('-') || (word.contains('=') && !word.starts_with('/')) {
+            continue;
+        }
+        // sh -c "program arguments"
+        if word.contains(char::is_whitespace) && !word.starts_with('/') {
+            out.extend(program_words(&word));
+            expect = false;
+            continue;
+        }
+        let word = word.trim_end_matches(';').to_string();
+        expect = WRAPPERS.contains(&crate::procinfo::basename(&word));
+        out.push(word);
+    }
+    out
+}
+
+/// Is a program in a home folder kept in a place where programs do not belong?
+pub fn risky_home_place(path: &str, cfg: &Config) -> Option<&'static str> {
+    let rest = match path.strip_prefix("/home/") {
+        Some(r) => r.split_once('/')?.1,
+        None => path.strip_prefix("/root/")?,
+    };
+    if cfg.download_dirs.iter().any(|d| rest.starts_with(&format!("{d}/"))) {
+        Some("the download folder")
+    } else if rest.starts_with(".local/share/Trash/") {
+        Some("the wastebasket")
+    } else if rest.starts_with(".cache/") {
+        Some("a cache folder")
+    } else if crate::procinfo::basename(rest).starts_with('.') {
+        Some("a hidden file")
+    } else {
+        None
+    }
+}
+
+/// Like [`analyze_command`], for what a user starts from their own files (autostart, user
+/// services, own cron jobs, shell files): pointing into a home folder is normal there, but
+/// running something from the download folder, a cache or a hidden file is not.
+pub fn analyze_user_command(cmd: &str, cfg: &Config) -> Vec<CmdIssue> {
+    let mut out = analyze_command(cmd, cfg);
+    out.retain(|i| i.reason != HOME_REASON);
+    for word in program_words(cmd) {
+        let path = ["%h/", "~/", "$HOME/", "${HOME}/"]
+            .iter()
+            .find_map(|p| word.strip_prefix(p))
+            .map(|rest| format!("/home/user/{rest}"))
+            .unwrap_or(word);
+        if let Some(place) = risky_home_place(&path, cfg) {
+            let reason = format!("runs a program from {place}");
+            if !out.iter().any(|i| i.reason == reason) {
+                out.push(CmdIssue { severity: Severity::Medium, reason });
+            }
+        }
+    }
+    out
+}
+
+/// Is this a program inside a mounted AppImage (its own file system under /tmp)?
+pub fn is_appimage_mount(sys: &crate::sys::SysRoot, exe: &str) -> bool {
+    exe.starts_with("/tmp/.mount_")
+        && sys.read_string("/proc/mounts").unwrap_or_default().lines().any(|line| {
+            let mut f = line.split_whitespace().skip(1);
+            match (f.next(), f.next()) {
+                (Some(point), Some(kind)) => kind.starts_with("fuse") && point.starts_with("/tmp/.mount_") && exe.starts_with(&format!("{point}/")),
+                _ => false,
+            }
+        })
+}
+
 /// Assess a command or a script line. Empty list = nothing suspicious.
 pub fn analyze_command(cmd: &str, cfg: &Config) -> Vec<CmdIssue> {
     let mut out = Vec::new();
@@ -47,6 +132,10 @@ pub fn analyze_command(cmd: &str, cfg: &Config) -> Vec<CmdIssue> {
     // Executables in temporary directories
     for d in &cfg.temp_dirs {
         let needle = format!("{d}/");
+        // desktops keep sockets and settings under /run; only a program started from there counts
+        if (d == "/run/user" || d == "/run/lock") && !program_words(cmd).iter().any(|w| w.starts_with(&needle)) {
+            continue;
+        }
         if let Some(pos) = cmd.find(&needle) {
             let after = &cmd[pos + needle.len()..];
             let hidden = after.starts_with('.');
@@ -61,7 +150,7 @@ pub fn analyze_command(cmd: &str, cfg: &Config) -> Vec<CmdIssue> {
         }
     }
     if cmd.contains("/home/") {
-        add(Severity::High, "points to a home directory (/home)");
+        add(Severity::High, HOME_REASON);
     }
 
     // Decoding and obfuscation

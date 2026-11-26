@@ -280,7 +280,8 @@ fn debsums_and_friends_parse() {
     assert!(f.iter().any(|x| x.rule == "EXT-DEBSUMS-CHANGED" && x.severity == Severity::Critical));
     assert!(f.iter().any(|x| x.rule == "EXT-DEBSUMS-CHANGED" && x.severity == Severity::Low));
     assert!(f.iter().any(|x| x.rule == "EXT-DEBSUMS-MISSING"));
-    assert_eq!(parse_chkrootkit("Checking `ls'... INFECTED\n")[0].severity, Severity::Critical);
+    // a second opinion: serious, but never on its own proof of a break-in
+    assert_eq!(parse_chkrootkit("Checking `ls'... INFECTED\n")[0].severity, Severity::High);
     assert_eq!(parse_rkhunter("Warning: The file properties have changed:\n         File: /usr/bin/ls\n").len(), 1);
     assert_eq!(parse_lynis("", "warning[]=SSH-7408|Root login|\nsuggestion[]=X|y|\n").len(), 2);
 }

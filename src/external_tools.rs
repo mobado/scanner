@@ -289,9 +289,9 @@ pub fn parse_chkrootkit(stdout: &str) -> Vec<Finding> {
         }
         if lower.contains("infected") && !lower.contains("not infected") {
             out.push(
-                Finding::new(Severity::Critical, &module, "EXT-CHKROOTKIT-INFECTED", format!("chkrootkit: {}", clip(line.trim(), 120)))
+                Finding::new(Severity::High, &module, "EXT-CHKROOTKIT-INFECTED", format!("chkrootkit: {}", clip(line.trim(), 120)))
                     .evidence(line.trim().to_string())
-                    .description("chkrootkit reports an infected file or a known rootkit. Check manually – some tests give known false alarms.")
+                    .description("chkrootkit reports an infected file or a known rootkit. This is a signal to verify, not proof: its tests give false alarms on modern systems. Compare with debsums and the other findings.")
                     .verify("chkrootkit -x | less")
                     .verify("debsums -c"),
             );
@@ -337,15 +337,10 @@ pub fn parse_chkrootkit(stdout: &str) -> Vec<Finding> {
         return out;
     }
     if !other.is_empty() {
-        let sev = if other.iter().any(|l| l.to_lowercase().contains("suspicious") || l.to_lowercase().contains("possible")) {
-            Severity::High
-        } else {
-            Severity::Medium
-        };
         out.push(
-            Finding::new(sev, &module, "EXT-CHKROOTKIT-WARN", format!("chkrootkit reported {} deviation(s)", other.len()))
+            Finding::new(Severity::Medium, &module,"EXT-CHKROOTKIT-WARN", format!("chkrootkit reported {} deviation(s)", other.len()))
                 .evidence(clip(&other.join("\n"), 1500))
-                .description("The lines below are chkrootkit's warnings (suspicious files, hidden directories, promiscuous network card …). Review every line.")
+                .description("The lines below are chkrootkit's warnings (suspicious files, hidden directories, promiscuous network card …). A second opinion with many false alarms on modern systems; review every line.")
                 .verify("chkrootkit"),
         );
     }
@@ -411,7 +406,6 @@ pub fn parse_rkhunter(stdout: &str) -> Vec<Finding> {
         .into_iter()
         .map(|g| {
             let text = g.join("\n");
-            let lower = text.to_lowercase();
             if let Some((why, fix)) = rkhunter_known(&g, &text) {
                 return Finding::new(Severity::Low, &module, "EXT-RKHUNTER-KNOWN", format!("rkhunter (known Debian false alarm): {}", clip(g.first().map(|s| s.as_str()).unwrap_or(""), 100)))
                     .evidence(clip(&text, 1500))
@@ -419,14 +413,9 @@ pub fn parse_rkhunter(stdout: &str) -> Vec<Finding> {
                     .verify("grep -A5 Warning /var/log/rkhunter.log")
                     .verify(fix);
             }
-            let sev = if lower.contains("rootkit") || lower.contains("possible") || lower.contains("hidden") {
-                Severity::High
-            } else {
-                Severity::Medium
-            };
-            Finding::new(sev, &module, "EXT-RKHUNTER-WARN", format!("rkhunter: {}", clip(g.first().map(|s| s.as_str()).unwrap_or(""), 120)))
+            Finding::new(Severity::Medium, &module,"EXT-RKHUNTER-WARN", format!("rkhunter: {}", clip(g.first().map(|s| s.as_str()).unwrap_or(""), 120)))
                 .evidence(clip(&text, 1500))
-                .description("rkhunter warns. Many warnings after package updates go away with 'rkhunter --propupd' – only run it when the system is known to be clean.")
+                .description("rkhunter warns. A second opinion, not proof: many warnings on modern systems are false alarms, and those after package updates go away with 'rkhunter --propupd' – only run it when the system is known to be clean.")
                 .verify("grep -A5 Warning /var/log/rkhunter.log")
         })
         .collect()

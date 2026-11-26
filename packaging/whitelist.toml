@@ -47,6 +47,22 @@ allowed_listen_processes = [
     "chromium",
     "thunderbird",
     "chrome",
+    "brave",
+    "msedge",
+    "vivaldi-bin",
+    "opera",
+    "syncthing",
+    "nextcloud",
+    "dropbox",
+    "insync",
+    "megasync",
+    "spotify",
+    "Discord",
+    "discord",
+    "zoom",
+    "bluetoothd",
+    "obexd",
+    "ipp-usb",
 ]
 report_loopback_listeners = false
 suspicious_remote_ports = [
@@ -498,8 +514,21 @@ allowed_suid = [
 fs_roots = ["/"]
 # Software source hosts that are not reported ("*.debian.org" covers every Debian mirror).
 trusted_apt_hosts = ["*.debian.org"]
-# Report processes that used this much CPU on average for 10 minutes or more (0 = never).
+# Report processes that used this much CPU on average since they started (0 = never): programs
+# outside the system folders after 10 minutes, installed ones after high_cpu_minutes.
 high_cpu_percent = 70
+high_cpu_minutes = 60
+# Installed programs that are busy by nature.
+cpu_heavy_programs = [
+    "firefox", "firefox-esr", "chromium", "chrome", "brave", "msedge", "vivaldi-bin", "opera", "thunderbird",
+    "cc1", "cc1plus", "rustc", "cargo", "ld", "lto1", "make", "ninja", "cmake", "javac", "go", "clang", "gcc", "g++",
+    "ffmpeg", "mpv", "vlc", "obs", "HandBrakeCLI", "ghb", "melt", "kdenlive", "blender", "gimp", "darktable", "pipewire",
+    "baloo_file", "baloo_file_extractor", "tracker-miner-fs-3", "tracker-extract-3", "localsearch-3", "tracker-extract",
+    "updatedb", "clamscan", "7z", "xz", "zstd", "rsync", "borg", "restic",
+    "qemu-system-x86_64", "VirtualBoxVM", "vmware-vmx", "Xorg", "kwin_wayland", "gnome-shell",
+]
+# Names of the download folder inside a home folder.
+download_dirs = ["Downloads", "downloads", "Hämtningar", "Hämtade", "Hämtade filer"]
 # Programs that may have file capabilities ('*' matches one name).
 allowed_capability_files = [
     "/usr/bin/ping",
@@ -744,6 +773,11 @@ common_remote_ports = [
     2049,
     111,
     445,
+    22000,
+    21027,
+    4070,
+    8801,
+    8802,
 ]
 trusted_resolvers = [
     "1.1.1.1",

@@ -21,6 +21,7 @@ pub enum Kind {
     SshAccepted { method: String },
     SudoWrongPassword { attempts: usize },
     SudoDenied,
+    PkexecDenied,
     SuFailed { target: String },
     /// Login on the machine itself: console, desktop login or screen unlock, polkit ...
     LocalFailed { service: String },
@@ -154,6 +155,14 @@ pub fn parse_line(line: &str) -> Option<Event> {
             return event(Kind::GroupAdded { group }, user.to_string(), String::new());
         }
     }
+    // "bob : Error executing command as another user: Not authorized [USER=root] [COMMAND=…]"
+    if program == "pkexec" {
+        let (user, detail) = message.split_once(": ")?;
+        if detail.starts_with("Error executing command as another user: Not authorized") {
+            return event(Kind::PkexecDenied, user.trim().to_string(), String::new());
+        }
+        return None;
+    }
     // Other logins (console, desktop, screen unlock, polkit) report through PAM.
     if let Some(rest) = message.strip_prefix("pam_unix(") {
         let (service, detail) = rest.split_once(':')?;
@@ -233,6 +242,22 @@ fn level(count: usize, threshold: usize) -> Severity {
     } else {
         Severity::Low
     }
+}
+
+/// What a PAM service name means on a desktop.
+pub fn service_name(service: &str) -> String {
+    let name = match service {
+        "sddm" | "sddm-greeter" => "the login screen (SDDM)",
+        "gdm-password" | "gdm" => "the login screen or screen lock (GNOME)",
+        "lightdm" => "the login screen (LightDM)",
+        "kde" | "kscreenlocker" => "the screen lock (KDE)",
+        "xscreensaver" | "cinnamon-screensaver" | "mate-screensaver" | "i3lock" | "swaylock" => "the screen lock",
+        "login" => "a text console",
+        "polkit-1" => "a password dialog (polkit)",
+        "xrdp-sesman" => "remote desktop",
+        other => return other.to_string(),
+    };
+    format!("{name}, service {service}")
 }
 
 /// Logins that succeeded from an address on the internet.
@@ -384,6 +409,7 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
         let (rule, who, n) = match &e.kind {
             Kind::SudoWrongPassword { attempts } => ("AUTH-SUDO-FAILED", e.user.clone(), *attempts),
             Kind::SudoDenied => ("AUTH-SUDO-DENIED", e.user.clone(), 1),
+            Kind::PkexecDenied => ("AUTH-PKEXEC-DENIED", e.user.clone(), 1),
             Kind::SuFailed { target } => ("AUTH-SU-FAILED", format!("{} → {target}", e.user), 1),
             Kind::LocalFailed { service } => ("AUTH-LOCAL-FAILED", format!("{} ({service})", if e.user.is_empty() { "unknown user" } else { &e.user }), 1),
             _ => continue,
@@ -397,8 +423,13 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
             "AUTH-SUDO-FAILED" => (level(count, threshold), format!("Wrong sudo password: {who}"), "Wrong passwords for sudo. Usually typing mistakes; many of them can mean someone with access to the account is guessing.", "sudo journalctl -t sudo --since=-28days | grep 'incorrect password'"),
             "AUTH-SUDO-DENIED" => (Severity::Medium, format!("sudo refused: {who}"), "This account tried to run something as root without being allowed to. Make sure you know why.", "sudo journalctl -t sudo --since=-28days | grep -E 'NOT in sudoers|not allowed'"),
             "AUTH-SU-FAILED" => (level(count, threshold), format!("Failed su: {who}"), "A wrong password when switching user with su.", "sudo journalctl -t su --since=-28days"),
+            "AUTH-PKEXEC-DENIED" => (level(count, threshold), format!("pkexec refused: {who}"), "A program asked to run something as root through pkexec (polkit) and was refused. Make sure you know what asked.", "sudo journalctl -t pkexec --since=-28days"),
             _ => (level(count, threshold), format!("Failed logins on this computer: {who}"), "Wrong passwords at the console, desktop login, screen lock or a password dialog. Usually typing mistakes; many in a row, or at times you were away, deserve a look.", "sudo journalctl --since=-28days SYSLOG_FACILITY=10 | grep 'authentication failure'"),
         };
-        col.push(Finding::new(severity, MODULE, rule, title).evidence(describe_events(&list, count)).description(text).verify(check));
+        let mut evidence = describe_events(&list, count);
+        if let Some(Kind::LocalFailed { service }) = list.first().map(|e| &e.kind) {
+            evidence = format!("where: {}\n{evidence}", service_name(service));
+        }
+        col.push(Finding::new(severity, MODULE, rule, title).evidence(evidence).description(text).verify(check));
     }
 }

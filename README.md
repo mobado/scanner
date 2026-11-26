@@ -17,11 +17,11 @@ export buttons).
 | `services` | Web shells in web folders, container socket and Docker API exposure, privileged containers |
 | `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps |
 | `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners) |
-| `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions |
-| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories |
+| `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions, downloads and hidden programs in home folders, browser add-ons and settings |
+| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, desktop autostart, session and login-screen scripts, polkit rules |
 | `updates` | Pending security updates, other updates, reboot needed, old package lists |
 | `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords |
-| external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed) |
+| external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed). `chkrootkit` and `rkhunter` give false alarms on modern systems, so their findings are a second opinion and never Critical |
 
 Every rule is listed in [docs/CHECKS.md](docs/CHECKS.md). What changed between versions is in
 [CHANGELOG.md](CHANGELOG.md).
@@ -51,9 +51,15 @@ src/
 │   │                   reverse/bind shells, ss comparison, hidden PIDs, disguised names
 │   ├── proc_audit.rs   run paths in /tmp,/var/tmp,/dev/shm,/run, "(deleted)", memfd, LD_PRELOAD
 │   ├── fs_perms.rs     SUID/SGID (0o4000/0o2000) on local file systems (st_dev), dangerous permissions
+│   ├── filemarks.rs    capabilities, immutable files, programs in temp folders, system program checksums
+│   ├── homefiles.rs    download folder, ~/.local/bin, hidden programs in home folders
+│   ├── browsers.rs     Firefox and Chromium-family add-ons, settings, launchers, policies
 │   ├── persistence.rs  systemd units and timers, cron, at, rc.local, ld.so.preload
 │   │   ├── ssh.rs      sshd_config (with Include) and authorized_keys
-│   │   └── system.rs   PAM, shell files, XDG autostart, UID 0, sudo NOPASSWD
+│   │   ├── system.rs   PAM, shell files, UID 0, shared IDs, sudo NOPASSWD
+│   │   ├── desktop.rs  XDG autostart, session and login-screen scripts, polkit rules
+│   │   ├── apt.rs      software sources (.list and .sources) and apt hooks
+│   │   └── history.rs  suspicious commands in shell histories
 │   └── common.rs       assessment of command lines (base64, /dev/tcp, curl|sh, nc -e …)
 ├── external_tools.rs   debsums -c, chkrootkit, rkhunter, lynis (PATH check and timeout)
 ├── baseline.rs         baseline in JSON and diff (new SUID/SGID files = Critical)
@@ -82,7 +88,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.5.0-1_amd64.deb
+sudo apt install ./scanner_0.6.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -192,6 +198,7 @@ and upgrade). Your own entries, settings and comments are kept, the previous fil
 Important fields: `allowed_listen_ports` (`"tcp/22"` or a range `"udp/1714-1764"`),
 `allowed_listen_processes` (trusted programs under `/usr`), `allowed_suid` (supports `*`),
 `allowed_capability_files`, `trusted_apt_hosts`, `high_cpu_percent` (0 = off),
+`high_cpu_minutes`, `cpu_heavy_programs`, `download_dirs`,
 `allowed_systemd_units`, `allowed_cron_files`, `allowed_ssh_key_comments`,
 `allowed_ld_preload`, `allowed_argv0_mismatch`, `fs_exclude_paths`,
 `log_days` (how far back the log checks look, 28) and `login_fail_threshold` (login check), `common_remote_ports`,
