@@ -375,6 +375,7 @@ impl ScannerApp {
                 None if self.is_root => ui.label(RichText::new("The first clean scan saves a baseline by itself.").small().color(MUTED)),
                 None => ui.label(RichText::new("The baseline is made automatically by the first scan as root.").small().color(MUTED)),
             };
+            ui.label(RichText::new("A baseline helps most when it is saved on a freshly installed computer you trust: later scans then show only what changed.").small().color(MUTED));
             ui.label(RichText::new("Compare with another file (empty = the automatic baseline)").small().color(MUTED));
             ui.add(egui::TextEdit::singleline(&mut self.baseline_compare).hint_text(scanner::autobaseline::DEFAULT_PATH).desired_width(f32::INFINITY));
             ui.label(RichText::new("Save the latest scan as the new baseline (e.g. after updates)").small().color(MUTED));

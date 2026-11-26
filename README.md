@@ -12,16 +12,16 @@ export buttons).
 
 | Module | Looks for |
 |--------|-----------|
-| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), unusual outgoing connections, direct DNS, resolvers and `/etc/hosts`, ARP/routing anomalies, sniffing, port forwarding, undeclared tunnels, tunnel tools and reverse SSH, hidden processes, disguised process names |
-| `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands, eBPF programs, taint marks, Secure Boot, lockdown and UEFI boot entries |
+| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), unusual outgoing connections, direct DNS, resolvers and `/etc/hosts`, ARP/routing anomalies, sniffing, port forwarding, undeclared tunnels, tunnel tools and reverse SSH, hidden processes, disguised process names, Bluetooth, shared folders, DNS settings and VPN leaks |
+| `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands, eBPF programs, taint marks, Secure Boot, lockdown and UEFI boot entries, AppArmor and SELinux |
 | `services` | Web shells in web folders, container socket and Docker API exposure, privileged containers |
-| `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps |
-| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files |
+| `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps, kernel start options, GRUB scripts, the kernel file against its package, disk errors |
+| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files, shells and download tools started by browsers or document viewers |
 | `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions, downloads and hidden programs in home folders, browser add-ons and settings, rewritten programs and backdated files |
 | `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, network and sleep scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, the boot image (initramfs) |
-| `desktop_session` | Autostart, session and login-screen scripts, session D-Bus services and portals, settings of KDE Plasma, GNOME, XFCE and window managers, programs reading the keyboard, Wayland or X11. Findings are labelled `[xdg]`, `[kde]`, `[gnome]` …; skipped on servers without a desktop |
-| `updates` | Pending security updates, other updates, reboot needed, old package lists |
-| `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords |
+| `desktop_session` | Autostart, session and login-screen scripts, session D-Bus services and portals, settings of KDE Plasma, GNOME, XFCE and window managers, programs reading the keyboard, remote desktop programs, Flatpak, Snap and AppImage, Wayland or X11. Findings are labelled `[xdg]`, `[kde]`, `[gnome]` …; skipped on servers without a desktop |
+| `updates` | Pending security updates, other updates, reboot needed, old package lists, missing security source, processor microcode and firmware updates |
+| `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords, pkexec and polkit approvals |
 | external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed). `chkrootkit` and `rkhunter` give false alarms on modern systems, so their findings are a second opinion and never Critical |
 
 Every rule is listed in [docs/CHECKS.md](docs/CHECKS.md). What changed between versions is in
@@ -58,7 +58,9 @@ src/
 │   ├── browsers.rs     Firefox and Chromium-family add-ons, settings, launchers, policies
 │   ├── procwatch.rs    traced processes, mounts that hide or replace files
 │   ├── tunnels.rs      tunnel interfaces, WireGuard peers, tunnel tools, reverse SSH
-│   ├── kernelstate.rs  eBPF, taint marks, Secure Boot, lockdown, UEFI boot entries
+│   ├── kernelstate.rs  eBPF, taint marks, Secure Boot, lockdown, UEFI boot entries, AppArmor
+│   ├── netlocal.rs     Bluetooth, shared folders, DNS settings, DNS around a VPN
+│   ├── bootchain.rs    kernel start options, GRUB scripts, kernel file, disk errors
 │   ├── desktop_session/    the desktop module (labels, server detection)
 │   │   ├── xdg.rs      autostart, session and login-screen scripts
 │   │   ├── environments.rs  D-Bus services, portals, KDE, GNOME, XFCE and window managers
@@ -99,7 +101,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.9.1-1_amd64.deb
+sudo apt install ./scanner_0.10.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -209,7 +211,7 @@ and upgrade). Your own entries, settings and comments are kept, the previous fil
 Important fields: `allowed_listen_ports` (`"tcp/22"` or a range `"udp/1714-1764"`),
 `allowed_listen_processes` (trusted programs under `/usr`), `allowed_suid` (supports `*`),
 `allowed_capability_files`, `trusted_apt_hosts`, `high_cpu_percent` (0 = off),
-`high_cpu_minutes`, `cpu_heavy_programs`, `download_dirs`, `tunnel_programs`,
+`high_cpu_minutes`, `cpu_heavy_programs`, `download_dirs`, `tunnel_programs`, `remote_desktop_programs`,
 `allowed_systemd_units`, `allowed_cron_files`, `allowed_ssh_key_comments`,
 `allowed_ld_preload`, `allowed_argv0_mismatch`, `fs_exclude_paths`,
 `log_days` (how far back the log checks look, 28) and `login_fail_threshold` (login check), `common_remote_ports`,
@@ -221,6 +223,10 @@ On GitHub, every push runs the tests, builds the static binary and runs the self
 the static binary can be downloaded from the run's *Artifacts*.
 
 ## The automatic baseline
+
+**A baseline from a freshly installed, trusted computer helps the most**, above all on a
+desktop, where your own files and apps give much ordinary noise: later scans then point at what
+changed. A new SSH key is *Critical*; a new file in a download folder is *Low*.
 
 The scanner makes the baseline itself: the first complete scan **as root** (all five core
 modules, `desktop_session` included) saves `/var/lib/scanner/baseline.json` (folder mode 0700), and every later scan,

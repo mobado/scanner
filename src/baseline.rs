@@ -44,6 +44,46 @@ pub struct Baseline {
     /// Signs of a graphical desktop; empty means the machine had none.
     #[serde(default)]
     pub desktop: Option<Vec<String>>,
+    #[serde(default)]
+    pub ssh_keys: Option<Vec<String>>,
+    #[serde(default)]
+    pub bluetooth: Option<Vec<String>>,
+}
+
+/// The parts of a recorded key that identify it: the file and the fingerprint.
+fn key_identity(entry: &str) -> (String, String) {
+    let words: Vec<&str> = entry.split_whitespace().collect();
+    let at = words.iter().position(|w| w.starts_with("SHA256:")).unwrap_or(0);
+    // the file name may contain spaces; the key type stands before the fingerprint
+    (words[..at.saturating_sub(1)].join(" "), words.get(at).unwrap_or(&"").to_string())
+}
+
+/// New SSH keys and new Bluetooth devices: both give someone a way to act as a user.
+fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool, src: &str, out: &mut Vec<Finding>) {
+    if let (true, Some(old), Some(new)) = (both("persistence"), &base.ssh_keys, &inv.ssh_keys) {
+        let known: BTreeSet<(String, String)> = old.iter().map(|k| key_identity(k)).collect();
+        for key in new.iter().filter(|k| !known.contains(&key_identity(k))) {
+            let file = key_identity(key).0;
+            out.push(
+                Finding::new(Severity::Critical, MODULE, "BASE-SSH-KEY-NEW", format!("New SSH key since the baseline: {file}"))
+                    .evidence(format!("{key}\n(compared with {src})"))
+                    .description("Whoever holds the private half of this key can log in as this user without a password. Unless you added it, remove the line and treat the machine as broken into.")
+                    .verify(format!("ssh-keygen -lf {}", shq(&file)))
+                    .verify(format!("ls -l --time-style=full-iso {}", shq(&file))),
+            );
+        }
+    }
+    if let (true, Some(old), Some(new)) = (both("net_proc"), &base.bluetooth, &inv.bluetooth) {
+        for device in new.iter().filter(|d| !old.contains(d)) {
+            let keyboard = device.ends_with("[keyboard]");
+            out.push(
+                Finding::new(if keyboard { Severity::High } else { Severity::Medium }, MODULE, "BASE-BLUETOOTH-NEW", format!("New paired Bluetooth device since the baseline: {device}"))
+                    .evidence(format!("{device}\n(compared with {src})"))
+                    .description("A paired device may connect by itself; a keyboard can type commands. Remove it if it is not yours.")
+                    .verify("bluetoothctl devices Paired"),
+            );
+        }
+    }
 }
 
 /// Is this a kind of file that some earlier version did not record yet?
@@ -59,7 +99,11 @@ pub fn newly_tracked(path: &str) -> bool {
 
 /// Kinds of files that later versions started to track: in a baseline made by an older
 /// version they are new to the baseline, not suspicious.
-pub const NEWLY_TRACKED: [&str; 59] = [
+pub const NEWLY_TRACKED: [&str; 63] = [
+    "/etc/default/grub",
+    "/etc/grub.d/",
+    "/var/lib/flatpak/overrides/",
+    "/.local/share/flatpak/overrides/",
     "/.local/share/dbus-1/",
     "/usr/local/share/dbus-1/",
     "/.local/share/xdg-desktop-portal/",
@@ -151,6 +195,8 @@ impl Baseline {
             accounts: r.inventory.accounts.clone(),
             boot: r.inventory.boot.clone(),
             desktop: r.inventory.desktop.clone(),
+            ssh_keys: r.inventory.ssh_keys.clone(),
+            bluetooth: r.inventory.bluetooth.clone(),
         }
     }
 
@@ -308,6 +354,7 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
             f.description = "A file that starts things in a desktop session is new or changed. Adding an autostart entry or changing a desktop setting does this; check that it was you.".into();
         }
     }
+    compare_access(base, inv, &both, &src, &mut out);
     if both("desktop_session") {
         compare_desktop(base.desktop.as_deref(), inv.desktop.as_deref(), &src, &mut out);
     }
@@ -375,6 +422,11 @@ fn compare_boot(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>, 
     }
     if ["integrity", "confidentiality"].contains(&get(old, "lockdown").as_str()) && get(new, "lockdown") == "none" {
         push(Severity::High, "BASE-LOCKDOWN-OFF", "The kernel lockdown is gone since the baseline".into(), format!("lockdown: {} → none", get(old, "lockdown")));
+    }
+    for (key, name) in [("apparmor", "AppArmor"), ("selinux", "SELinux")] {
+        if ["on", "enforcing"].contains(&get(old, key).as_str()) && ["off", "permissive"].contains(&get(new, key).as_str()) {
+            push(Severity::High, "BASE-APPARMOR-OFF", format!("{name} stopped protecting since the baseline"), format!("{key}: {} → {}", get(old, key), get(new, key)));
+        }
     }
     for (key, value) in new.iter().filter(|(k, _)| k.starts_with("boot_entry ")) {
         let name = key.trim_start_matches("boot_entry ");

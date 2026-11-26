@@ -136,7 +136,8 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
 
         if p.exe_deleted() {
             let pkg_dir = STANDARD_PREFIXES.iter().any(|d| exe.starts_with(d));
-            let sev = if pkg_dir { Severity::Low } else { Severity::High };
+            // a program in a temporary folder that also removed itself is the clearest sign there is
+            let sev = if pkg_dir { Severity::Low } else if cfg.is_temp_path(exe) { Severity::Critical } else { Severity::High };
             col.push(
                 Finding::new(sev, MODULE, "PROC-DELETED", format!("The process binary has been deleted: {exe}"))
                     .evidence(evidence(p))
@@ -193,6 +194,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     }
     super::procwatch::check_tracing(ctx, col);
     super::procwatch::check_mounts(ctx, col);
+    super::procwatch::check_app_spawns(ctx, col);
     for (dir, users) in library_paths {
         let temp = cfg.is_temp_path(&dir);
         let list: Vec<String> = users.iter().take(8).map(|p| format!("PID {} {}", p.pid, p.display_name())).collect();

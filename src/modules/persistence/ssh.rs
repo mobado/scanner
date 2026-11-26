@@ -271,6 +271,8 @@ pub fn parse_authorized_key(line: &str) -> Option<AuthKey> {
 
 pub fn check_authorized_keys(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)], akf: &[String]) {
     let mut seen = HashSet::new();
+    // present even when empty, so that a first key shows up against the baseline
+    col.inventory.ssh_keys.get_or_insert_with(Vec::new);
     for (user, uid, home) in homes {
         for pat in akf {
             if pat.eq_ignore_ascii_case("none") {
@@ -297,6 +299,7 @@ pub fn check_authorized_keys(ctx: &ScanCtx, col: &mut Collector, homes: &[(Strin
                 let Some(k) = parse_authorized_key(line) else { continue };
                 let fp = k.fingerprint().unwrap_or_else(|| "?".into());
                 let bits = k.rsa_bits();
+                col.inventory.ssh_keys.get_or_insert_with(Vec::new).push(format!("{path} {} {fp} {}", k.key_type, k.comment));
                 inventory.push(format!(
                     "{} {}{} \"{}\"{}",
                     k.key_type,

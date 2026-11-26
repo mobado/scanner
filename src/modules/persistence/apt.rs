@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq)]
 pub struct AptSource {
     pub uri: String,
+    /// The suites it provides ("trixie", "trixie-security" …).
+    pub suites: String,
     /// Signature checks are switched off for this source.
     pub unsigned: bool,
     /// Where it was found: "file:line".
@@ -37,8 +39,10 @@ pub fn parse_list(path: &str, text: &str) -> Vec<AptSource> {
             unsigned = options.split_whitespace().any(|o| o.split_once('=').map(|(k, v)| (k == "trusted" || k == "allow-insecure") && yes(v)).unwrap_or(false));
             rest = tail.trim_start();
         }
-        let Some(uri) = rest.split_whitespace().next() else { continue };
-        out.push(AptSource { uri: uri.to_string(), unsigned, origin: format!("{path}:{}", i + 1) });
+        let mut words = rest.split_whitespace();
+        let Some(uri) = words.next() else { continue };
+        let suites = words.next().unwrap_or("").to_string();
+        out.push(AptSource { uri: uri.to_string(), suites, unsigned, origin: format!("{path}:{}", i + 1) });
     }
     out
 }
@@ -58,7 +62,8 @@ pub fn parse_deb822(path: &str, text: &str) -> Vec<AptSource> {
             if enabled {
                 let unsigned = ["trusted", "allow-insecure"].iter().any(|k| fields.get(*k).map(|v| yes(v)).unwrap_or(false));
                 for uri in fields.get("uris").map(|u| u.as_str()).unwrap_or("").split_whitespace() {
-                    out.push(AptSource { uri: uri.to_string(), unsigned, origin: format!("{path}:{}", start + 1) });
+                    let suites = fields.get("suites").cloned().unwrap_or_default();
+                    out.push(AptSource { uri: uri.to_string(), suites, unsigned, origin: format!("{path}:{}", start + 1) });
                 }
             }
             fields.clear();
@@ -98,10 +103,12 @@ fn trusted_host(host: &str, trusted: &[String]) -> bool {
     })
 }
 
-pub fn check_apt(ctx: &ScanCtx, col: &mut Collector) {
+/// Every enabled software source, with the files they come from.
+pub fn read_sources(ctx: &ScanCtx) -> (Vec<AptSource>, Vec<String>) {
     let mut sources = Vec::new();
+    let mut files = Vec::new();
     if let Ok(text) = ctx.sys.read_string("/etc/apt/sources.list") {
-        record(ctx, col, "/etc/apt/sources.list");
+        files.push("/etc/apt/sources.list".to_string());
         sources.extend(parse_list("/etc/apt/sources.list", &text));
     }
     for name in ctx.sys.dir_names("/etc/apt/sources.list.d") {
@@ -112,8 +119,16 @@ pub fn check_apt(ctx: &ScanCtx, col: &mut Collector) {
             continue;
         }
         let Ok(text) = ctx.sys.read_string(&path) else { continue };
-        record(ctx, col, &path);
         sources.extend(if list { parse_list(&path, &text) } else { parse_deb822(&path, &text) });
+        files.push(path);
+    }
+    (sources, files)
+}
+
+pub fn check_apt(ctx: &ScanCtx, col: &mut Collector) {
+    let (sources, files) = read_sources(ctx);
+    for path in files {
+        record(ctx, col, &path);
     }
     // the keys apt trusts
     for dir in ["/etc/apt/trusted.gpg.d", "/etc/apt/keyrings", "/etc/apt/preferences.d"] {

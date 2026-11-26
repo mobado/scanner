@@ -33,6 +33,16 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-TUNNEL-PROGRAM` | High/Medium | A running tunnel tool from `tunnel_programs` (ngrok, cloudflared, chisel, frpc …) |
 | `NET-SSH-REVERSE` | High–Low | A running `ssh -R` tunnel, or `RemoteForward` in SSH settings |
 | `NET-HIDDEN-PS` | High | `ps` and the `/proc` listing disagree about which processes exist |
+| `NET-LOCAL-SERVER` | Low | A script serves something that only this computer can reach (not a bind shell) |
+| `NET-SSH-AGENT` | Medium/Low | SSH settings forward the key agent (Medium for every host) |
+| `NET-BLUETOOTH` | Low | Paired Bluetooth keyboards; an adapter that is visible to everyone (paired devices need root) |
+| `NET-SHARE` | Medium | NFS exports with `no_root_squash` or open to all, Samba folders where guests may write |
+| `NET-DNS-CONFIG` | High/Medium | Unknown DNS servers in systemd-resolved or NetworkManager settings; dnsmasq redirects of update and developer sites |
+| `NET-DNS-HANDED` | Low | DNS servers handed out by the network or VPN that are not well known |
+| `NET-DNS-LEAK` | Low | Traffic goes through a VPN but a DNS server sits on the local network |
+
+`NET-LISTEN-UNKNOWN` says who can reach the port, and the notes count how many ports are open to
+every network, to one address, or only to this computer.
 | `NET-PROMISC` | Medium | A network card in promiscuous (sniffing) mode |
 | `NET-NAT-REDIRECT` | Low/Medium | Firewall rules (`nft`; Medium for old `iptables-legacy`) that redirect or forward traffic; Docker/libvirt rules are skipped (needs root; `nft` not in the timer service) |
 
@@ -49,6 +59,8 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `KERN-TAINTED` | High–Low | Why the kernel is "tainted", bit by bit; Medium when the module that caused it is no longer loaded, High after a forced removal |
 | `KERN-SECUREBOOT` | Medium/Low | Secure Boot off, or on without kernel lockdown (with `sig_enforce` and `modules_disabled`) |
 | `KERN-BOOT-ENTRY` | Low | UEFI boot entries that start another loader than Debian's, Windows' or the default one |
+| `KERN-APPARMOR-OFF` / `-PROFILES` | Medium / Low | AppArmor is not active; profiles that only complain or are disabled (listing them needs root) |
+| `KERN-SELINUX` | Medium | SELinux is in permissive mode |
 
 ## Web files and containers (`services`)
 
@@ -67,7 +79,11 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `INT-LOG-DEVNULL` | High/Medium | A log or shell history linked to `/dev/null` |
 | `INT-LOG-EMPTY` | Medium | A log empty for days although older logs have content |
 | `INT-WTMP` | Medium/Low | Damaged or blanked login records |
-| `INT-TIME-BACKWARDS` | Medium | Log time jumps back more than an hour |
+| `INT-TIME-BACKWARDS` | Medium | Log time jumps back more than an hour; lists logins and administrator actions within 10 minutes of the jump |
+| `INT-BOOT-OPTIONS` | High–Low | Kernel options (running, `/etc/default/grub`, `grub.cfg`) such as `init=`, `apparmor=0`, `nokaslr`, `mitigations=off` |
+| `INT-GRUB-SCRIPT` | Critical–Medium | An executable boot menu script that no package installed |
+| `INT-KERNEL-FILE` | Critical/Low | `vmlinuz`/`System.map` differs from its package, or a kernel from no package |
+| `INT-DISK-ERRORS` | Low | ext4 error counters and disk I/O errors in the kernel log, which can look like tampering |
 | `INT-JOURNAL-CORRUPT` / `-VOLATILE` | Medium/Low | Journal fails verification (root, full scan only, at most `journal_verify_secs` = 90 s) / not kept across reboots |
 | `INT-CLOCK` | Medium/Low | Automatic time setting off or clock not synchronised |
 
@@ -76,7 +92,8 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | Rule | Usual level | Meaning |
 |------|-------------|---------|
 | `PROC-TMP-EXE` | High/Critical | A process runs from a temporary directory |
-| `PROC-DELETED` | Low/High | The binary was deleted while running (several Low ones become one "restart needed" finding) |
+| `PROC-DELETED` | Low–Critical | The binary was deleted while running (several Low ones become one "restart needed" finding); Critical when it ran from a temporary folder such as `/dev/shm` |
+| `PROC-APP-SPAWN` | High/Medium | A document viewer started a shell or download tool, or a browser or mail program started one (browser helpers and `xdg-open` are skipped) |
 | `PROC-MEMFD` | Critical | A fileless process running from a memfd |
 | `PROC-LD-PRELOAD` | Medium–Critical | A process with `LD_PRELOAD` set (Firefox's sandbox, Flatpak etc. are whitelisted) |
 | `PROC-MALWARE-NAME` | Critical | A known malware name (miners …) |
@@ -112,7 +129,8 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `FS-SCRIPT-SUSPICIOUS` | High | A script in the download folder or `~/.local/bin` with a command typical of a break-in |
 | `FS-HOME-HIDDEN-PROGRAM` | Medium | A compiled program with a hidden name, or loose in `.cache`, `.config` or `.local/share` |
 | `FS-BROWSER-ADDON` | High/Medium | A Firefox or Chrome/Chromium/Brave/Edge/Vivaldi/Opera add-on that did not come from the store (unsigned, from a file or folder, forced) |
-| `FS-BROWSER-SETTING` | High/Medium | Proxy, remote control, unsigned add-ons allowed, dangerous start options in launchers, browser policies |
+| `FS-BROWSER-SETTING` | High–Low | Proxy, remote control, unsigned add-ons allowed, unfamiliar search engine or DNS server, dangerous start options in launchers, browser policies |
+| `FS-BROWSER-NATIVE` | High–Low | A native messaging host (a program browser add-ons can start) in an odd place, from no package, or your own |
 
 ## Persistence (`persistence`)
 
@@ -151,13 +169,15 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PERS-APT-THIRDPARTY` | Low | A software source whose host is not in `trusted_apt_hosts` (`*.debian.org`) |
 | `PERS-APT-HOOK` | Critical/High | apt runs a suspicious command (`apt.conf.d` hooks) |
 | `PERS-HISTORY` | High–Low | Suspicious commands in a shell history (reverse shells, history switched off, logs deleted, download-and-run …); only those lines are shown |
+| `PERS-TRANSIENT-UNIT` | Critical–Medium | A service created on the fly (`systemd-run`) with a suspicious command |
 | `PERS-SYSACCT-SHELL` / `PERS-EMPTY-PASSWORD` / `PERS-SUDO-NOPASSWD` | High–Low | Account and sudo settings |
 
 ## Desktop session (`desktop_session`)
 
 Everything tied to a graphical session. Each title starts with a label: `[xdg]` (shared
 standards), `[kde]`, `[gnome]`, `[xfce]`, `[wm]` (sway, i3 and other window managers),
-`[login]` (login screen), `[x11]` and `[input]`.
+`[login]` (login screen), `[x11]`, `[input]`, `[remote]`, `[flatpak]`, `[snap]` and
+`[appimage]`.
 
 **Servers.** If the machine has no desktop session, login screen or X server installed and no
 graphical program running, only the keyboard check runs and the report notes it. A baseline
@@ -182,7 +202,11 @@ made then reports `BASE-DESKTOP-NEW` (High) when a desktop appears.
 | `PERS-DESKTOP-COMMAND` | Critical–Medium | A command from a desktop's own settings that is suspicious or runs from an odd place: KDE saved session, notification actions and shortcuts; GNOME shortcuts and saved session; XFCE session, shortcuts, saved session and panel; sway, i3, Hyprland, swayidle, openbox, LXDE, labwc, wayfire, fluxbox, xscreensaver |
 | `PERS-KWIN-SCRIPT` / `-RULE` | Medium/Low | `[kde]` an own KWin script is on (Medium when it can start programs); window rules that make windows invisible |
 | `PERS-DESKTOP-PROXY` | Medium | KDE or GNOME settings send traffic through a proxy (passwords are not shown) |
-| `PERS-REMOTE-DESKTOP` / `PERS-SCREEN-LOCK` | Medium / Low | `[gnome]` remote desktop is on / the screen lock is off |
+| `PERS-REMOTE-DESKTOP` / `PERS-SCREEN-LOCK` | Medium / Low | GNOME remote desktop is on / the screen lock is off (GNOME or KDE) |
+| `DESK-REMOTE-SCREEN` | High/Medium | A remote desktop program from `remote_desktop_programs` is running (also on servers), or KDE screen sharing allows unattended access |
+| `DESK-FLATPAK-OVERRIDE` / `-REMOTE` / `-ACCESS` | High–Low | Extra permissions added to Flatpak apps; sources outside Flathub or without signature check; apps with wide access |
+| `DESK-SNAP` | Medium/Low | Snaps installed from a local file or in developer mode; classic snaps |
+| `DESK-APPIMAGE` | Low | AppImage programs in home folders (nothing verifies or updates them) |
 | `PERS-GNOME-EXTENSION` | Low | Own GNOME Shell extensions that are switched on (read from the dconf database) |
 | `PERS-X11-OPEN` | Medium | `xhost +` opens the X11 display to others |
 | `PROC-INPUT-READER` | High/Medium | A program that reads `/dev/input` directly and is not a known compositor, key or mouse tool (High from outside the system folders), known keyloggers, or `xinput test`. The report's notes also say whether each session is Wayland or X11 |
@@ -195,6 +219,10 @@ made then reports `BASE-DESKTOP-NEW` (High) when a desktop appears.
 | `UPD-AVAILABLE` | Low | Other updates are waiting |
 | `UPD-REBOOT` | Medium/Low | A reboot is needed to finish installed updates |
 | `UPD-STALE-LISTS` | Low | The package lists are more than a week old |
+| `UPD-NO-SECURITY-REPO` | Medium | No software source provides security updates |
+| `UPD-OLD-REPO` | Low | A Debian source for an older release |
+| `UPD-MICROCODE` | Medium | `intel-microcode`/`amd64-microcode` is not installed (real machines only) |
+| `UPD-FIRMWARE` | Low | `fwupd` missing, or its list of firmware updates older than 90 days |
 
 ## Login attempts (`auth_logs`)
 
@@ -216,6 +244,8 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `AUTH-SU-FAILED` | Medium/Low | Wrong password with `su` |
 | `AUTH-LOCAL-FAILED` | Medium/Low | Wrong password at the console, display manager (SDDM, GDM, LightDM), screen lock or password dialog; the evidence says where |
 | `AUTH-PKEXEC-DENIED` | Medium/Low | A request to run something as root through `pkexec` was refused |
+| `AUTH-POLKIT-FAILED` | Medium/Low | Wrong password in an administrator dialog (polkit) |
+| `AUTH-ADMIN-ACTIONS` | Medium/Low | What was run with `pkexec` and approved in polkit dialogs (Medium for programs from a temporary or home folder) |
 | `AUTH-NEW-USER` | Low | An account was created (from the logs) |
 | `AUTH-GROUP-ADD` | Medium | A user was added to a powerful group (sudo, docker …) |
 
@@ -229,6 +259,9 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-LISTEN-NEW` | High/Medium | A new listening port (random ports of known programs are ignored) |
 | `BASE-ACCOUNT-NEW` / `-UID` / `-SHELL` / `-GROUP` / `-PASSWORD` / `-REMOVED` | Critical–Low | New accounts, changed user id or shell, new powerful group, a locked system account got a password |
 | `BASE-PERSIST-NEW` / `-CHANGED` / `-REMOVED` | High–Low | A persistence file appeared / changed / disappeared |
+| `BASE-SSH-KEY-NEW` | **Critical** | A new key in an `authorized_keys` file |
+| `BASE-BLUETOOTH-NEW` | High/Medium | A new paired Bluetooth device (High for a keyboard) |
+| `BASE-APPARMOR-OFF` | High | AppArmor or SELinux stopped protecting |
 | `BASE-DESKTOP-NEW` | High/Medium | A graphical desktop appeared on a machine that had none; a virtual or remote screen (Xvnc, x11vnc, Xvfb) started running |
 | `BASE-SECUREBOOT-OFF` / `BASE-LOCKDOWN-OFF` | High | Secure Boot or the kernel lockdown was switched off |
 | `BASE-BOOT-ENTRY-NEW` / `-CHANGED` / `BASE-BOOT-ORDER` | Medium/Low | UEFI boot entries or their order changed |

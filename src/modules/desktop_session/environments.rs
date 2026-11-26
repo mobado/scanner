@@ -205,6 +205,12 @@ fn check_kde(ctx: &ScanCtx, col: &mut Collector, home: &str) {
             setting_finding(col, Severity::Low, "PERS-KWIN-RULE", format!("Window rules make windows invisible: {rules}"), &rules, hiding, "A rule makes certain windows fully transparent. Some people do that on purpose; it can also hide a window you should see.");
         }
     }
+    let locker = format!("{config}/kscreenlockerrc");
+    if let Ok(text) = ctx.sys.read_string(&locker) {
+        if parse_unit(&text).iter().any(|(g, k, v)| g == "Daemon" && k == "Autolock" && v == "false") {
+            setting_finding(col, Severity::Low, "PERS-SCREEN-LOCK", format!("The automatic screen lock is switched off: {locker}"), &locker, vec!["Autolock=false".into()], "The screen stays open when you leave. Switch on automatic locking if you did not choose this.");
+        }
+    }
     let proxy = format!("{config}/kioslaverc");
     if let Ok(text) = ctx.sys.read_string(&proxy) {
         let entries: Vec<(String, String)> = parse_unit(&text).into_iter().filter(|(g, _, _)| g == "Proxy Settings").map(|(_, k, v)| (k, v)).collect();
@@ -358,10 +364,11 @@ pub fn window_manager_commands(path: &str, text: &str) -> Vec<String> {
                 out.extend(line.split_once(':').map(|(_, v)| v.trim().to_string()));
             }
         } else {
-            // sway, i3 and Hyprland: "exec …", "bindsym … exec …", "bind = …, exec, …", "lock_cmd = …"
+            // sway, i3 and Hyprland: "exec …", "bindsym … exec …", "bind = …, exec, …", "lock_cmd = …",
+            // and Hyprland's compositor plugins ("plugin = /path.so")
             let command = if let Some(rest) = line.strip_prefix("exec_always ").or_else(|| line.strip_prefix("exec ")) {
                 Some(rest)
-            } else if line.starts_with("exec-once") || line.starts_with("exec =") || line.starts_with("exec=") {
+            } else if line.starts_with("exec-once") || line.starts_with("exec =") || line.starts_with("exec=") || line.starts_with("plugin =") {
                 line.split_once('=').map(|(_, v)| v)
             } else if ["lock_cmd", "unlock_cmd", "on-timeout", "on-resume", "before_sleep_cmd", "after_sleep_cmd"].iter().any(|k| line.starts_with(k)) {
                 line.split_once('=').map(|(_, v)| v)

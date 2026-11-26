@@ -529,6 +529,12 @@ cpu_heavy_programs = [
 ]
 # Names of the download folder inside a home folder.
 download_dirs = ["Downloads", "downloads", "Hämtningar", "Hämtade", "Hämtade filer"]
+# Programs that let someone elsewhere see or control the screen (reported when running).
+remote_desktop_programs = [
+    "anydesk", "rustdesk", "teamviewerd", "TeamViewer", "x11vnc", "Xvnc", "Xtigervnc", "vncserver", "wayvnc", "krfb",
+    "krdpserver", "xrdp", "xrdp-sesman", "nxserver", "nxserver.bin", "chrome-remote-desktop-host", "sunshine",
+    "parsecd", "dwagent", "meshagent", "splashtop", "screenconnect",
+]
 # Programs that tunnel traffic past the firewall (reported when running).
 tunnel_programs = [
     "ngrok", "cloudflared", "chisel", "frpc", "frps", "bore", "rathole", "gost", "pagekite", "zrok", "inlets",

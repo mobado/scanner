@@ -6,6 +6,7 @@ use super::common::{clip, risky_home_place, shq};
 use super::fs_perms::MODULE;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
+use crate::pkgverify::owned_paths;
 use serde_json::Value;
 
 const CHROMIUM_ROOTS: [&str; 11] = [
@@ -143,6 +144,14 @@ pub fn firefox_settings(prefs: &str) -> Vec<(Severity, String)> {
         }
         _ => {}
     }
+    // 2 and 3 send name lookups to the server in network.trr.uri
+    if ["2", "3"].contains(&get("network.trr.mode")) && !get("network.trr.uri").is_empty() && !is_known_dns(get("network.trr.uri")) {
+        out.push((Severity::Medium, format!("name lookups go to an unfamiliar server: {}", without_password(get("network.trr.uri")))));
+    }
+    let home_page = get("browser.startup.homepage");
+    if home_page.starts_with("http://") {
+        out.push((Severity::Low, format!("the home page is an unencrypted address: {}", without_password(home_page))));
+    }
     if get("xpinstall.signatures.required") == "false" {
         out.push((Severity::Medium, "unsigned add-ons are allowed (xpinstall.signatures.required = false)".into()));
     }
@@ -150,6 +159,102 @@ pub fn firefox_settings(prefs: &str) -> Vec<(Severity, String)> {
         out.push((Severity::High, "remote control of the browser is on, without asking".into()));
     }
     out
+}
+
+/// Is an address on one of these sites (or below it)?
+fn on_site(url: &str, sites: &[&str]) -> bool {
+    let host = crate::modules::persistence::apt::host_of(url).unwrap_or_default();
+    sites.iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+}
+
+fn is_known_dns(url: &str) -> bool {
+    on_site(url, &["cloudflare-dns.com", "dns.google", "quad9.net", "opendns.com", "nextdns.io", "adguard.com", "adguard-dns.com", "mullvad.net", "controld.com", "cleanbrowsing.org"])
+}
+
+const SEARCH_ENGINES: [&str; 13] = [
+    "google.com", "google.se", "duckduckgo.com", "bing.com", "yahoo.com", "ecosia.org", "startpage.com", "brave.com",
+    "qwant.com", "kagi.com", "yandex.com", "baidu.com", "swisscows.com",
+];
+
+/// A replaced search engine, start pages and DNS server in a Chromium-family `Preferences` file.
+pub fn chromium_settings(data: &Value) -> Vec<(Severity, String)> {
+    let mut out = Vec::new();
+    let engine = data
+        .pointer("/default_search_provider_data/template_url_data/url")
+        .or_else(|| data.pointer("/default_search_provider/search_url"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if engine.starts_with("http") && !on_site(engine, &SEARCH_ENGINES) {
+        out.push((Severity::Medium, format!("searches go to an unfamiliar search engine: {}", without_password(engine))));
+    }
+    if data.pointer("/session/restore_on_startup").and_then(Value::as_i64) == Some(4) {
+        let pages: Vec<String> = data.pointer("/session/startup_urls").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(without_password).collect();
+        let odd: Vec<&String> = pages.iter().filter(|p| p.starts_with("http://")).collect();
+        if !odd.is_empty() {
+            out.push((Severity::Low, format!("unencrypted pages open at start: {}", odd.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))));
+        }
+    }
+    let dns = data.pointer("/dns_over_https/templates").and_then(Value::as_str).unwrap_or("");
+    if dns.starts_with("http") && !is_known_dns(dns) {
+        out.push((Severity::Medium, format!("name lookups go to an unfamiliar server: {}", without_password(dns))));
+    }
+    out
+}
+
+// ---------------------------------------------------------------- native messaging
+
+const NATIVE_HOME: [&str; 6] = [
+    ".mozilla/native-messaging-hosts", ".config/google-chrome/NativeMessagingHosts", ".config/chromium/NativeMessagingHosts",
+    ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts", ".config/microsoft-edge/NativeMessagingHosts",
+    ".config/vivaldi/NativeMessagingHosts",
+];
+const NATIVE_SYSTEM: [&str; 6] = [
+    "/etc/opt/chrome/native-messaging-hosts", "/etc/chromium/native-messaging-hosts", "/etc/opt/edge/native-messaging-hosts",
+    "/usr/lib/mozilla/native-messaging-hosts", "/usr/local/lib/mozilla/native-messaging-hosts", "/usr/lib64/mozilla/native-messaging-hosts",
+];
+
+/// Programs on this computer that browser add-ons may talk to.
+fn check_native_messaging(ctx: &ScanCtx, col: &mut Collector, homes: &[String]) {
+    let mut files: Vec<(String, bool)> = Vec::new();
+    for dir in NATIVE_SYSTEM {
+        files.extend(ctx.sys.dir_names(dir).into_iter().filter(|n| n.ends_with(".json")).map(|n| (format!("{dir}/{n}"), false)));
+    }
+    for home in homes {
+        for dir in NATIVE_HOME {
+            files.extend(ctx.sys.dir_names(format!("{home}/{dir}")).into_iter().filter(|n| n.ends_with(".json")).map(|n| (format!("{home}/{dir}/{n}"), true)));
+        }
+    }
+    let hosts: Vec<(String, bool, String)> = files
+        .into_iter()
+        .filter_map(|(path, own)| {
+            let program = text(&read_json(ctx, &path)?, "path").to_string();
+            (!program.is_empty()).then_some((path, own, program))
+        })
+        .collect();
+    let has_dpkg = !ctx.sys.dir_names("/var/lib/dpkg/info").is_empty();
+    let owned = owned_paths(ctx.sys, &hosts.iter().map(|h| h.2.clone()).collect::<Vec<_>>());
+    for (path, own, program) in hosts {
+        let odd = ctx.cfg.is_temp_path(&program) || risky_home_place(&program, ctx.cfg).is_some();
+        let in_home = program.starts_with("/home/") || program.starts_with("/root/");
+        let (severity, why) = if odd {
+            (Severity::High, "the program is in a temporary, download, cache or hidden place")
+        } else if has_dpkg && !in_home && !owned.contains(&program) {
+            (Severity::Medium, "no package installed the program")
+        } else if in_home || (own && has_dpkg && !owned.contains(&program)) {
+            (Severity::Low, "the program is your own")
+        } else {
+            // an installed program; browser integration packages create these entries
+            continue;
+        };
+        col.push(
+            Finding::new(severity, MODULE, "FS-BROWSER-NATIVE", format!("Browser add-ons can start a program: {path}"))
+                .evidence(format!("{path}\npath: {program}\n{why}"))
+                .description("This 'native messaging host' lets a browser add-on run a program on your computer, outside the browser's protection. Password managers and desktop integration use it; check that you know the program.")
+                .verify(format!("cat {}", shq(&path)))
+                .verify(format!("ls -l {}", shq(&program)))
+                .verify(format!("dpkg -S {}", shq(&program))),
+        );
+    }
 }
 
 /// Dangerous options on a browser's command line.
@@ -201,6 +306,11 @@ fn check_chromium(ctx: &ScanCtx, col: &mut Collector, home: &str) {
             let mut settings = Vec::new();
             for file in ["Preferences", "Secure Preferences"] {
                 let Some(data) = read_json(ctx, &format!("{profile}/{file}")) else { continue };
+                for s in chromium_settings(&data) {
+                    if !settings.contains(&s) {
+                        settings.push(s);
+                    }
+                }
                 for a in chromium_addons(ctx, &data) {
                     if !addons.iter().any(|x| x.id == a.id) {
                         addons.push(a);
@@ -298,4 +408,5 @@ pub(crate) fn check_browsers(ctx: &ScanCtx, col: &mut Collector, homes: &[String
         check_launchers(ctx, col, home);
     }
     check_policies(ctx, col);
+    check_native_messaging(ctx, col, homes);
 }

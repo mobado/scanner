@@ -291,8 +291,80 @@ fn check_boot(ctx: &ScanCtx, col: &mut Collector) {
     }
 }
 
+// ---------------------------------------------------------------- AppArmor and SELinux
+
+/// (profiles that enforce, names of profiles that only complain) from
+/// /sys/kernel/security/apparmor/profiles ("name (enforce)").
+pub fn apparmor_profiles(text: &str) -> (usize, Vec<String>) {
+    let mut enforcing = 0;
+    let mut complaining = Vec::new();
+    for line in text.lines() {
+        match line.trim().rsplit_once(" (") {
+            Some((_, "enforce)")) => enforcing += 1,
+            Some((name, "complain)")) => complaining.push(name.to_string()),
+            _ => {}
+        }
+    }
+    (enforcing, complaining)
+}
+
+fn check_security_module(ctx: &ScanCtx, col: &mut Collector) {
+    if let Ok(enforce) = ctx.sys.read_string("/sys/fs/selinux/enforce") {
+        let on = enforce.trim() == "1";
+        col.inventory.boot.insert("selinux".into(), if on { "enforcing" } else { "permissive" }.into());
+        if !on {
+            col.push(
+                Finding::new(Severity::Medium, MODULE, "KERN-SELINUX", "SELinux only logs and does not protect")
+                    .evidence("/sys/fs/selinux/enforce = 0")
+                    .description("In permissive mode SELinux reports violations but allows them. Switch to enforcing if the machine relies on SELinux.")
+                    .verify("getenforce; sestatus"),
+            );
+        }
+        return;
+    }
+    let enabled = ctx.sys.read_string("/sys/module/apparmor/parameters/enabled").map(|v| v.trim() == "Y").ok();
+    // a machine without AppArmor's files at all is not a Debian with AppArmor switched off
+    if enabled.is_none() && !ctx.sys.exists("/etc/apparmor.d") {
+        return;
+    }
+    let enabled = enabled.unwrap_or(false);
+    col.inventory.boot.insert("apparmor".into(), if enabled { "on" } else { "off" }.into());
+    if !enabled {
+        col.push(
+            Finding::new(Severity::Medium, MODULE, "KERN-APPARMOR-OFF", "AppArmor is not active")
+                .evidence("/sys/module/apparmor/parameters/enabled is not Y")
+                .description("Debian uses AppArmor to confine programs such as the browser's helpers, the print server and many services. It is on by default; find out why it is off (a kernel start option, or removed packages).")
+                .verify("cat /sys/module/apparmor/parameters/enabled; cat /proc/cmdline")
+                .verify("aa-status   # package apparmor"),
+        );
+        return;
+    }
+    let mut weak = Vec::new();
+    match ctx.sys.read_string("/sys/kernel/security/apparmor/profiles") {
+        Ok(text) => {
+            let (enforcing, complaining) = apparmor_profiles(&text);
+            if enforcing == 0 {
+                weak.push("no profile is enforced".to_string());
+            }
+            weak.extend(complaining.into_iter().map(|p| format!("only complains: {p}")));
+        }
+        Err(_) => col.note("AppArmor is active; its profiles can only be listed as root"),
+    }
+    weak.extend(ctx.sys.dir_names("/etc/apparmor.d/disable").into_iter().map(|p| format!("switched off: {p}")));
+    if !weak.is_empty() {
+        col.push(
+            Finding::new(Severity::Low, MODULE, "KERN-APPARMOR-PROFILES", "AppArmor profiles that do not protect")
+                .evidence(clip(&weak.join("\n"), 1200))
+                .description("A profile in complain mode only logs, and a disabled one does nothing. Some packages ship profiles that way; one you did not change yourself deserves a look.")
+                .verify("aa-status   # package apparmor")
+                .verify("ls -l /etc/apparmor.d/disable"),
+        );
+    }
+}
+
 pub(crate) fn run(ctx: &ScanCtx, col: &mut Collector) {
     check_ebpf(ctx, col);
     check_taint(ctx, col);
     check_boot(ctx, col);
+    check_security_module(ctx, col);
 }

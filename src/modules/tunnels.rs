@@ -155,6 +155,7 @@ fn check_programs(ctx: &ScanCtx, col: &mut Collector) {
     configs.extend(super::persistence::home_dirs(ctx, &accounts).into_iter().map(|(_, _, h)| format!("{h}/.ssh/config")));
     for path in configs {
         let Ok(text) = ctx.sys.read_string(&path) else { continue };
+        check_agent_forwarding(col, &path, &text);
         let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| l.to_lowercase().starts_with("remoteforward")).collect();
         if !lines.is_empty() {
             col.push(
@@ -165,6 +166,37 @@ fn check_programs(ctx: &ScanCtx, col: &mut Collector) {
             );
         }
     }
+}
+
+/// The hosts for which an SSH client file forwards the key agent ("*" = every server).
+pub fn agent_forwarding(text: &str) -> Vec<String> {
+    let mut host = "*".to_string();
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim) {
+        let mut words = line.split(|c: char| c.is_whitespace() || c == '=').filter(|w| !w.is_empty());
+        let key = words.next().unwrap_or("").to_ascii_lowercase();
+        let value: Vec<&str> = words.collect();
+        if key == "host" || key == "match" {
+            host = value.join(" ");
+        } else if key == "forwardagent" && value.first().map(|v| v.eq_ignore_ascii_case("yes")).unwrap_or(false) {
+            out.push(host.clone());
+        }
+    }
+    out
+}
+
+fn check_agent_forwarding(col: &mut Collector, path: &str, text: &str) {
+    let hosts = agent_forwarding(text);
+    if hosts.is_empty() {
+        return;
+    }
+    let everyone = hosts.iter().any(|h| h.split_whitespace().any(|w| w == "*"));
+    col.push(
+        Finding::new(if everyone { Severity::Medium } else { Severity::Low }, MODULE, "NET-SSH-AGENT", format!("SSH forwards your key agent: {path}"))
+            .evidence(format!("{path}\nForwardAgent yes for: {}", clip(&hosts.join(", "), 400)))
+            .description("A server you log in to can use your keys while the connection is open. With 'Host *' every server can, including a compromised one. Forward only to hosts you trust, or use ProxyJump.")
+            .verify(format!("grep -n -i -B3 forwardagent {}", shq(path))),
+    );
 }
 
 pub(crate) fn run(ctx: &ScanCtx, col: &mut Collector) {

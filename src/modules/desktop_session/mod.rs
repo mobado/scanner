@@ -5,6 +5,7 @@
 //! [input]. On a machine without a graphical desktop (a server) only the keyboard check runs,
 //! and the baseline tells when a desktop appears there.
 
+pub mod apps;
 pub mod environments;
 pub mod gvdb;
 pub mod input;
@@ -50,7 +51,8 @@ pub fn graphical_signs(ctx: &ScanCtx) -> Vec<String> {
 
 /// Is this a file that the desktop_session module records for the baseline?
 pub fn is_desktop_path(path: &str) -> bool {
-    const PARTS: [&str; 29] = [
+    const PARTS: [&str; 30] = [
+        "/flatpak/overrides/",
         "/autostart/", "/autostart-scripts/", "/plasma-workspace/", "/etc/X11/", "/etc/gdm3/", "/etc/sddm", "/etc/lightdm/",
         "/dbus-1/", "/xdg-desktop-portal/", "/.config/sway/", "/.config/swayidle/", "/.config/i3/", "/.i3/", "openbox/",
         "lxsession/", "/.config/hypr/", "/.config/labwc/", "/.config/wayfire.ini", "/.fluxbox/", "/.xscreensaver",
@@ -64,7 +66,11 @@ pub fn is_desktop_path(path: &str) -> bool {
 pub fn label_of(rule: &str, evidence: &str) -> &'static str {
     match rule {
         "PERS-KWIN-SCRIPT" | "PERS-KWIN-RULE" => return "kde",
-        "PERS-REMOTE-DESKTOP" | "PERS-SCREEN-LOCK" | "PERS-GNOME-EXTENSION" => return "gnome",
+        "PERS-REMOTE-DESKTOP" | "PERS-GNOME-EXTENSION" => return "gnome",
+        "DESK-REMOTE-SCREEN" => return "remote",
+        "DESK-FLATPAK-OVERRIDE" | "DESK-FLATPAK-REMOTE" | "DESK-FLATPAK-ACCESS" => return "flatpak",
+        "DESK-SNAP" => return "snap",
+        "DESK-APPIMAGE" => return "appimage",
         "PERS-DM-SCRIPT" => return "login",
         "PERS-X11-OPEN" => return "x11",
         "PROC-INPUT-READER" => return "input",
@@ -72,7 +78,7 @@ pub fn label_of(rule: &str, evidence: &str) -> &'static str {
     }
     let path = evidence.lines().next().unwrap_or("");
     let has = |parts: &[&str]| parts.iter().any(|p| path.contains(p));
-    if has(&["plasma", "autostart-scripts", "ksmserverrc", "notifyrc", "khotkeysrc", "kglobalaccel", "kioslaverc", "kwin"]) {
+    if has(&["plasma", "autostart-scripts", "ksmserverrc", "notifyrc", "khotkeysrc", "kglobalaccel", "kioslaverc", "kwin", "kscreenlocker"]) {
         "kde"
     } else if has(&["/etc/gdm3", "/etc/sddm", "/etc/lightdm"]) {
         "login"
@@ -89,8 +95,9 @@ pub fn label_of(rule: &str, evidence: &str) -> &'static str {
 
 pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     let first = col.findings.len();
-    // a program that records the keyboard matters on any machine
+    // a program that records the keyboard or shows the screen matters on any machine
     input::check_input(ctx, col);
+    apps::check_remote_screens(ctx, col);
     let signs = graphical_signs(ctx);
     if signs.is_empty() {
         col.note("desktop_session: no graphical desktop was found on this machine, so the desktop checks were skipped (the baseline reports if one appears)");
@@ -99,6 +106,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
         let homes = home_dirs(ctx, &accounts);
         xdg::check_xdg(ctx, col, &homes);
         environments::check_environments(ctx, col, &homes);
+        apps::check_apps(ctx, col, &homes);
         input::note_sessions(ctx, col);
     }
     col.inventory.desktop = Some(signs);

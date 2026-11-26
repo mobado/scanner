@@ -112,7 +112,8 @@ fn detects_deleted_binary_and_tmp_exe() {
     assert!(rules.contains(&"PROC-DELETED"), "{rules:?}");
     assert!(rules.contains(&"PROC-TMP-EXE"), "{rules:?}");
     let deleted = col.findings.iter().find(|f| f.rule == "PROC-DELETED").expect("finding");
-    assert_eq!(deleted.severity, Severity::High);
+    // running from a temporary folder and deleted from disk is the clearest sign there is
+    assert_eq!(deleted.severity, Severity::Critical);
 }
 
 #[test]
@@ -173,6 +174,8 @@ fn baseline_compare_skips_modules_not_scanned() {
         accounts: vec![],
         boot: Default::default(),
         desktop: None,
+        ssh_keys: None,
+        bluetooth: None,
     };
     let (f, notes) = baseline::compare(&b, &Default::default(), &["fs_perms".to_string()]);
     assert!(f.is_empty());
@@ -583,6 +586,8 @@ fn random_ports_of_a_known_program_are_not_new_listeners() {
         accounts: vec![],
         boot: Default::default(),
         desktop: None,
+        ssh_keys: None,
+        bluetooth: None,
     };
     let mut inv = scanner::modules::Inventory::default();
     for p in [35622, 37707, 45314] {

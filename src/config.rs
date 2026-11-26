@@ -64,6 +64,8 @@ pub struct Config {
     pub download_dirs: Vec<String>,
     /// Programs that tunnel traffic past the firewall.
     pub tunnel_programs: Vec<String>,
+    /// Programs that let someone elsewhere see or control the screen.
+    pub remote_desktop_programs: Vec<String>,
     /// Remote ports that normal outgoing connections use (others are listed per program).
     pub common_remote_ports: Vec<u16>,
     /// Public DNS servers that are fine to find in /etc/resolv.conf.
@@ -243,6 +245,11 @@ impl Default for Config {
                 "qemu-system-x86_64", "VirtualBoxVM", "vmware-vmx", "Xorg", "kwin_wayland", "gnome-shell",
             ]),
             download_dirs: s(&["Downloads", "downloads", "Hämtningar", "Hämtade", "Hämtade filer"]),
+            remote_desktop_programs: s(&[
+                "anydesk", "rustdesk", "teamviewerd", "TeamViewer", "x11vnc", "Xvnc", "Xtigervnc", "vncserver", "wayvnc",
+                "krfb", "krdpserver", "xrdp", "xrdp-sesman", "nxserver", "nxserver.bin", "chrome-remote-desktop-host",
+                "sunshine", "parsecd", "dwagent", "meshagent", "splashtop", "screenconnect",
+            ]),
             tunnel_programs: s(&[
                 "ngrok", "cloudflared", "chisel", "frpc", "frps", "bore", "rathole", "gost", "pagekite", "zrok",
                 "inlets", "sish", "pinggy", "ligolo", "ligolo-agent", "revsocks", "iodine", "dnscat", "ptunnel",

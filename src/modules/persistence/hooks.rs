@@ -154,6 +154,39 @@ fn check_dropins(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, has_dpkg: bo
     }
 }
 
+/// Services created while the system runs (`systemd-run`), which leave no unit file behind
+/// after a restart. Desktops start apps this way too, so only suspicious ones are reported.
+fn check_transient(ctx: &ScanCtx, col: &mut Collector) {
+    let mut dirs = vec![("/run/systemd/transient".to_string(), false)];
+    dirs.extend(ctx.sys.dir_names("/run/user").into_iter().map(|u| (format!("/run/user/{u}/systemd/transient"), true)));
+    for (dir, own) in dirs {
+        for path in files_below(ctx, &dir, 1).into_iter().filter(|p| p.ends_with(".service")) {
+            let Ok(text) = ctx.sys.read_string(&path) else { continue };
+            let mut issues: Vec<CmdIssue> = Vec::new();
+            let mut lines = Vec::new();
+            for (_, key, value) in parse_unit(&text).into_iter().filter(|(_, k, _)| EXEC_KEYS.contains(&k.as_str())) {
+                // systemd writes ExecStart="/bin/sh" "-c" "…"
+                let command = value.trim_start_matches(['-', '@', ':', '+', '!', '|']).replace("\" \"", " ").replace('"', "");
+                let found = if own { analyze_user_command(&command, ctx.cfg) } else { analyze_command(&command, ctx.cfg) };
+                let serious: Vec<CmdIssue> = found.into_iter().filter(|i| i.severity >= Severity::High || i.reason.starts_with("runs a program from")).collect();
+                if !serious.is_empty() {
+                    lines.push(format!("{key}={value}"));
+                    issues.extend(serious);
+                }
+            }
+            let Some(severity) = max_severity(&issues) else { continue };
+            col.push(simple(
+                severity,
+                "PERS-TRANSIENT-UNIT",
+                format!("Suspicious service started on the fly: {path}"),
+                &path,
+                format!("{path}\n{}", clip(&lines.join("\n"), 600)),
+                format!("A service that was created while the system ran, without a unit file on disk. Suspicious: {}.", reasons(&issues)),
+            ));
+        }
+    }
+}
+
 // ---------------------------------------------------------------- binfmt_misc
 
 /// (enabled, interpreter, flags) from a `/proc/sys/fs/binfmt_misc/<name>` file.
@@ -539,8 +572,12 @@ pub fn check_hooks(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
     check_package_tools(ctx, col, homes, has_dpkg);
     check_initramfs_sources(ctx, col, has_dpkg);
     check_boot_images(ctx, col);
-    // saved firewall rules belong in the baseline too
-    for path in ["/etc/nftables.conf", "/etc/iptables/rules.v4", "/etc/iptables/rules.v6"] {
+    // saved firewall rules and boot loader settings belong in the baseline too
+    for path in ["/etc/nftables.conf", "/etc/iptables/rules.v4", "/etc/iptables/rules.v6", "/etc/default/grub"] {
         record(ctx, col, path);
     }
+    for path in files_below(ctx, "/etc/default/grub.d", 1).into_iter().chain(files_below(ctx, "/etc/grub.d", 1)) {
+        record(ctx, col, &path);
+    }
+    check_transient(ctx, col);
 }

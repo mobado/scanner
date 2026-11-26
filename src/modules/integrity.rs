@@ -17,6 +17,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     check_empty_logs(ctx, col);
     check_wtmp(ctx, col);
     check_time_order(ctx, col);
+    super::bootchain::run(ctx, col);
     if ctx.sys.is_live() {
         check_journal(ctx, col);
         check_clock(col);
@@ -107,6 +108,21 @@ fn check_wtmp(ctx: &ScanCtx, col: &mut Collector) {
     }
 }
 
+/// Login and administrator events logged within ten minutes of the given times.
+pub fn logins_near(lines: &[&str], times: &[chrono::DateTime<chrono::FixedOffset>]) -> Vec<String> {
+    const SIGNS: [&str; 7] = ["sshd", "sudo", "su[", "pkexec", "polkitd", "authentication failure", "session opened"];
+    lines
+        .iter()
+        .filter(|l| SIGNS.iter().any(|s| l.contains(s)))
+        .filter(|l| {
+            let stamp = l.split_whitespace().next().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+            stamp.map(|t| times.iter().any(|j| (t - *j).num_seconds().abs() <= 600)).unwrap_or(false)
+        })
+        .take(8)
+        .map(|l| crate::modules::common::clip(l, 180))
+        .collect()
+}
+
 /// Backward jumps of more than an hour in an ISO-stamped log.
 pub fn backward_jumps(text: &str) -> Vec<String> {
     let mut last: Option<(chrono::DateTime<chrono::FixedOffset>, &str)> = None;
@@ -131,9 +147,16 @@ fn check_time_order(ctx: &ScanCtx, col: &mut Collector) {
         let recent = crate::modules::common::recent_lines(text.lines().collect(), ctx.cfg.log_days, ctx.sys.is_live());
         let jumps = backward_jumps(&recent.join("\n"));
         if !jumps.is_empty() {
+            // the times on both sides of each jump, to show what happened around them
+            let times: Vec<_> = jumps.iter().flat_map(|j| j.split_whitespace().filter_map(|w| chrono::DateTime::parse_from_rfc3339(w).ok())).collect();
+            let mut evidence = jumps.join("\n");
+            let near = logins_near(&recent, &times);
+            if !near.is_empty() {
+                evidence.push_str(&format!("\nlogins and administrator actions within 10 minutes:\n{}", near.join("\n")));
+            }
             col.push(
                 Finding::new(Severity::Medium, MODULE, "INT-TIME-BACKWARDS", format!("Time jumps backwards in {log}"))
-                    .evidence(jumps.join("\n"))
+                    .evidence(evidence)
                     .description("Later lines carry an earlier time. The clock was set back (or lines were inserted), so the order of events can't be trusted around these points.")
                     .verify(format!("grep -n . {log} | head -50"))
                     .verify("journalctl -u systemd-timesyncd --since=-28days"),

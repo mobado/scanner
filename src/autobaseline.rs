@@ -150,6 +150,14 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
             }
             added.push("the boot settings".to_string());
         }
+        if base.ssh_keys.is_none() && report.inventory.ssh_keys.is_some() {
+            base.ssh_keys = report.inventory.ssh_keys.clone();
+            added.push("the SSH keys".to_string());
+        }
+        if base.bluetooth.is_none() && report.inventory.bluetooth.is_some() {
+            base.bluetooth = report.inventory.bluetooth.clone();
+            added.push("the Bluetooth devices".to_string());
+        }
         base.scanner_version = env!("CARGO_PKG_VERSION").to_string();
         if added.is_empty() && base.save(path).is_ok() {
             return AutoBaseline::NotNeeded;

@@ -58,7 +58,98 @@ fn age_days(ctx: &ScanCtx, abs: &str) -> Option<u64> {
     SystemTime::now().duration_since(m).ok().map(|d| d.as_secs() / 86_400)
 }
 
+/// Is the security source there, and do the Debian sources point at this release?
+fn check_debian_sources(ctx: &ScanCtx, col: &mut Collector) {
+    let (sources, _) = super::persistence::apt::read_sources(ctx);
+    let debian: Vec<_> = sources
+        .iter()
+        .filter(|s| super::persistence::apt::host_of(&s.uri).map(|h| h == "debian.org" || h.ends_with(".debian.org")).unwrap_or(false))
+        .collect();
+    let release = ctx
+        .sys
+        .read_string("/etc/os-release")
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("VERSION_CODENAME=").map(|v| v.trim_matches('"').to_string())));
+    // mirrors under other names also carry "<release>-security"
+    let secured = sources.iter().any(|s| s.suites.split_whitespace().any(|w| w.ends_with("-security") || w.ends_with("/updates")) || s.uri.contains("security.debian.org"));
+    if !debian.is_empty() && !secured {
+        col.push(
+            Finding::new(Severity::Medium, MODULE, "UPD-NO-SECURITY-REPO", "The Debian security updates are not enabled")
+                .evidence(debian.iter().map(|s| format!("{} {} {}", s.origin, s.uri, s.suites)).collect::<Vec<_>>().join("\n"))
+                .description("No software source provides security updates, so known holes stay open. Add the security source (deb http://security.debian.org/debian-security <release>-security main) or restore it in /etc/apt/sources.list.d.")
+                .verify("apt-cache policy | grep -i security")
+                .verify("grep -rn security /etc/apt/sources.list /etc/apt/sources.list.d/"),
+        );
+    }
+    const RELEASES: [&str; 8] = ["stretch", "buster", "bullseye", "bookworm", "trixie", "forky", "duke", "sid"];
+    let Some(release) = release else { return };
+    let Some(current) = RELEASES.iter().position(|r| *r == release) else { return };
+    let old: Vec<String> = debian
+        .iter()
+        .filter(|s| s.suites.split_whitespace().any(|w| RELEASES.iter().position(|r| w.split(['-', '/']).next() == Some(*r)).map(|i| i < current).unwrap_or(false)))
+        .map(|s| format!("{} {} {}", s.origin, s.uri, s.suites))
+        .collect();
+    if !old.is_empty() {
+        col.push(
+            Finding::new(Severity::Low, MODULE, "UPD-OLD-REPO", format!("Software sources for an older Debian than {release}"))
+                .evidence(old.join("\n"))
+                .description("Packages from an older release can hold the system back or mix versions. Remove the source if it is left over from an upgrade.")
+                .verify("grep -rn . /etc/apt/sources.list /etc/apt/sources.list.d/"),
+        );
+    }
+}
+
+/// Is this package installed according to dpkg's status file?
+fn installed(status: &str, package: &str) -> bool {
+    status
+        .split("\n\n")
+        .any(|block| block.lines().any(|l| l == format!("Package: {package}")) && block.lines().any(|l| l == "Status: install ok installed"))
+}
+
+/// Processor microcode and firmware updates on real (not virtual) machines.
+fn check_firmware(ctx: &ScanCtx, col: &mut Collector) {
+    let (Ok(cpu), Ok(status)) = (ctx.sys.read_string("/proc/cpuinfo"), ctx.sys.read_string("/var/lib/dpkg/status")) else { return };
+    if cpu.lines().any(|l| l.starts_with("flags") && l.split_whitespace().any(|f| f == "hypervisor")) {
+        return;
+    }
+    let package = if cpu.contains("GenuineIntel") {
+        "intel-microcode"
+    } else if cpu.contains("AuthenticAMD") {
+        "amd64-microcode"
+    } else {
+        return;
+    };
+    if !installed(&status, package) {
+        col.push(
+            Finding::new(Severity::Medium, MODULE, "UPD-MICROCODE", format!("Processor microcode updates are missing: {package}"))
+                .evidence(format!("{package} is not installed"))
+                .description("The processor gets fixes for security flaws through this package (in Debian's non-free-firmware section). Install it and reboot.")
+                .verify(format!("apt-cache policy {package}"))
+                .verify("grep -r . /sys/devices/system/cpu/vulnerabilities/"),
+        );
+    }
+    if !ctx.sys.exists("/sys/firmware/efi") {
+        return;
+    }
+    let metadata = ctx.sys.dir_names("/var/lib/fwupd/metadata").into_iter().filter_map(|d| age_days(ctx, &format!("/var/lib/fwupd/metadata/{d}"))).min();
+    let problem = if !installed(&status, "fwupd") {
+        Some("fwupd is not installed, so firmware (BIOS, SSD, dock) updates are not offered".to_string())
+    } else {
+        metadata.filter(|days| *days > 90).map(|days| format!("the list of firmware updates is {days} days old"))
+    };
+    if let Some(problem) = problem {
+        col.push(
+            Finding::new(Severity::Low, MODULE, "UPD-FIRMWARE", "Firmware updates are not being checked")
+                .evidence(problem)
+                .description("Firmware flaws are fixed by the maker, often through fwupd. Install it (sudo apt install fwupd) and run fwupdmgr refresh and fwupdmgr get-updates now and then.")
+                .verify("fwupdmgr get-updates"),
+        );
+    }
+}
+
 pub fn run(ctx: &ScanCtx, col: &mut Collector) {
+    check_debian_sources(ctx, col);
+    check_firmware(ctx, col);
     if !ctx.sys.is_live() {
         col.note("updates: skipped (only checked on the live system)");
         return;

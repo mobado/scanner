@@ -10,6 +10,8 @@ pub mod fs_perms;
 pub mod integrity;
 pub mod kernel;
 pub mod kernelstate;
+pub mod bootchain;
+pub mod netlocal;
 pub mod procwatch;
 pub mod tunnels;
 pub mod net_group;
@@ -56,6 +58,12 @@ pub struct Inventory {
     /// Signs of a graphical desktop (empty on a server); `None` when desktop_session did not run.
     #[serde(default)]
     pub desktop: Option<Vec<String>>,
+    /// Accepted SSH keys ("file key-type fingerprint comment"); `None` when persistence did not run.
+    #[serde(default)]
+    pub ssh_keys: Option<Vec<String>>,
+    /// Paired Bluetooth devices; `None` when they could not be read.
+    #[serde(default)]
+    pub bluetooth: Option<Vec<String>>,
     pub process_count: usize,
     pub fs_files_scanned: u64,
 }

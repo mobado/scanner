@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10.0
+* Desktop apps: running remote desktop programs, KDE unattended screen sharing and screen lock,
+  Flatpak permissions and sources, unsigned and classic snaps, AppImages, Hyprland plugins,
+  files and icons on the desktop, services created on the fly.
+* Browsers: native messaging hosts, replaced search engine, unfamiliar DNS-over-HTTPS server.
+* Network: Bluetooth keyboards and visibility, shared folders, DNS settings and VPN leaks,
+  SSH agent forwarding, who can reach each port; a script's server on this computer only is
+  Low instead of a bind shell.
+* Shells and download tools started by browsers or document viewers.
+* Integrity: kernel start options, GRUB scripts, the kernel file against its package, disk
+  errors, logins near time jumps. AppArmor and SELinux.
+* Logins and updates: pkexec and polkit approvals and failures, missing security source, old
+  sources, processor microcode, firmware updates.
+* Baseline: new SSH keys (Critical), new Bluetooth devices, AppArmor switched off. A program
+  deleted while running from a temporary folder is Critical.
+* New setting `remote_desktop_programs`.
+
 ## 0.9.1
 * `--screenshot` also works when the screen is locked or the window cannot be painted: after
   20 seconds the same content is drawn without a screen and saved.

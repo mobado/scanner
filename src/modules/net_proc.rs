@@ -206,6 +206,30 @@ pub fn ip_is_loopback(ip: &IpAddr) -> bool {
     }
 }
 
+/// Who can reach a listening socket.
+pub fn exposure(address: &IpAddr) -> &'static str {
+    if address.is_unspecified() {
+        "every network this computer is on"
+    } else if ip_is_loopback(address) {
+        "only this computer"
+    } else {
+        "the network of that address"
+    }
+}
+
+fn note_exposure(col: &mut Collector) {
+    let mut ports: [BTreeSet<(String, u16)>; 3] = Default::default();
+    for c in col.inventory.connections.iter().filter(|c| c.listening) {
+        let Ok(ip) = c.local_addr.parse::<IpAddr>() else { continue };
+        let group = if ip.is_unspecified() { 0 } else if ip_is_loopback(&ip) { 2 } else { 1 };
+        ports[group].insert((c.proto.chars().take(3).collect(), c.local_port));
+    }
+    let [all, some, local] = ports.map(|p| p.len());
+    if all + some + local > 0 {
+        col.note(format!("Listening ports: {all} open to every network, {some} on a single address, {local} only for this computer"));
+    }
+}
+
 fn ip_is_link_local(ip: &IpAddr) -> bool {
     matches!(ip, IpAddr::V6(v6) if v6.segments()[0] & 0xffc0 == 0xfe80)
 }
@@ -308,6 +332,8 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     super::net_group::group_listener_findings(col, first_finding);
     super::netwatch::run(ctx, col);
     super::tunnels::run(ctx, col);
+    super::netlocal::run(ctx, col);
+    note_exposure(col);
     check_ps_view(ctx, col);
 
     check_ss_consistency(ctx, &sockets, col);
@@ -405,7 +431,18 @@ fn check_socket_owner(
     }
 
     if s.is_listening() {
-        if is_shell || is_interp {
+        // a script's server that only this computer can reach is how local web apps and
+        // development tools work, not a way in from outside
+        if is_interp && !is_shell && ip_is_loopback(&s.local.ip()) {
+            if first_owner_of_listener {
+                col.push(
+                    Finding::new(Severity::Low, MODULE, "NET-LOCAL-SERVER", format!("Local server run by a script: {} on port {}", p.display_name(), s.local.port()))
+                        .evidence(format!("{}\nreachable from only this computer", proc_evidence(p, s)))
+                        .description("A script serves something on this computer only. Development tools and local apps do this; web pages in your browser can talk to it, so know what it is.")
+                        .verify_all(proc_verify(p)),
+                );
+            }
+        } else if is_shell || is_interp {
             let sev = if is_shell { Severity::Critical } else if p.uid == 0 { Severity::High } else { Severity::Medium };
             once(
                 "NET-BINDSHELL",
@@ -425,7 +462,7 @@ fn check_socket_owner(
             let user_app = p.uid != 0 && p.exe_path().map(|e| ["/usr/", "/opt/", "/app/", "/snap/"].iter().any(|d| e.starts_with(d))).unwrap_or(false);
             col.push(
                 Finding::new(if user_app { Severity::Low } else { Severity::Medium }, MODULE, "NET-LISTEN-UNKNOWN", format!("Unknown listening port {}/{} ({})", s.proto.family(), s.local.port(), p.display_name()))
-                    .evidence(proc_evidence(p, s))
+                    .evidence(format!("{}\nreachable from {}", proc_evidence(p, s), exposure(&s.local.ip())))
                     .description("The port is not in the whitelist. Check that the service is intended and otherwise add it to allowed_listen_ports.")
                     .verify(format!("ss -tulpn | grep ':{} '", s.local.port()))
                     .verify(format!("dpkg -S {}", shq(p.exe_path().unwrap_or("?"))))

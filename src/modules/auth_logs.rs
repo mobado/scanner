@@ -22,6 +22,10 @@ pub enum Kind {
     SudoWrongPassword { attempts: usize },
     SudoDenied,
     PkexecDenied,
+    PkexecRun { command: String },
+    /// Administrator rights given or refused through a desktop password dialog.
+    PolkitApproved { action: String },
+    PolkitFailed { action: String },
     SuFailed { target: String },
     /// Login on the machine itself: console, desktop login or screen unlock, polkit ...
     LocalFailed { service: String },
@@ -161,6 +165,22 @@ pub fn parse_line(line: &str) -> Option<Event> {
         if detail.starts_with("Error executing command as another user: Not authorized") {
             return event(Kind::PkexecDenied, user.trim().to_string(), String::new());
         }
+        if let Some((_, command)) = detail.split_once("[COMMAND=").filter(|_| detail.starts_with("Executing command")) {
+            return event(Kind::PkexecRun { command: command.trim_end_matches(']').to_string() }, user.trim().to_string(), String::new());
+        }
+        return None;
+    }
+    // "Operator of unix-session:2 successfully authenticated as unix-user:root to gain ONE-SHOT
+    // authorization for action a.b.c for … (owned by unix-user:bob)"
+    if program == "polkitd" && message.starts_with("Operator of ") {
+        let action = message.split_once("for action ")?.1.split_whitespace().next()?.to_string();
+        let user = message.rsplit_once("owned by unix-user:").map(|(_, u)| u.trim_end_matches(')').to_string()).unwrap_or_default();
+        if message.contains("successfully authenticated") {
+            return event(Kind::PolkitApproved { action }, user, String::new());
+        }
+        if message.contains("FAILED to authenticate") {
+            return event(Kind::PolkitFailed { action }, user, String::new());
+        }
         return None;
     }
     // Other logins (console, desktop, screen unlock, polkit) report through PAM.
@@ -258,6 +278,38 @@ pub fn service_name(service: &str) -> String {
         other => return other.to_string(),
     };
     format!("{name}, service {service}")
+}
+
+/// What was done with administrator rights from the desktop (pkexec and polkit dialogs).
+fn administrator_actions(events: &[Event], col: &mut Collector) {
+    let mut done: Vec<String> = Vec::new();
+    let mut odd = false;
+    for e in events {
+        match &e.kind {
+            Kind::PkexecRun { command } => {
+                let program = command.split_whitespace().next().unwrap_or("");
+                let strange = ["/tmp/", "/var/tmp/", "/dev/shm/", "/home/"].iter().any(|p| program.starts_with(p));
+                odd |= strange;
+                done.push(format!("{} {} ran {}{}", e.time, e.user, clip(command, 160), if strange { "  ← from an unusual place" } else { "" }));
+            }
+            Kind::PolkitApproved { action } => done.push(format!("{} {} approved {action}", e.time, e.user)),
+            _ => {}
+        }
+    }
+    if done.is_empty() {
+        return;
+    }
+    let total = done.len();
+    // the odd ones first, then the newest
+    done.reverse();
+    done.sort_by_key(|l| !l.ends_with("unusual place"));
+    done.truncate(20);
+    col.push(
+        Finding::new(if odd { Severity::Medium } else { Severity::Low }, MODULE, "AUTH-ADMIN-ACTIONS", "Administrator rights used from the desktop")
+            .evidence(format!("{total} in the period, for example:\n{}", done.join("\n")))
+            .description("Programs run with pkexec and approvals in password dialogs. Installing software and changing settings looks like this; anything you did not do yourself is a warning.")
+            .verify("sudo journalctl -t pkexec -t polkitd --since=-28days"),
+    );
 }
 
 /// Logins that succeeded from an address on the internet.
@@ -403,6 +455,8 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
         }
     }
 
+    administrator_actions(events, col);
+
     // Local events, grouped per rule and user.
     let mut groups: BTreeMap<(&str, String), (usize, Vec<&Event>)> = BTreeMap::new();
     for e in events {
@@ -410,6 +464,7 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
             Kind::SudoWrongPassword { attempts } => ("AUTH-SUDO-FAILED", e.user.clone(), *attempts),
             Kind::SudoDenied => ("AUTH-SUDO-DENIED", e.user.clone(), 1),
             Kind::PkexecDenied => ("AUTH-PKEXEC-DENIED", e.user.clone(), 1),
+            Kind::PolkitFailed { .. } => ("AUTH-POLKIT-FAILED", e.user.clone(), 1),
             Kind::SuFailed { target } => ("AUTH-SU-FAILED", format!("{} → {target}", e.user), 1),
             Kind::LocalFailed { service } => ("AUTH-LOCAL-FAILED", format!("{} ({service})", if e.user.is_empty() { "unknown user" } else { &e.user }), 1),
             _ => continue,
@@ -423,7 +478,8 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
             "AUTH-SUDO-FAILED" => (level(count, threshold), format!("Wrong sudo password: {who}"), "Wrong passwords for sudo. Usually typing mistakes; many of them can mean someone with access to the account is guessing.", "sudo journalctl -t sudo --since=-28days | grep 'incorrect password'"),
             "AUTH-SUDO-DENIED" => (Severity::Medium, format!("sudo refused: {who}"), "This account tried to run something as root without being allowed to. Make sure you know why.", "sudo journalctl -t sudo --since=-28days | grep -E 'NOT in sudoers|not allowed'"),
             "AUTH-SU-FAILED" => (level(count, threshold), format!("Failed su: {who}"), "A wrong password when switching user with su.", "sudo journalctl -t su --since=-28days"),
-            "AUTH-PKEXEC-DENIED" => (level(count, threshold), format!("pkexec refused: {who}"), "A program asked to run something as root through pkexec (polkit) and was refused. Make sure you know what asked.", "sudo journalctl -t pkexec --since=-28days"),
+            "AUTH-POLKIT-FAILED" => (level(count, threshold), format!("Wrong password in an administrator dialog: {who}"), "Somebody tried to get administrator rights through a password dialog (polkit) and failed. Many tries, or tries while you were away, deserve a look.", "sudo journalctl -t polkitd --since=-28days | grep FAILED"),
+            "AUTH-PKEXEC-DENIED" => (level(count, threshold), format!("pkexec refused: {who}"),"A program asked to run something as root through pkexec (polkit) and was refused. Make sure you know what asked.", "sudo journalctl -t pkexec --since=-28days"),
             _ => (level(count, threshold), format!("Failed logins on this computer: {who}"), "Wrong passwords at the console, desktop login, screen lock or a password dialog. Usually typing mistakes; many in a row, or at times you were away, deserve a look.", "sudo journalctl --since=-28days SYSLOG_FACILITY=10 | grep 'authentication failure'"),
         };
         let mut evidence = describe_events(&list, count);

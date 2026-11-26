@@ -62,6 +62,58 @@ pub(crate) fn check_tracing(ctx: &ScanCtx, col: &mut Collector) {
     }
 }
 
+// ---------------------------------------------------------------- tools started by apps
+
+const BROWSERS: [&str; 9] = ["firefox", "firefox-esr", "chromium", "chrome", "brave", "thunderbird", "msedge", "vivaldi-bin", "opera"];
+const VIEWERS: [&str; 9] = ["soffice.bin", "evince", "okular", "atril", "xreader", "zathura", "mupdf", "eog", "gwenview"];
+const FETCHERS: [&str; 8] = ["curl", "wget", "nc", "ncat", "netcat", "nc.openbsd", "nc.traditional", "socat"];
+const SCRIPTING: [&str; 7] = ["sh", "bash", "dash", "zsh", "python3", "perl", "ruby"];
+
+/// How worrying it is that `tool` was started below the application `app`.
+pub fn judge_spawn(app: &str, tool: &str, command: &str) -> Option<Severity> {
+    // browsers start their helpers with the helper's description file or the add-on's address,
+    // and open files through xdg-open
+    if ["native-messaging-hosts", "NativeMessagingHosts", "chrome-extension://", "xdg-open", "xdg-mime", "xdg-settings"].iter().any(|n| command.contains(n)) {
+        return None;
+    }
+    let stem = tool.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let fetcher = FETCHERS.contains(&tool);
+    let script = SCRIPTING.contains(&tool) || stem == "python";
+    if VIEWERS.contains(&app) && (fetcher || script) {
+        Some(Severity::High)
+    } else if BROWSERS.contains(&app) && fetcher {
+        Some(Severity::High)
+    } else if BROWSERS.contains(&app) && script {
+        Some(Severity::Medium)
+    } else {
+        None
+    }
+}
+
+/// Shells, interpreters and download tools that a browser, mail program or document viewer started.
+pub(crate) fn check_app_spawns(ctx: &ScanCtx, col: &mut Collector) {
+    let by_pid: std::collections::HashMap<u32, &ProcInfo> = ctx.processes.iter().map(|p| (p.pid, p)).collect();
+    for p in ctx.processes {
+        let tool = p.display_name();
+        // look a few steps up: viewer → shell → curl
+        let mut parent = by_pid.get(&p.ppid);
+        for _ in 0..4 {
+            let Some(app) = parent else { break };
+            if let Some(severity) = judge_spawn(&app.display_name(), &tool, &p.cmdline_str()) {
+                col.push(
+                    Finding::new(severity, MODULE, "PROC-APP-SPAWN", format!("{} started {tool}", app.display_name()))
+                        .evidence(format!("PID {} exe={}\ncmdline=\"{}\"\nstarted below PID {} ({})", p.pid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), app.pid, app.display_name()))
+                        .description("A browser, mail program or document viewer does not normally run shells or download tools. A malicious page, attachment or macro does exactly that.")
+                        .verify(format!("pstree -asp {}", p.pid))
+                        .verify(format!("ps -o pid,ppid,user,lstart,cmd -p {},{}", p.pid, app.pid)),
+                );
+                break;
+            }
+            parent = by_pid.get(&app.ppid);
+        }
+    }
+}
+
 /// One line of /proc/<pid>/mountinfo: (mount point, root within the file system, type, source).
 pub fn parse_mount(line: &str) -> Option<(String, String, String, String)> {
     let (left, right) = line.split_once(" - ")?;

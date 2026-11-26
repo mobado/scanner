@@ -1,7 +1,7 @@
 //! Files in home folders (part of `fs_perms`): what lies in the download folder, scripts in
 //! `~/.local/bin` and program files hidden in dot folders. Nothing is executed or changed.
 
-use super::common::{clip, mode_string, shq};
+use super::common::{analyze_user_command, clip, reasons, shq};
 use super::filemarks::program_kind;
 use super::fs_perms::MODULE;
 use super::persistence::history::judge_command;
@@ -111,13 +111,7 @@ fn check_downloads(ctx: &ScanCtx, col: &mut Collector, folder: &str) {
         if is_disguised(&name) {
             odd += 1;
             if odd <= SHOWN {
-                col.push(
-                    Finding::new(Severity::Medium, MODULE, "FS-DOWNLOAD-DISGUISED", format!("File that pretends to be a document: {path}"))
-                        .evidence(format!("{path} (mode {}, {} bytes)", mode_string(meta.mode()), meta.size()))
-                        .description("The name looks like a document or picture, but the last ending makes it something that runs. That is how malicious downloads trick people into starting them. Do not open it.")
-                        .verify(format!("file {}", shq(&path)))
-                        .verify(format!("less {}", shq(&path))),
-                );
+                col.push(disguised(&path, &entry));
             }
         }
         let executable = meta.mode() & 0o111 != 0;
@@ -197,11 +191,58 @@ fn check_hidden(ctx: &ScanCtx, col: &mut Collector, home: &str) {
     }
 }
 
+/// Disguised files, suspicious scripts and launchers on the desktop itself.
+fn check_desktop_folder(ctx: &ScanCtx, col: &mut Collector, home: &str) {
+    let mut folders: BTreeSet<String> = ["Desktop", "Skrivbord"].iter().map(|d| format!("{home}/{d}")).collect();
+    if let Ok(text) = ctx.sys.read_string(format!("{home}/.config/user-dirs.dirs")) {
+        let desktop = text.lines().find_map(|l| l.trim().strip_prefix("XDG_DESKTOP_DIR="));
+        if let Some(rest) = desktop.and_then(|v| v.trim_matches('"').trim_end_matches('/').strip_prefix("$HOME/")).filter(|r| !r.is_empty()) {
+            folders.insert(format!("{home}/{rest}"));
+        }
+    }
+    for folder in folders {
+        for entry in files(ctx, &folder, 2) {
+            let path = ctx.sys.display(entry.path());
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if is_disguised(&name) {
+                col.push(disguised(&path, &entry));
+            }
+            if name.ends_with(".desktop") {
+                let text = ctx.sys.read_string(&path).unwrap_or_default();
+                let command = text.lines().find_map(|l| l.trim().strip_prefix("Exec=")).unwrap_or("");
+                let worst = analyze_user_command(command, ctx.cfg).into_iter().filter(|i| i.severity >= Severity::High).collect::<Vec<_>>();
+                if let Some(severity) = worst.iter().map(|i| i.severity).max() {
+                    col.push(
+                        Finding::new(severity, MODULE, "FS-SCRIPT-SUSPICIOUS", format!("Desktop icon with a suspicious command: {path}"))
+                            .evidence(format!("{path}\nExec={}  ← {}", clip(command, 300), reasons(&worst)))
+                            .description("Clicking this icon runs a command typical of a break-in. Do not click it; find out where it came from.")
+                            .verify(format!("cat {}", shq(&path))),
+                    );
+                }
+            } else if looks_like_script(&name, None) {
+                if let Some(line) = suspicious_line(ctx, &entry) {
+                    col.push(suspicious_script(&path, &line));
+                }
+            }
+        }
+    }
+}
+
+fn disguised(path: &str, entry: &DirEntry) -> Finding {
+    let size = entry.metadata().map(|m| m.size()).unwrap_or(0);
+    Finding::new(Severity::Medium, MODULE, "FS-DOWNLOAD-DISGUISED", format!("File that pretends to be a document: {path}"))
+        .evidence(format!("{path} ({size} bytes)"))
+        .description("The name looks like a document or picture, but the last ending makes it something that runs. That is how malicious downloads trick people into starting them. Do not open it.")
+        .verify(format!("file {}", shq(path)))
+        .verify(format!("less {}", shq(path)))
+}
+
 pub(crate) fn check_home_files(ctx: &ScanCtx, col: &mut Collector, homes: &[String]) {
     for home in homes {
         for folder in download_folders(ctx, home) {
             check_downloads(ctx, col, &folder);
         }
+        check_desktop_folder(ctx, col, home);
         check_hidden(ctx, col, home);
     }
 }
