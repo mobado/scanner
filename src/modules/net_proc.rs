@@ -307,6 +307,8 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     col.inventory.connections = connections;
     super::net_group::group_listener_findings(col, first_finding);
     super::netwatch::run(ctx, col);
+    super::tunnels::run(ctx, col);
+    check_ps_view(ctx, col);
 
     check_ss_consistency(ctx, &sockets, col);
     check_hidden_processes(ctx, col);
@@ -689,6 +691,43 @@ fn check_hidden_processes(ctx: &ScanCtx, col: &mut Collector) {
                 .verify("ps -eLf | wc -l; ls -d /proc/[0-9]* | wc -l")
                 .verify("unhide proc   # if the unhide package is installed"),
         );
+    }
+}
+
+/// Processes that were in /proc both before and after `ps` ran, but that `ps` did not show,
+/// and processes `ps` showed that /proc does not list: (hidden from ps, hidden from /proc).
+pub fn ps_differences(before: &HashSet<u32>, ps: &HashSet<u32>, after: &HashSet<u32>) -> (BTreeSet<u32>, BTreeSet<u32>) {
+    let hidden_from_ps = before.iter().filter(|p| after.contains(p) && !ps.contains(p)).copied().collect();
+    let hidden_from_proc = ps.iter().filter(|p| !before.contains(p) && !after.contains(p)).copied().collect();
+    (hidden_from_ps, hidden_from_proc)
+}
+
+fn check_ps_view(ctx: &ScanCtx, col: &mut Collector) {
+    if !ctx.sys.is_live() {
+        return;
+    }
+    let Some(ps) = crate::external_tools::find_binary("ps") else { return };
+    let before: HashSet<u32> = crate::procinfo::list_pids(ctx.sys).into_iter().collect();
+    let Ok(out) = crate::external_tools::run_capture(&ps, &["-e", "-o", "pid="], 30) else { return };
+    if out.status != Some(0) {
+        return;
+    }
+    let listed: HashSet<u32> = out.stdout.lines().filter_map(|l| l.trim().parse().ok()).collect();
+    let after: HashSet<u32> = crate::procinfo::list_pids(ctx.sys).into_iter().collect();
+    let (from_ps, mut from_proc) = ps_differences(&before, &listed, &after);
+    // short-lived processes (ps itself) are gone by now
+    from_proc.retain(|p| ctx.sys.exists(format!("/proc/{p}/status")));
+    for (pids, what) in [(from_ps, "ps does not show it although /proc lists it"), (from_proc, "ps shows it although the /proc listing does not")] {
+        for pid in pids.into_iter().take(20) {
+            let command = crate::procinfo::read_proc(ctx.sys, pid).map(|p| format!("exe={} cmdline=\"{}\"", p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300))).unwrap_or_default();
+            col.push(
+                Finding::new(Severity::High, MODULE, "NET-HIDDEN-PS", format!("Process lists disagree about PID {pid}"))
+                    .evidence(format!("PID {pid}: {what}\n{command}"))
+                    .description("Two ways of listing processes give different answers. A replaced ps program or a rootkit that filters one of the lists causes this.")
+                    .verify(format!("ps -p {pid} -f; ls -d /proc/{pid}"))
+                    .verify("dpkg --verify procps"),
+            );
+        }
     }
 }
 

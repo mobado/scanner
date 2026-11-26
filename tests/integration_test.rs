@@ -171,6 +171,7 @@ fn baseline_compare_skips_modules_not_scanned() {
         listeners: vec![],
         persistence_files: Default::default(),
         accounts: vec![],
+        boot: Default::default(),
     };
     let (f, notes) = baseline::compare(&b, &Default::default(), &["fs_perms".to_string()]);
     assert!(f.is_empty());
@@ -579,6 +580,7 @@ fn random_ports_of_a_known_program_are_not_new_listeners() {
         listeners: vec![key("udp", 1716, "kdeconnectd"), key("udp", 40000, "kdeconnectd")],
         persistence_files: Default::default(),
         accounts: vec![],
+        boot: Default::default(),
     };
     let mut inv = scanner::modules::Inventory::default();
     for p in [35622, 37707, 45314] {

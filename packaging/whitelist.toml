@@ -529,6 +529,11 @@ cpu_heavy_programs = [
 ]
 # Names of the download folder inside a home folder.
 download_dirs = ["Downloads", "downloads", "Hämtningar", "Hämtade", "Hämtade filer"]
+# Programs that tunnel traffic past the firewall (reported when running).
+tunnel_programs = [
+    "ngrok", "cloudflared", "chisel", "frpc", "frps", "bore", "rathole", "gost", "pagekite", "zrok", "inlets",
+    "sish", "pinggy", "ligolo", "ligolo-agent", "revsocks", "iodine", "dnscat", "ptunnel", "wstunnel",
+]
 # Programs that may have file capabilities ('*' matches one name).
 allowed_capability_files = [
     "/usr/bin/ping",

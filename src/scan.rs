@@ -162,7 +162,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         col.note("The scanner is not running as root: other users' processes, /var/spool/cron, /root and some /proc files cannot be read. Run with sudo for a complete scan.");
     }
 
-    let need_procs = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::Services].iter().any(|m| opts.modules.contains(m));
+    let need_procs = [ModuleId::NetProc, ModuleId::ProcAudit, ModuleId::Services, ModuleId::Kernel].iter().any(|m| opts.modules.contains(m));
     let processes = if need_procs {
         progress("Reading processes in /proc …");
         procinfo::snapshot(sys)

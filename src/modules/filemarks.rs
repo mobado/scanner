@@ -6,7 +6,7 @@ use super::fs_perms::MODULE;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::pkgverify::{self, Verdict};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -265,9 +265,118 @@ pub(crate) fn check_temp_programs(ctx: &ScanCtx, col: &mut Collector) -> Vec<Tem
     special
 }
 
+// ---------------------------------------------------------------- file times
+
+const DAY: i64 = 86_400;
+
+/// Folders in /etc where a backdated file would be hiding something.
+const TIMED_ETC: [&str; 6] = ["/etc/cron", "/etc/systemd/system", "/etc/profile.d", "/etc/init.d", "/etc/ssh", "/etc/ld.so"];
+
+/// Which package lists each wanted file: path → time the package's file list was written.
+fn package_times(ctx: &ScanCtx, wanted: &HashSet<String>) -> HashMap<String, i64> {
+    let mut out = HashMap::new();
+    for file in ctx.sys.dir_names("/var/lib/dpkg/info") {
+        if !file.ends_with(".list") {
+            continue;
+        }
+        let list = format!("/var/lib/dpkg/info/{file}");
+        let Ok(written) = fs::metadata(ctx.sys.path(&list)).map(|m| m.ctime()) else { continue };
+        for line in ctx.sys.read_string(&list).unwrap_or_default().lines() {
+            // before the "merged /usr" move packages listed /bin and /sbin
+            let moved = ["/bin/", "/sbin/"].iter().any(|d| line.starts_with(d)).then(|| format!("/usr{line}"));
+            for path in std::iter::once(line.to_string()).chain(moved) {
+                if wanted.contains(&path) {
+                    let time = out.entry(path).or_insert(written);
+                    *time = (*time).max(written);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Times that do not fit. A file's change time (ctime) is set by the kernel; its modification
+/// time (mtime) can be set to anything with `touch`.
+pub(crate) fn check_file_times(ctx: &ScanCtx, col: &mut Collector, already: &HashSet<String>) {
+    if ctx.sys.dir_names("/var/lib/dpkg/info").is_empty() {
+        return;
+    }
+    let mut files: Vec<(String, fs::Metadata)> = Vec::new();
+    for dir in ["/usr/bin", "/usr/sbin", "/etc"] {
+        let depth = if dir == "/etc" { 4 } else { 1 };
+        for e in WalkDir::new(ctx.sys.path(dir)).follow_links(false).max_depth(depth).into_iter().filter_map(|e| e.ok()) {
+            if e.file_type().is_file() {
+                if let Ok(m) = e.metadata() {
+                    files.push((ctx.sys.display(e.path()), m));
+                }
+            }
+        }
+    }
+    let wanted: HashSet<String> = files.iter().map(|f| f.0.clone()).collect();
+    let times = package_times(ctx, &wanted);
+    let mut touched = Vec::new(); // packaged programs changed after their installation
+    let mut odd: Vec<(Severity, String)> = Vec::new();
+    for (path, m) in &files {
+        let (modified, changed) = (m.mtime(), m.ctime());
+        let program = path.starts_with("/usr/");
+        match times.get(path) {
+            Some(installed) => {
+                if program && changed > installed + DAY && !already.contains(path) {
+                    touched.push(path.clone());
+                }
+                if program && modified > changed + DAY {
+                    odd.push((Severity::Medium, format!("{path}: modification time is later than the last change of the file")));
+                }
+            }
+            None => {
+                let watched = program || TIMED_ETC.iter().any(|d| path.starts_with(d));
+                // `touch -d` leaves whole seconds; so do archives, hence /etc needs both signs
+                let backdated = changed - modified > 30 * DAY && (program || m.mtime_nsec() == 0);
+                if modified > changed + DAY {
+                    odd.push((Severity::Low, format!("{path}: modification time is later than the last change of the file")));
+                } else if watched && backdated {
+                    let severity = if m.mode() & 0o6000 != 0 { Severity::Medium } else { Severity::Low };
+                    odd.push((severity, format!("{path}: not from a package, dated {} days before the file last changed", (changed - modified) / DAY)));
+                }
+            }
+        }
+    }
+    if !odd.is_empty() {
+        odd.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let severity = odd[0].0;
+        let count = odd.len();
+        let mut lines: Vec<String> = odd.into_iter().take(20).map(|o| o.1).collect();
+        if count > 20 {
+            lines.push(format!("… and {} more", count - 20));
+        }
+        col.push(
+            Finding::new(severity, MODULE, "FS-TIMESTAMP", "Files in system folders with times that do not fit")
+                .evidence(lines.join("\n"))
+                .description("Attackers set a file's date back so it looks old (timestomping). Copying or unpacking files with their old dates does the same, so check what each file is and when it really changed (Change: in stat).")
+                .verify("stat <file>")
+                .verify("dpkg -S <file>"),
+        );
+    }
+    let mut verdicts: Vec<(String, Verdict)> = pkgverify::verify_paths(ctx.sys, &touched, SystemTime::UNIX_EPOCH).into_iter().collect();
+    verdicts.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, verdict) in verdicts {
+        if let Verdict::Differs { package } = verdict {
+            col.push(
+                Finding::new(Severity::Critical, MODULE, "FS-PACKAGE-CHANGED", format!("Program changed after installation and differs from its package: {path}"))
+                    .evidence(format!("{path}\npackage {package}: the file was changed after the package was installed, and its content does not match the package's checksum"))
+                    .description("A program that apt installed has been rewritten since. Investigate, then reinstall the package.")
+                    .verify(format!("stat {}", shq(&path)))
+                    .verify(format!("dpkg --verify {}", shq(package.split(':').next().unwrap_or(&package)))),
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------- system programs
 
-const SYSTEM_PROGRAMS: [&str; 24] = [
+const SYSTEM_PROGRAMS: [&str; 32] = [
+    "/usr/lib/systemd/systemd", "/usr/lib/systemd/systemd-logind", "/usr/lib/systemd/systemd-journald",
+    "/usr/lib/systemd/systemd-udevd", "/usr/lib/polkit-1/polkitd", "/usr/bin/pkexec", "/usr/bin/newgrp", "/usr/bin/mount",
     "/usr/bin/su", "/usr/bin/sudo", "/usr/bin/login", "/usr/bin/passwd", "/usr/bin/ssh", "/usr/sbin/sshd",
     "/usr/lib/openssh/sshd-session", "/usr/lib/openssh/sshd-auth", "/usr/sbin/unix_chkpwd", "/usr/bin/ps",
     "/usr/bin/top", "/usr/bin/ls", "/usr/bin/ss", "/usr/bin/netstat", "/usr/bin/lsof", "/usr/bin/find",
@@ -277,14 +386,19 @@ const SYSTEM_PROGRAMS: [&str; 24] = [
 
 /// Compare the programs an attacker likes to replace (and every PAM module) with the
 /// checksums their packages ship.
-pub(crate) fn check_system_programs(ctx: &ScanCtx, col: &mut Collector) {
+/// Returns the files that were compared.
+pub(crate) fn check_system_programs(ctx: &ScanCtx, col: &mut Collector) -> HashSet<String> {
     if ctx.sys.dir_names("/var/lib/dpkg/info").is_empty() {
-        return;
+        return HashSet::new();
     }
     let is_file = |p: &str| fs::symlink_metadata(ctx.sys.path(p)).map(|m| m.is_file()).unwrap_or(false);
     let mut paths: Vec<String> = SYSTEM_PROGRAMS.iter().map(|p| p.to_string()).filter(|p| is_file(p)).collect();
     let pam_dir = "/usr/lib/x86_64-linux-gnu/security";
     paths.extend(ctx.sys.dir_names(pam_dir).into_iter().map(|n| format!("{pam_dir}/{n}")).filter(|p| p.ends_with(".so") && is_file(p)));
+    // the libraries every login goes through
+    let lib_dir = "/usr/lib/x86_64-linux-gnu";
+    let core = |n: &String| ["libpam.so", "libpam_misc.so", "libpamc.so", "libc.so.6", "ld-linux"].iter().any(|p| n.starts_with(p));
+    paths.extend(ctx.sys.dir_names(lib_dir).into_iter().filter(core).map(|n| format!("{lib_dir}/{n}")).filter(|p| is_file(p)));
     let mut verdicts: Vec<(String, Verdict)> = pkgverify::verify_paths(ctx.sys, &paths, SystemTime::UNIX_EPOCH).into_iter().collect();
     verdicts.sort_by(|a, b| a.0.cmp(&b.0));
     for (path, verdict) in verdicts {
@@ -306,4 +420,5 @@ pub(crate) fn check_system_programs(ctx: &ScanCtx, col: &mut Collector) {
             _ => {}
         }
     }
+    paths.into_iter().collect()
 }

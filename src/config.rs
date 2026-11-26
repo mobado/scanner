@@ -62,6 +62,8 @@ pub struct Config {
     pub cpu_heavy_programs: Vec<String>,
     /// Names of the download folder inside a home folder.
     pub download_dirs: Vec<String>,
+    /// Programs that tunnel traffic past the firewall.
+    pub tunnel_programs: Vec<String>,
     /// Remote ports that normal outgoing connections use (others are listed per program).
     pub common_remote_ports: Vec<u16>,
     /// Public DNS servers that are fine to find in /etc/resolv.conf.
@@ -241,6 +243,11 @@ impl Default for Config {
                 "qemu-system-x86_64", "VirtualBoxVM", "vmware-vmx", "Xorg", "kwin_wayland", "gnome-shell",
             ]),
             download_dirs: s(&["Downloads", "downloads", "Hämtningar", "Hämtade", "Hämtade filer"]),
+            tunnel_programs: s(&[
+                "ngrok", "cloudflared", "chisel", "frpc", "frps", "bore", "rathole", "gost", "pagekite", "zrok",
+                "inlets", "sish", "pinggy", "ligolo", "ligolo-agent", "revsocks", "iodine", "dnscat", "ptunnel",
+                "wstunnel",
+            ]),
             fs_roots: s(&["/"]),
             fs_exclude_paths: s(&[
                 "/proc", "/sys", "/dev", "/run", "/var/lib/docker/overlay2",

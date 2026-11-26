@@ -28,8 +28,13 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-HOSTS-OVERRIDE` | High | `/etc/hosts` redirects Debian, GitHub or security sites |
 | `NET-ARP-DUPLICATE` | High/Low | Several addresses with one hardware address (High when it includes the gateway) |
 | `NET-ROUTE-DEFAULT` | Medium | Two default gateways with the same priority |
+| `NET-TUNNEL-IFACE` | Medium/Low | A WireGuard, TUN/TAP, GRE or IP tunnel interface that no network configuration declares (Low without root; Tailscale, Docker, libvirt and similar are skipped) |
+| `NET-WG-PEER` | Medium | A running WireGuard peer that no configuration file lists (root, `wg` installed) |
+| `NET-TUNNEL-PROGRAM` | High/Medium | A running tunnel tool from `tunnel_programs` (ngrok, cloudflared, chisel, frpc …) |
+| `NET-SSH-REVERSE` | High–Low | A running `ssh -R` tunnel, or `RemoteForward` in SSH settings |
+| `NET-HIDDEN-PS` | High | `ps` and the `/proc` listing disagree about which processes exist |
 | `NET-PROMISC` | Medium | A network card in promiscuous (sniffing) mode |
-| `NET-NAT-REDIRECT` | Low | Firewall rules (`nft`) that redirect or forward traffic; Docker/libvirt rules are skipped (needs root; not in the timer service) |
+| `NET-NAT-REDIRECT` | Low/Medium | Firewall rules (`nft`; Medium for old `iptables-legacy`) that redirect or forward traffic; Docker/libvirt rules are skipped (needs root; `nft` not in the timer service) |
 
 ## Kernel and modules (`kernel`)
 
@@ -40,6 +45,10 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `KERN-MODULE-UNTRUSTED` | Medium | Out-of-tree, unsigned or forced modules not in `allowed_out_of_tree_modules` |
 | `KERN-SYSCTL` | Critical–Low | Dangerous settings: `kernel.modprobe`, `core_pattern`, `hotplug`, ASLR off, link protection off … |
 | `KERN-MODPROBE-CMD` | Critical/High | A suspicious `install`/`remove` command in `modprobe.d` |
+| `KERN-EBPF` / `-PINNED` | Medium/Low | Loaded eBPF programs that can watch system calls or traffic (Medium when the holder is unfamiliar or none); pinned objects in `/sys/fs/bpf`. Complete with root and the `bpftool` package, otherwise only programs held by processes |
+| `KERN-TAINTED` | High–Low | Why the kernel is "tainted", bit by bit; Medium when the module that caused it is no longer loaded, High after a forced removal |
+| `KERN-SECUREBOOT` | Medium/Low | Secure Boot off, or on without kernel lockdown (with `sig_enforce` and `modules_disabled`) |
+| `KERN-BOOT-ENTRY` | Low | UEFI boot entries that start another loader than Debian's, Windows' or the default one |
 
 ## Web files and containers (`services`)
 
@@ -76,6 +85,8 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PROC-HIGH-CPU` | Medium/Low | At least `high_cpu_percent` (70) CPU on average (a miner sign): after 10 minutes for programs outside the system folders, after `high_cpu_minutes` (60) for installed ones; `cpu_heavy_programs` (browsers, compilers, players, indexers) are skipped |
 | `PROC-HOME-EXE` | Medium/Low | A process started from the download folder, the wastebasket or a hidden file (Low from a cache folder) |
 | `PROC-APPIMAGE` | Low | A program running from a mounted AppImage |
+| `PROC-TRACED` | Critical–Low | A process is being traced (`TracerPid`): Critical when an unknown program traces sshd, sudo, a browser, a key agent …; Low for an installed debugger on an ordinary program |
+| `PROC-HIDDEN-MOUNT` | Critical–Medium | A mount over `/proc/<pid>` (hides a process), or over parts of `/etc`, `/usr/bin`, libraries … |
 | `PROC-LD-LIBRARY-PATH` | High/Low | `LD_LIBRARY_PATH` points to a temporary (High) or relative folder (AppImages are skipped) |
 
 ## File permissions (`fs_perms`)
@@ -92,7 +103,9 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `FS-TMP-EXEC` | High–Low | Executable programs or scripts in `temp_dirs`, grouped per folder (High in `/dev/shm` or hidden); also when `/tmp` is held in memory |
 | `FS-CAPABILITY` | Critical–Low | A file with capabilities that is not in `allowed_capability_files`; Critical for root-level rights on a shell/interpreter or in a temporary or home folder |
 | `FS-IMMUTABLE` | High/Low | A locked (`chattr +i`) file in `/etc`, system program folders, `/root`, cron or `.ssh` (Low for `resolv.conf`) |
-| `FS-SYSTEM-CHANGED` | Critical | `su`, `sudo`, `sshd`, `ps`, `ls`, a PAM module … differs from the checksum its package ships |
+| `FS-SYSTEM-CHANGED` | Critical | `su`, `sudo`, `sshd`, systemd, `pkexec`, `ps`, `ls`, a PAM module, libpam, libc … differs from the checksum its package ships (dpkg records MD5) |
+| `FS-PACKAGE-CHANGED` | Critical | Any program in `/usr/bin` or `/usr/sbin` rewritten after its package was installed and no longer matching it |
+| `FS-TIMESTAMP` | Medium/Low | Times that do not fit (timestomping): a modification time later than the change time, or a file from no package in `/usr/bin`, `/usr/sbin` or startup folders in `/etc` dated long before it last changed |
 | `FS-SYSTEM-UNPACKAGED` | High | A PAM module that no package installed |
 | `FS-DOWNLOAD-PROGRAM` | Low | Files in the download folder that are allowed to run (one finding per folder; `download_dirs` and the XDG setting) |
 | `FS-DOWNLOAD-DISGUISED` | Medium | A download that looks like a document but runs (`invoice.pdf.desktop`) |
@@ -122,6 +135,15 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `PERS-DM-SCRIPT` | Critical–Medium | LightDM/SDDM/GDM settings that run an unusual command |
 | `PERS-POLKIT` | Critical–Low | polkit rules that no package installed (above all ones that allow actions without a password), polkit files in home folders |
 | `PERS-UDEV` | Critical–Medium | A udev rule runs a suspicious command or a program outside the system folders |
+| `PERS-SYSTEMD-GENERATOR` | Critical/High | A systemd generator that no package installed |
+| `PERS-SYSTEMD-DROPIN` | Critical–Medium | A `*.d/*.conf` drop-in with a suspicious command, or one from no package that adds `Exec…=` or `LD_PRELOAD` to a unit |
+| `PERS-BINFMT` | Critical–Medium | A registered binary format (`binfmt_misc`) whose interpreter is in an odd place or from no package |
+| `PERS-GIT-HOOK` | Critical–Low | Git hooks in repositories in system folders (etckeeper's own is skipped); `core.hooksPath`, `fsmonitor` or `sshCommand` in git settings |
+| `PERS-PKG-CONFIG` | High–Low | pip or npm set to use another package server, skip certificate checks or run a script (tokens are never shown) |
+| `PERS-DPKG-HOOK` | Critical–Medium | dpkg runs a command at installations |
+| `PERS-INITRAMFS-HOOK` | Critical–Medium | A boot image (initramfs) hook or script that no package installed |
+| `PERS-INITRAMFS-UNKNOWN` | Medium | Scripts or programs inside a boot image that nothing on the system explains (full scan as root) |
+| `PERS-INITRAMFS-REBUILT` | Low | A boot image written without any package activity around that time |
 | `PERS-AT-CMD` | Critical/High | A queued `at` job with a suspicious command |
 | `PERS-CA-ADDED` | Low | A locally added certificate authority |
 | `PERS-KEY-PERMS` | High | A private SSH host or TLS key readable by others |
@@ -175,6 +197,8 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-LISTEN-NEW` | High/Medium | A new listening port (random ports of known programs are ignored) |
 | `BASE-ACCOUNT-NEW` / `-UID` / `-SHELL` / `-GROUP` / `-PASSWORD` / `-REMOVED` | Critical–Low | New accounts, changed user id or shell, new powerful group, a locked system account got a password |
 | `BASE-PERSIST-NEW` / `-CHANGED` / `-REMOVED` | High–Low | A persistence file appeared / changed / disappeared |
+| `BASE-SECUREBOOT-OFF` / `BASE-LOCKDOWN-OFF` | High | Secure Boot or the kernel lockdown was switched off |
+| `BASE-BOOT-ENTRY-NEW` / `-CHANGED` / `BASE-BOOT-ORDER` | Medium/Low | UEFI boot entries or their order changed |
 
 ### How an apt upgrade is verified
 

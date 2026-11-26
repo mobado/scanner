@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+* `--baseline-diff [FILE]` (and a checkbox in the window) shows only what changed since the
+  baseline. The baseline now also records Secure Boot, lockdown and UEFI boot entries.
+* Startup: systemd generators and drop-ins, `binfmt_misc`, git hooks, dpkg/pip/npm settings,
+  initramfs hooks, unexplained files inside boot images and boot images rebuilt on their own.
+* Processes and network: traced processes, mounts that hide processes or replace files, `ps`
+  compared with `/proc`, undeclared tunnels and WireGuard peers, tunnel tools, reverse SSH,
+  old-style iptables redirects.
+* Kernel: eBPF programs, decoded taint marks, Secure Boot, lockdown, boot entries.
+* Files: programs rewritten after installation, timestamps that do not fit, more system files
+  (systemd, polkit, `pkexec`, libpam, libc) compared with their packages.
+* New setting `tunnel_programs`.
+
 ## 0.6.0
 * Desktop startup: XDG autostart is judged by what it runs, plus login, sleep and network
   scripts, login-screen settings and polkit rules (all part of the baseline).

@@ -12,13 +12,13 @@ export buttons).
 
 | Module | Looks for |
 |--------|-----------|
-| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), unusual outgoing connections, direct DNS, resolvers and `/etc/hosts`, ARP/routing anomalies, sniffing, hidden processes, disguised process names |
-| `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands |
+| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), unusual outgoing connections, direct DNS, resolvers and `/etc/hosts`, ARP/routing anomalies, sniffing, port forwarding, undeclared tunnels, tunnel tools and reverse SSH, hidden processes, disguised process names |
+| `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands, eBPF programs, taint marks, Secure Boot, lockdown and UEFI boot entries |
 | `services` | Web shells in web folders, container socket and Docker API exposure, privileged containers |
 | `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps |
-| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners) |
-| `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions, downloads and hidden programs in home folders, browser add-ons and settings |
-| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, desktop autostart, session and login-screen scripts, polkit rules |
+| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files |
+| `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions, downloads and hidden programs in home folders, browser add-ons and settings, rewritten programs and backdated files |
+| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, desktop autostart, session and login-screen scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, the boot image (initramfs) |
 | `updates` | Pending security updates, other updates, reboot needed, old package lists |
 | `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords |
 | external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed). `chkrootkit` and `rkhunter` give false alarms on modern systems, so their findings are a second opinion and never Critical |
@@ -54,10 +54,14 @@ src/
 │   ├── filemarks.rs    capabilities, immutable files, programs in temp folders, system program checksums
 │   ├── homefiles.rs    download folder, ~/.local/bin, hidden programs in home folders
 │   ├── browsers.rs     Firefox and Chromium-family add-ons, settings, launchers, policies
+│   ├── procwatch.rs    traced processes, mounts that hide or replace files
+│   ├── tunnels.rs      tunnel interfaces, WireGuard peers, tunnel tools, reverse SSH
+│   ├── kernelstate.rs  eBPF, taint marks, Secure Boot, lockdown, UEFI boot entries
 │   ├── persistence.rs  systemd units and timers, cron, at, rc.local, ld.so.preload
 │   │   ├── ssh.rs      sshd_config (with Include) and authorized_keys
 │   │   ├── system.rs   PAM, shell files, UID 0, shared IDs, sudo NOPASSWD
 │   │   ├── desktop.rs  XDG autostart, session and login-screen scripts, polkit rules
+│   │   ├── hooks.rs    systemd generators/drop-ins, binfmt, git and installer hooks, initramfs
 │   │   ├── apt.rs      software sources (.list and .sources) and apt hooks
 │   │   └── history.rs  suspicious commands in shell histories
 │   └── common.rs       assessment of command lines (base64, /dev/tcp, curl|sh, nc -e …)
@@ -88,7 +92,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.6.0-1_amd64.deb
+sudo apt install ./scanner_0.7.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -198,7 +202,7 @@ and upgrade). Your own entries, settings and comments are kept, the previous fil
 Important fields: `allowed_listen_ports` (`"tcp/22"` or a range `"udp/1714-1764"`),
 `allowed_listen_processes` (trusted programs under `/usr`), `allowed_suid` (supports `*`),
 `allowed_capability_files`, `trusted_apt_hosts`, `high_cpu_percent` (0 = off),
-`high_cpu_minutes`, `cpu_heavy_programs`, `download_dirs`,
+`high_cpu_minutes`, `cpu_heavy_programs`, `download_dirs`, `tunnel_programs`,
 `allowed_systemd_units`, `allowed_cron_files`, `allowed_ssh_key_comments`,
 `allowed_ld_preload`, `allowed_argv0_mismatch`, `fs_exclude_paths`,
 `log_days` (how far back the log checks look, 28) and `login_fail_threshold` (login check), `common_remote_ports`,
@@ -250,6 +254,17 @@ sha256sum /var/lib/scanner/baseline.json   # write the sum down somewhere else
 ```
 
 After `apt upgrade` nothing needs to be done: verified upgrades are recognised (see above).
+
+## Show only what changed
+
+```sh
+sudo scanner --baseline-diff                         # against the automatic baseline
+scanner --baseline-diff my-baseline.json --cli       # against a file you saved
+```
+
+Only the differences are listed (new SUID files, new or changed services and startup files,
+new users and groups, new listening ports, Secure Boot and boot entries), the exit code follows
+them, and the baseline is not touched. In the window, tick *Only changes since the baseline*.
 
 ## Updates
 

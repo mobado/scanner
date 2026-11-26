@@ -36,6 +36,11 @@ Print one line: OK, NOTICE, ATTENTION or ALARM.
 \fB\-o\fR, \fB\-\-output\fR \fIFILE\fR
 Write the report to a file.
 .TP
+.BR \-\-baseline\-diff " [" \fIFILE\fR ]
+Show only what changed since a baseline (without
+.I FILE
+the automatic one, which needs root). The baseline is not modified.
+.TP
 .BI \-\-modules " LIST"
 Comma separated: net_proc, proc_audit, fs_perms, persistence, kernel, services,
 auth_logs, integrity, updates.

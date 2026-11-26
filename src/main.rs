@@ -43,6 +43,11 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     baseline_compare: Option<PathBuf>,
 
+    /// Show only what differs from a baseline: new SUID files, changed services, new users …
+    /// (without FILE the automatic baseline, which needs root). Changes no baseline
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = scanner::autobaseline::DEFAULT_PATH, conflicts_with_all = ["baseline_compare", "baseline_save"])]
+    baseline_diff: Option<PathBuf>,
+
     /// Whitelist/configuration in TOML or JSON
     #[arg(long, short = 'c', value_name = "FILE")]
     config: Option<PathBuf>,
@@ -148,6 +153,7 @@ fn wants_cli(cli: &Cli) -> bool {
         || cli.output.is_some()
         || cli.baseline_save.is_some()
         || cli.baseline_compare.is_some()
+        || cli.baseline_diff.is_some()
         || cli.modules.is_some()
         || cli.tools.is_some()
         || cli.deep_pid_scan
@@ -262,16 +268,16 @@ fn parse_opts(cli: &Cli) -> Result<ScanOptions> {
             bail!("the baseline file {} does not exist", b.display());
         }
     }
-    if cli.full {
-        return Ok(ScanOptions {
-            modules: ModuleId::ALL.to_vec(),
-            tools: Tool::ALL.to_vec(),
-            deep_pid_scan: true,
-            baseline_compare: cli.baseline_compare.clone(),
-            min_severity,
-        });
+    if let Some(b) = &cli.baseline_diff {
+        if let Err(e) = Baseline::load(b) {
+            bail!("cannot show changes: {e}. Save a baseline first (sudo scanner --cli --baseline-save FILE), or run as root to use the automatic one");
+        }
     }
-    Ok(ScanOptions { modules, tools, deep_pid_scan: cli.deep_pid_scan, baseline_compare: cli.baseline_compare.clone(), min_severity })
+    let baseline_compare = cli.baseline_diff.clone().or_else(|| cli.baseline_compare.clone());
+    if cli.full {
+        return Ok(ScanOptions { modules: ModuleId::ALL.to_vec(), tools: Tool::ALL.to_vec(), deep_pid_scan: true, baseline_compare, min_severity });
+    }
+    Ok(ScanOptions { modules, tools, deep_pid_scan: cli.deep_pid_scan, baseline_compare, min_severity })
 }
 
 fn cli_scan(cli: &Cli) -> Result<u8> {
@@ -282,11 +288,19 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
     }
     let sys = SysRoot::new(&cli.root);
     let interactive = std::io::stderr().is_terminal();
-    let report = scanner::scan::run_scan_auto(&sys, &cfg, &opts, !cli.no_auto_baseline, &|msg| {
+    // looking at changes must not move the baseline
+    let auto = !cli.no_auto_baseline && cli.baseline_diff.is_none();
+    let mut report = scanner::scan::run_scan_auto(&sys, &cfg, &opts, auto, &|msg| {
         if interactive {
             eprintln!("» {msg}");
         }
     });
+    if cli.baseline_diff.is_some() {
+        if report.baseline_compared.is_none() {
+            bail!("the baseline could not be compared");
+        }
+        report.keep_only_changes();
+    }
 
     if let Some(path) = &cli.baseline_save {
         Baseline::from_report(&report).save(path).with_context(|| format!("could not save the baseline {}", path.display()))?;

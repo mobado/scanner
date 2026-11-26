@@ -8,6 +8,9 @@ pub mod homefiles;
 pub mod fs_perms;
 pub mod integrity;
 pub mod kernel;
+pub mod kernelstate;
+pub mod procwatch;
+pub mod tunnels;
 pub mod net_group;
 pub mod net_proc;
 pub mod netwatch;
@@ -46,6 +49,9 @@ pub struct Inventory {
     /// Accounts with their privileged groups (compared with the baseline).
     #[serde(default)]
     pub accounts: Vec<persistence::extra::AccountEntry>,
+    /// Secure Boot, lockdown and the firmware's boot entries (compared with the baseline).
+    #[serde(default)]
+    pub boot: BTreeMap<String, String>,
     pub process_count: usize,
     pub fs_files_scanned: u64,
 }

@@ -13,6 +13,7 @@ pub mod apt;
 pub mod desktop;
 pub mod extra;
 pub mod history;
+pub mod hooks;
 pub mod ssh;
 pub mod system;
 
@@ -66,6 +67,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     extra::check_keys_and_certificates(ctx, col);
     desktop::check_desktop(ctx, col, &homes);
     apt::check_apt(ctx, col);
+    hooks::check_hooks(ctx, col, &homes);
     history::check_histories(ctx, col, &homes);
     system::check_duplicate_ids(ctx, col, &accounts);
     col.inventory.accounts = extra::collect_accounts(ctx, &accounts);

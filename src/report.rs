@@ -84,6 +84,16 @@ impl Report {
         self.summary = s;
     }
 
+    /// Keep only what differs from the baseline (`--baseline-diff`).
+    pub fn keep_only_changes(&mut self) {
+        let before = self.findings.len();
+        self.findings.retain(|f| f.module == crate::baseline::MODULE);
+        let others = before - self.findings.len();
+        let against = self.baseline_compared.clone().unwrap_or_default();
+        self.notes.insert(0, format!("Changes only: {} difference(s) from {against}. {others} other finding(s) of this scan are not shown.", self.findings.len()));
+        self.finalize();
+    }
+
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }

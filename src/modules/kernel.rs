@@ -24,6 +24,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     check_modules(ctx, col);
     check_sysctl(ctx, col);
     check_modprobe_config(ctx, col);
+    super::kernelstate::run(ctx, col);
 }
 
 fn check_modules(ctx: &ScanCtx, col: &mut Collector) {

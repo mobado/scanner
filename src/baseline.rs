@@ -38,11 +38,33 @@ pub struct Baseline {
     pub persistence_files: BTreeMap<String, String>,
     #[serde(default)]
     pub accounts: Vec<AccountEntry>,
+    #[serde(default)]
+    pub boot: BTreeMap<String, String>,
+}
+
+/// Is this a kind of file that some earlier version did not record yet?
+pub fn newly_tracked(path: &str) -> bool {
+    // entries starting "/." are folders inside any home folder
+    NEWLY_TRACKED.iter().any(|p| if p.starts_with("/.") { path.contains(p) } else { path.starts_with(p) })
+        || path.contains("-generators/")
+        || path.contains("/.git/hooks/")
+        || (path.contains("/systemd/") && path.contains(".d/") && path.ends_with(".conf"))
 }
 
 /// Kinds of files that later versions started to track: in a baseline made by an older
 /// version they are new to the baseline, not suspicious.
-pub const NEWLY_TRACKED: [&str; 25] = [
+pub const NEWLY_TRACKED: [&str; 36] = [
+    "/etc/binfmt.d/",
+    "/usr/local/lib/binfmt.d/",
+    "/etc/initramfs-tools/",
+    "/etc/dpkg/",
+    "/etc/pip.conf",
+    "/etc/xdg/pip/",
+    "/etc/npmrc",
+    "/usr/local/etc/npmrc",
+    "/etc/gitconfig",
+    "/etc/nftables.conf",
+    "/etc/iptables/",
     "/.local/share/polkit-1/",
     "/.config/polkit-1/",
     "/.xinitrc",
@@ -98,6 +120,7 @@ impl Baseline {
             listeners: listener_keys(&r.inventory),
             persistence_files: r.inventory.persistence_files.clone(),
             accounts: r.inventory.accounts.clone(),
+            boot: r.inventory.boot.clone(),
         }
     }
 
@@ -243,20 +266,55 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
         compare_accounts(&base.accounts, &inv.accounts, &src, &mut out);
     }
 
+    if both("kernel") && !base.boot.is_empty() && !inv.boot.is_empty() {
+        compare_boot(&base.boot, &inv.boot, &src, &mut out);
+    }
+
     // A baseline made by an older version did not track every kind of file yet (the library
     // path files /etc/ld.so.conf* were added later). Those are "newly tracked", not suspicious.
     if base.scanner_version != env!("CARGO_PKG_VERSION") {
         for f in out.iter_mut() {
+            // the evidence of a new file starts "<path> sha256 <hash>"
             let first = f.evidence.lines().next().unwrap_or("");
-            // entries starting "/." are folders inside any home folder
-            let newly = NEWLY_TRACKED.iter().any(|p| if p.starts_with("/.") { first.contains(p) } else { first.starts_with(p) });
-            if f.rule == "BASE-PERSIST-NEW" && newly {
+            let path = first.rsplit_once(" sha256 ").map(|(p, _)| p).unwrap_or(first);
+            if f.rule == "BASE-PERSIST-NEW" && newly_tracked(path) {
                 f.severity = Severity::Low;
                 f.description = "This kind of file was not tracked yet when the baseline was made by an older scanner version, so it is new to the baseline, not necessarily new on the machine. It is added to the baseline automatically after a clean scan as root.".into();
             }
         }
     }
     (out, notes)
+}
+
+/// Secure Boot, lockdown and the firmware's boot entries.
+fn compare_boot(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>, src: &str, out: &mut Vec<Finding>) {
+    let mut push = |severity: Severity, rule: &str, title: String, evidence: String| {
+        out.push(
+            Finding::new(severity, MODULE, rule, title)
+                .evidence(format!("{evidence}\n(compared with {src})"))
+                .description("How the machine starts has changed since the baseline. Firmware updates, new operating systems and changes in the firmware setup do this; a boot-level attack does too.")
+                .verify("efibootmgr -v")
+                .verify("cat /sys/kernel/security/lockdown; mokutil --sb-state"),
+        );
+    };
+    let get = |m: &BTreeMap<String, String>, k: &str| m.get(k).cloned().unwrap_or_default();
+    if get(old, "secure_boot") == "on" && get(new, "secure_boot") == "off" {
+        push(Severity::High, "BASE-SECUREBOOT-OFF", "Secure Boot has been switched off since the baseline".into(), "secure_boot: on → off".into());
+    }
+    if ["integrity", "confidentiality"].contains(&get(old, "lockdown").as_str()) && get(new, "lockdown") == "none" {
+        push(Severity::High, "BASE-LOCKDOWN-OFF", "The kernel lockdown is gone since the baseline".into(), format!("lockdown: {} → none", get(old, "lockdown")));
+    }
+    for (key, value) in new.iter().filter(|(k, _)| k.starts_with("boot_entry ")) {
+        let name = key.trim_start_matches("boot_entry ");
+        match old.get(key) {
+            None => push(Severity::Medium, "BASE-BOOT-ENTRY-NEW", format!("New firmware boot entry since the baseline: Boot{name}"), format!("Boot{name}: {value}")),
+            Some(before) if before != value => push(Severity::Medium, "BASE-BOOT-ENTRY-CHANGED", format!("Firmware boot entry changed since the baseline: Boot{name}"), format!("Boot{name}\nnow: {value}\nbefore: {before}")),
+            _ => {}
+        }
+    }
+    if !get(old, "boot_order").is_empty() && !get(new, "boot_order").is_empty() && get(old, "boot_order") != get(new, "boot_order") {
+        push(Severity::Low, "BASE-BOOT-ORDER", "The firmware boot order changed since the baseline".into(), format!("{} → {}", get(old, "boot_order"), get(new, "boot_order")));
+    }
 }
 
 fn describe_account(a: &AccountEntry) -> String {

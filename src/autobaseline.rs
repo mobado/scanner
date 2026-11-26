@@ -121,7 +121,7 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
     if base.scanner_version != env!("CARGO_PKG_VERSION") && report.modules.iter().any(|m| m == "persistence") {
         let mut new_files = 0;
         for (path, hash) in &report.inventory.persistence_files {
-            if crate::baseline::NEWLY_TRACKED.iter().any(|p| path.starts_with(p)) && !base.persistence_files.contains_key(path) {
+            if crate::baseline::newly_tracked(path) && !base.persistence_files.contains_key(path) {
                 base.persistence_files.insert(path.clone(), hash.clone());
                 new_files += 1;
             }
@@ -132,6 +132,13 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
         if base.accounts.is_empty() && !report.inventory.accounts.is_empty() {
             base.accounts = report.inventory.accounts.clone();
             added.push("the account list".to_string());
+        }
+        if base.boot.is_empty() && !report.inventory.boot.is_empty() {
+            base.boot = report.inventory.boot.clone();
+            if !base.modules.iter().any(|m| m == "kernel") {
+                base.modules.push("kernel".to_string());
+            }
+            added.push("the boot settings".to_string());
         }
         base.scanner_version = env!("CARGO_PKG_VERSION").to_string();
         if added.is_empty() && base.save(path).is_ok() {

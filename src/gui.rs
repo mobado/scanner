@@ -73,6 +73,8 @@ pub struct ScannerApp {
     self_test: Option<SelfTestResult>,
     show_sev: [bool; 4],
     module_filter: String,
+    /// Show only what differs from the baseline.
+    only_changes: bool,
     search: String,
     tab: Tab,
     status: String,
@@ -119,6 +121,7 @@ impl ScannerApp {
             self_test: None,
             show_sev: [true; 4],
             module_filter: "all".into(),
+            only_changes: false,
             search: String::new(),
             tab: Tab::Findings,
             status: "Quick scan started (add the file system walk in the list on the left).".into(),
@@ -554,6 +557,9 @@ impl ScannerApp {
                 }
             });
             ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search title, evidence, rule …").desired_width(240.0));
+            if r.baseline_compared.is_some() {
+                ui.checkbox(&mut self.only_changes, "Only changes since the baseline");
+            }
         });
         ui.add_space(6.0);
         let q = self.search.to_lowercase();
@@ -565,6 +571,7 @@ impl ScannerApp {
                 let idx = Severity::ALL_DESC.iter().position(|s| *s == f.severity).unwrap_or(3);
                 self.show_sev[idx]
                     && (self.module_filter == "all" || f.module == self.module_filter)
+                    && (!self.only_changes || r.baseline_compared.is_none() || f.module == scanner::baseline::MODULE)
                     && (q.is_empty() || f.title.to_lowercase().contains(&q) || f.evidence.to_lowercase().contains(&q) || f.rule.to_lowercase().contains(&q))
             })
             .map(|(i, _)| i)
