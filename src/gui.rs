@@ -522,8 +522,8 @@ impl ScannerApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(total.to_string()).size(26.0).strong());
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(format!("findings in {secs:.1} s")).small().color(MUTED));
-                        ui.label(RichText::new(format!("{procs} processes")).small().color(MUTED));
+                        ui.label(RichText::new(format!("in {secs:.0} s")).small().color(MUTED));
+                        ui.label(RichText::new(format!("{procs} PIDs")).small().color(MUTED));
                     });
                 });
             });

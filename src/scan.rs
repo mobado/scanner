@@ -252,7 +252,15 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
                         col.notes.push(format!("apt: {op}"));
                     }
                 }
-                upgraded_files = apt.upgraded.into_iter().map(|(p, _)| p).collect();
+                if !apt.matching.is_empty() {
+                    col.notes.push(format!(
+                        "{} file(s) the baseline did not record yet are exactly what their packages ship, so they are not reported: {}",
+                        apt.matching.len(),
+                        crate::modules::common::clip(&apt.matching.iter().map(|(p, pkg)| format!("{p} ({pkg})")).collect::<Vec<_>>().join(", "), 1500)
+                    ));
+                }
+                // both kinds go into the automatic baseline
+                upgraded_files = apt.upgraded.into_iter().chain(apt.matching).map(|(p, _)| p).collect();
                 // New ports of a program you trust in the whitelist (installed under /usr) are not news.
                 f.retain(|x| {
                     x.rule != "BASE-LISTEN-NEW"

@@ -114,8 +114,11 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
 pub fn newly_tracked(path: &str) -> bool {
     // entries starting "/." are folders inside any home folder
     NEWLY_TRACKED.iter().any(|p| if p.starts_with("/.") { path.contains(p) } else { path.starts_with(p) })
+        // folders and files that live under different parents
+        || ["/pkcs11/modules/", "/p11-kit/modules/", "/pipewire/", "/wireplumber/", "/systemd/linger/", "/EFI/Linux/", "/containers/systemd/", "/kwin/effects/"].iter().any(|p| path.contains(p))
+        || path.ends_with("/pkcs11.txt")
         // window manager files that live in /etc
-        || ["/etc/xdg/openbox/", "/etc/xdg/lxsession/", "/etc/sway/", "/usr/local/share/autostart/"].iter().any(|p| path.starts_with(p))
+        ||["/etc/xdg/openbox/", "/etc/xdg/lxsession/", "/etc/sway/", "/usr/local/share/autostart/"].iter().any(|p| path.starts_with(p))
         || path.contains("-generators/")
         || path.contains("/.git/hooks/")
         || path.contains("/NativeMessagingHosts/")
@@ -125,21 +128,13 @@ pub fn newly_tracked(path: &str) -> bool {
 
 /// Kinds of files that later versions started to track: in a baseline made by an older
 /// version they are new to the baseline, not suspicious.
-pub const NEWLY_TRACKED: [&str; 84] = [
+pub const NEWLY_TRACKED: [&str; 76] = [
     "/.local/share/applications/",
-    "/pipewire/",
-    "/wireplumber/",
-    "/systemd/linger/",
     "/.gnupg/",
-    "pkcs11",
-    "/p11-kit/modules/",
     "/var/lib/dpkg/diversions",
     "/usr/share/keyrings/",
     "/etc/kernel/",
     "/etc/initramfs/post-update.d/",
-    "/EFI/Linux/",
-    "/containers/systemd/",
-    "/kwin/effects/",
     "/etc/greetd/",
     "/etc/sddm.conf.d/",
     "/etc/environment.d/",
@@ -398,9 +393,14 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
     // a user's own desktop settings change in daily use; system files and everything else do not
     for f in out.iter_mut().filter(|f| f.rule == "BASE-PERSIST-NEW" || f.rule == "BASE-PERSIST-CHANGED") {
         let path = f.evidence.lines().next().unwrap_or("").split(" sha256 ").next().unwrap_or("");
-        if is_desktop_path(path) && (path.starts_with("/home/") || path.starts_with("/root/")) {
+        let own = path.starts_with("/home/") || path.starts_with("/root/");
+        if is_desktop_path(path) && own {
             f.severity = Severity::Medium;
             f.description = "A file that starts things in a desktop session is new or changed. Adding an autostart entry or changing a desktop setting does this; check that it was you.".into();
+        } else if path.ends_with("/pkcs11.txt") && own {
+            // browsers and mail programs write these themselves; PERS-KEY-MODULE judges the libraries
+            f.severity = Severity::Medium;
+            f.description = "The list of key libraries of a browser or mail program is new or changed. The program writes it itself; check that the library= lines name nothing you do not know.".into();
         }
     }
     compare_access(base, inv, &both, &src, &mut out);

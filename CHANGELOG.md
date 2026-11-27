@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.1
+* Fixed false alarms after upgrading from an older version: browser and mail key lists
+  (`pkcs11.txt`) were reported as new High changes, and unchanged package files (kernel hooks,
+  signing keys, p11-kit modules) as Medium. Package files are now checked, including links to
+  them; other files unchanged since before the baseline become one Info line, and the
+  baseline takes them in.
+* A changed `pkcs11.txt` in a home folder is Medium.
+* Accounts without a login made by packages and the kernel NFS client's sockets are Info.
+
 ## 0.12.0
 * New level **Info** for ordinary desktop activity: one line each, never changes the verdict,
   hidden in the window until switched on. Findings about your own files are marked user level.

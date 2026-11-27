@@ -16,6 +16,7 @@ use crate::sys::SysRoot;
 use chrono::TimeZone;
 use md5::{Digest, Md5};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::os::unix::fs::MetadataExt;
 use std::time::SystemTime;
 
 /// The rules this module checks.
@@ -121,8 +122,50 @@ fn log_operations(sys: &SysRoot, since: SystemTime) -> BTreeMap<String, String> 
     ops
 }
 
+/// "/a/b/../c" → "/a/c"
+fn tidy(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/').filter(|p| !p.is_empty() && *p != ".") {
+        if part == ".." {
+            parts.pop();
+        } else {
+            parts.push(part);
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
+/// Links that a package ships (debian-archive-keyring has "x.gpg → x.pgp") have no checksum of
+/// their own, so the file behind them is checked: (link, file), only when one package owns both.
+fn packaged_links(sys: &SysRoot, paths: &[String]) -> HashMap<String, String> {
+    let links: Vec<(String, String)> = paths
+        .iter()
+        .filter_map(|path| {
+            let mut at = path.clone();
+            for _ in 0..8 {
+                let Some(target) = sys.read_link(&at) else { break };
+                at = tidy(&sys.resolve_link_target(&at, &target));
+            }
+            (at != *path).then(|| (path.clone(), at))
+        })
+        .collect();
+    let all: Vec<String> = links.iter().flat_map(|(a, b)| [a.clone(), b.clone()]).collect();
+    let owners = packages_of(sys, &all);
+    links.into_iter().filter(|(link, file)| owners.get(link).is_some_and(|p| owners.get(file).is_some_and(|q| bare(p) == bare(q)))).collect()
+}
+
 /// Check one set of paths against dpkg's records.
 pub fn verify_paths(sys: &SysRoot, paths: &[String], baseline_time: SystemTime) -> HashMap<String, Verdict> {
+    let links = packaged_links(sys, paths);
+    if !links.is_empty() {
+        let files: Vec<String> = paths.iter().map(|p| links.get(p).unwrap_or(p).clone()).collect();
+        let verdicts = verify_files(sys, &files, baseline_time);
+        return paths.iter().filter_map(|p| Some((p.clone(), verdicts.get(links.get(p).unwrap_or(p))?.clone()))).collect();
+    }
+    verify_files(sys, paths, baseline_time)
+}
+
+fn verify_files(sys: &SysRoot, paths: &[String], baseline_time: SystemTime) -> HashMap<String, Verdict> {
     let records = package_records(sys, paths);
     let ops = log_operations(sys, baseline_time);
     paths
@@ -220,6 +263,9 @@ fn path_of(f: &Finding) -> Option<String> {
 pub struct Applied {
     /// Files confirmed as changed by apt (removed from the findings), with the package.
     pub upgraded: Vec<(String, String)>,
+    /// Kinds of files the baseline did not hold yet that are exactly what their package ships
+    /// (removed from the findings), with the package.
+    pub matching: Vec<(String, String)>,
     /// One line per confirmed package operation, for the report notes.
     pub operations: Vec<String>,
 }
@@ -236,11 +282,18 @@ pub fn apply(sys: &SysRoot, findings: &mut Vec<Finding>, baseline_created: &str)
     let verdicts = verify_paths(sys, &paths, created);
     let mut ops: HashSet<String> = HashSet::new();
     let mut kept = Vec::new();
+    // newly watched files of no package that have not changed since before the baseline
+    let mut watched = Vec::new();
+    let since = created.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    // the change time can't be set back without changing the clock
+    let unchanged = |path: &str| std::fs::symlink_metadata(sys.path(path)).map(|m| m.ctime() <= since).unwrap_or(false);
     for mut f in findings.drain(..) {
         let Some(path) = path_of(&f).filter(|_| CHECKED.contains(&f.rule.as_str())) else {
             kept.push(f);
             continue;
         };
+        // the comparison marks kinds of files that older versions did not record as Low
+        let new_kind = f.rule == "BASE-PERSIST-NEW" && f.severity == Severity::Low;
         match verdicts.get(&path) {
             Some(Verdict::Upgraded { package, how }) => {
                 applied.upgraded.push((path.clone(), package.clone()));
@@ -253,13 +306,22 @@ pub fn apply(sys: &SysRoot, findings: &mut Vec<Finding>, baseline_created: &str)
                     kept.push(f);
                 }
             }
+            Some(Verdict::MatchesButNoUpgrade { package }) if new_kind => applied.matching.push((path.clone(), package.clone())),
             Some(Verdict::MatchesButNoUpgrade { package }) => {
-                if f.rule == "BASE-SUID-NEW" {
+                if f.rule == "BASE-PERSIST-NEW" {
+                    f.severity = Severity::Low;
+                    f.description = format!("Checked: the file is new to the baseline, but its content is exactly what package {} ships.", bare(package));
+                } else if f.rule == "BASE-SUID-NEW" {
                     f.description = format!("Checked: the content matches package {}, but apt did not install or upgrade it after the baseline – so the SUID/SGID bit was most likely set by hand (chmod). Treat this as serious.", bare(package));
                 } else {
                     f.severity = Severity::Medium;
                     f.description = format!("Checked: the content matches package {}, but there is no apt install or upgrade of it since the baseline (the dpkg log may have been rotated). Check when it changed.", bare(package));
                 }
+                kept.push(f);
+            }
+            Some(Verdict::Differs { package }) if new_kind && unchanged(&path) => {
+                f.severity = Severity::Medium;
+                f.description = format!("Checked: the file differs from what package {} ships, but it has not changed since before the baseline was made – usually a setting changed on purpose. Look at it once.", bare(package));
                 kept.push(f);
             }
             Some(Verdict::Differs { package }) => {
@@ -268,11 +330,21 @@ pub fn apply(sys: &SysRoot, findings: &mut Vec<Finding>, baseline_created: &str)
                 f.verify.push(format!("debsums -s {}", bare(package)));
                 kept.push(f);
             }
+            Some(Verdict::NotPackaged) | None if new_kind && unchanged(&path) => watched.push(path.clone()),
             Some(Verdict::NotPackaged) | None => {
                 f.description.push_str(" Checked: no installed package owns this file, so an apt upgrade does not explain it.");
                 kept.push(f);
             }
         }
+    }
+    if !watched.is_empty() {
+        watched.sort();
+        kept.push(
+            Finding::new(Severity::Info, crate::baseline::MODULE, "BASE-PERSIST-WATCHED", format!("{} file(s) are watched from now on", watched.len()))
+                .evidence(format!("not in the baseline, unchanged since before it was made, from no package:\n{}", watched.join("\n")))
+                .description("An older version of the scanner made the baseline and did not record these kinds of files. They are added to it after a clean scan as root, and changes are reported from then on.")
+                .verify("ls -l --time-style=full-iso <file>"),
+        );
     }
     *findings = kept;
     let mut ops: Vec<String> = ops.into_iter().collect();

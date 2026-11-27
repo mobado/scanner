@@ -332,7 +332,7 @@ fn nfs_callback_listener_is_low_and_shared_socket_reported_once() {
     }
     let report = run_scan(&SysRoot::new(root), &Config::default(), &opts(&[ModuleId::NetProc]), &|_| {});
     let orphan = report.findings.iter().find(|f| f.rule == "NET-ORPHAN-LISTEN").expect("orphan");
-    assert_eq!(orphan.severity, Severity::Low, "{}", orphan.description);
+    assert_eq!(orphan.severity, Severity::Info, "{}", orphan.description);
     let p111: Vec<_> = report.findings.iter().filter(|f| f.rule == "NET-LISTEN-UNKNOWN").collect();
     assert_eq!(p111.len(), 1, "{p111:?}");
     assert!(p111[0].title.contains("rpcbind"), "{}", p111[0].title);

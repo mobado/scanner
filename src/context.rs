@@ -11,11 +11,11 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Rules whose Low findings are everyday life on a desktop: listed, but out of the way.
-const ORDINARY: [&str; 17] = [
+const ORDINARY: [&str; 19] = [
     "AUTH-ADMIN-ACTIONS", "FS-DOWNLOAD-PROGRAM", "DESK-APPIMAGE", "DESK-FLATPAK-ACCESS", "DESK-SNAP", "PERS-AUTOSTART",
-    "PERS-SESSION-SCRIPT-OWN", "PROC-APPIMAGE", "PROC-ENV-SECRETS", "KERN-THUNDERBOLT", "NET-LOCAL-SERVER",
+    "PERS-SESSION-SCRIPT-ORDINARY", "PROC-APPIMAGE", "PROC-ENV-SECRETS", "KERN-THUNDERBOLT", "NET-LOCAL-SERVER",
     "NET-BLUETOOTH", "EXT-LYNIS-SUGGEST", "PERS-GNOME-EXTENSION", "PERS-SYSTEMD-USER", "EXT-RKHUNTER-UPDATED",
-    "PROC-HIGH-CPU",
+    "PROC-HIGH-CPU", "AUTH-NEW-USER-ORDINARY", "NET-ORPHAN-LISTEN-ORDINARY",
 ];
 
 /// Rules whose Low findings are ordinary when the program comes from a package.
@@ -120,10 +120,24 @@ pub fn add(sys: &SysRoot, processes: &[ProcInfo], col: &mut Collector) {
     }
 }
 
-/// A session script of the user's own is ordinary; one in a system folder is not.
+/// The rule, or a name for its ordinary cases: a session script of the user's own, an account
+/// without a login that a package made, and the sockets of the kernel's NFS client.
 fn rule_key(f: &Finding) -> String {
-    if f.rule == "PERS-SESSION-SCRIPT" && f.evidence.starts_with("/home/") {
-        return "PERS-SESSION-SCRIPT-OWN".to_string();
+    let ordinary = match f.rule.as_str() {
+        "PERS-SESSION-SCRIPT" => f.evidence.starts_with("/home/"),
+        "AUTH-NEW-USER" => system_account(&f.evidence),
+        "NET-ORPHAN-LISTEN" => f.title.contains("kernel NFS client"),
+        _ => false,
+    };
+    if ordinary {
+        format!("{}-ORDINARY", f.rule)
+    } else {
+        f.rule.clone()
     }
-    f.rule.clone()
+}
+
+/// "new user: name=tcpdump, UID=117, …, shell=/usr/sbin/nologin, …"
+fn system_account(line: &str) -> bool {
+    let uid = line.split("UID=").nth(1).and_then(|r| r.split(',').next()).and_then(|v| v.trim().parse::<u32>().ok());
+    uid.is_some_and(|u| u > 0 && u < 1000) && ["shell=/usr/sbin/nologin", "shell=/sbin/nologin", "shell=/bin/false", "shell=/usr/bin/false"].iter().any(|s| line.contains(s))
 }

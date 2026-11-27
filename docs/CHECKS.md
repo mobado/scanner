@@ -16,8 +16,9 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 * Findings about files in a home folder, Medium or lower, are marked **user level**: yours to
   review, not a change to the system.
 * Low findings that are everyday life become Info, for example autostart entries for installed
-  programs, own session scripts, AppImages, downloads that can run, administrator actions and
-  busy programs; outgoing connections, listening ports and similar are Info when the program
+  programs, own session scripts, AppImages, downloads that can run, administrator actions,
+  busy programs, accounts without a login that packages create and the sockets of the kernel's
+  NFS client; outgoing connections, listening ports and similar are Info when the program
   comes from a package.
 * A finding about a process ends with a `context:` line: PID, parent, user, package and start
   time. A finding about a file says its package (for system folders) and when it changed.
@@ -316,6 +317,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-LISTEN-NEW` | High/Medium | A new listening port (random ports of known programs are ignored) |
 | `BASE-ACCOUNT-NEW` / `-UID` / `-SHELL` / `-GROUP` / `-PASSWORD` / `-REMOVED` | Critical–Low | New accounts, changed user id or shell, new powerful group, a locked system account got a password |
 | `BASE-PERSIST-NEW` / `-CHANGED` / `-REMOVED` | High–Low | A persistence file appeared / changed / disappeared |
+| `BASE-PERSIST-WATCHED` | Info | Files of a kind the older scanner did not record, from no package and unchanged since before the baseline was made: listed once, then watched |
 | `BASE-SSH-KEY-NEW` | **Critical** | A new key in an `authorized_keys` file |
 | `BASE-BLUETOOTH-NEW` | High/Medium | A new paired Bluetooth device (High for a keyboard) |
 | `BASE-ADDON-NEW` | Medium | A browser add-on that was not switched on before |
@@ -324,6 +326,14 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-DESKTOP-NEW` | High/Medium | A graphical desktop appeared on a machine that had none; a virtual or remote screen (Xvnc, x11vnc, Xvfb) started running |
 | `BASE-SECUREBOOT-OFF` / `BASE-LOCKDOWN-OFF` | High | Secure Boot or the kernel lockdown was switched off |
 | `BASE-BOOT-ENTRY-NEW` / `-CHANGED` / `BASE-BOOT-ORDER` | Medium/Low | UEFI boot entries or their order changed |
+
+### After a scanner upgrade
+
+A newer version records more kinds of files than an older baseline holds. Those that are
+exactly what their package ships (also through a link the package ships) are not reported;
+those from no package that have not changed since before the baseline become one
+`BASE-PERSIST-WATCHED` line; only files changed after the baseline are listed one by one. All
+of them are taken into the automatic baseline after a clean scan as root.
 
 ### How an apt upgrade is verified
 
