@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.1
+* Fixed a false High alarm `NET-SS-MISMATCH` for short-lived sockets (for example a UDP socket on a
+  random port): `/proc/net` was read well before `ss` ran. Now `/proc/net` is read just before and
+  just after `ss`, and a port is only reported when it is missing in three comparisons in a row.
+  Ports that differ only for a moment are mentioned in a note.
+
 ## 0.14.0
 * `chkrootkit` and `rkhunter` are removed: the scanner no longer runs them or suggests them.
   The full scan runs `debsums` and `lynis`.

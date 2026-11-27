@@ -5,16 +5,20 @@ use scanner::baseline::{self, Baseline};
 use scanner::config::{glob_match, Config};
 use scanner::external_tools::{parse_debsums, parse_lynis};
 use scanner::modules::common::analyze_command;
-use scanner::modules::net_proc::{encode_hex_addr, parse_hex_addr, parse_proc_net, parse_sched_debug, parse_ss_listeners, Proto};
+use scanner::modules::net_proc::{
+    encode_hex_addr, missing_from_proc, parse_hex_addr, parse_proc_net, parse_sched_debug, parse_ss_listeners, stays_hidden, Proto,
+};
 use scanner::modules::persistence::{parse_authorized_key, parse_cron_line, parse_pam_line, parse_unit};
 use scanner::modules::{fs_perms, proc_audit, Collector, ScanCtx};
 use scanner::procinfo::{parse_stat, read_proc, snapshot};
 use scanner::sandbox;
 use scanner::{run_scan, ModuleId, ScanOptions, Severity, SysRoot};
+use std::collections::BTreeSet;
 use std::fs;
 use std::net::SocketAddr;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
+use std::time::Duration;
 
 fn write(root: &Path, abs: &str, content: &str) {
     let p = root.join(abs.trim_start_matches('/'));
@@ -73,6 +77,44 @@ fn parses_sched_debug_and_ss() {
     let ss = "tcp   LISTEN 0      128          0.0.0.0:22        0.0.0.0:*\nudp   UNCONN 0      0      127.0.0.53%lo:53         0.0.0.0:*\n";
     let set = parse_ss_listeners(ss);
     assert!(set.contains(&("tcp".into(), 22)) && set.contains(&("udp".into(), 53)));
+}
+
+fn ports(list: &[(&str, u16)]) -> BTreeSet<(String, u16)> {
+    list.iter().map(|(proto, port)| (proto.to_string(), *port)).collect()
+}
+
+#[test]
+fn ss_port_counts_as_hidden_only_when_proc_has_no_line_for_it() {
+    // udp port 33101 connected to a peer meanwhile, tcp port 4444 has only a connection, no listener
+    let udp = "header\n   0: 0500000A:814D 0100007F:0035 01 00000000:00000000 00:00000000 00000000  1000        0 11 2 0 0\n";
+    let tcp = "header\n   0: 0500000A:115C 42710FCB:01BB 01 00000000:00000000 00:00000000 00000000  1000        0 12 2 0 0\n";
+    let mut sockets = parse_proc_net(udp, Proto::Udp).0;
+    sockets.extend(parse_proc_net(tcp, Proto::Tcp).0);
+    let ss = ports(&[("udp", 33101), ("tcp", 4444), ("udp", 5000)]);
+    assert_eq!(missing_from_proc(&ss, &sockets), ports(&[("tcp", 4444), ("udp", 5000)]));
+}
+
+#[test]
+fn short_lived_sockets_are_not_reported_as_hidden() {
+    // gone at the second look
+    let mut looks = vec![ports(&[("udp", 33101)]), ports(&[])].into_iter();
+    let (hidden, passing) = stays_hidden(Duration::ZERO, || looks.next()).expect("looks");
+    assert!(hidden.is_empty());
+    assert_eq!(passing, 1);
+
+    // one stays hidden through all three looks, the others come and go
+    let mut looks = vec![
+        ports(&[("tcp", 31337), ("udp", 33101)]),
+        ports(&[("tcp", 31337), ("udp", 40000)]),
+        ports(&[("tcp", 31337), ("udp", 33101)]),
+    ]
+    .into_iter();
+    let (hidden, passing) = stays_hidden(Duration::ZERO, || looks.next()).expect("looks");
+    assert_eq!(hidden, ports(&[("tcp", 31337)]));
+    assert_eq!(passing, 1);
+
+    // a failed look reports nothing
+    assert!(stays_hidden(Duration::ZERO, || None).is_none());
 }
 
 // ------------------------------------------------------------ processes

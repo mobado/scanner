@@ -12,6 +12,7 @@ use crate::procinfo::{basename, ProcInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 pub const MODULE: &str = "net_proc";
 
@@ -336,7 +337,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     note_exposure(col);
     check_ps_view(ctx, col);
 
-    check_ss_consistency(ctx, &sockets, col);
+    check_ss_consistency(ctx, col);
     check_hidden_processes(ctx, col);
     check_masquerade(ctx, col);
 }
@@ -620,7 +621,55 @@ pub fn parse_ss_listeners(out: &str) -> BTreeSet<(String, u16)> {
     set
 }
 
-fn check_ss_consistency(ctx: &ScanCtx, sockets: &[SocketEntry], col: &mut Collector) {
+/// Ports `ss` lists that /proc/net does not have. For TCP only listening lines count; for UDP any
+/// line with that port does, so a socket that connected to a peer meanwhile is not "hidden".
+pub fn missing_from_proc(ss: &BTreeSet<(String, u16)>, sockets: &[SocketEntry]) -> BTreeSet<(String, u16)> {
+    let known: BTreeSet<(String, u16)> = sockets
+        .iter()
+        .filter(|s| !s.proto.is_tcp() || s.is_listening())
+        .map(|s| (s.proto.family().to_string(), s.local.port()))
+        .collect();
+    ss.difference(&known).cloned().collect()
+}
+
+/// How many comparisons in a row a port must be missing from /proc/net before it is reported.
+const SS_LOOKS: usize = 3;
+
+/// Compare up to [`SS_LOOKS`] times, `pause` apart. Each `look` returns the ports `ss` shows that
+/// /proc/net lacks at that moment. Returns the ports missing every time, and how many others were
+/// only missing now and then (sockets opening and closing). `None` if a look could not be made.
+pub fn stays_hidden(
+    pause: Duration,
+    mut look: impl FnMut() -> Option<BTreeSet<(String, u16)>>,
+) -> Option<(BTreeSet<(String, u16)>, usize)> {
+    let mut hidden = look()?;
+    let first = hidden.len();
+    for _ in 1..SS_LOOKS {
+        if hidden.is_empty() {
+            break;
+        }
+        std::thread::sleep(pause);
+        let again = look()?;
+        hidden.retain(|port| again.contains(port));
+    }
+    let passing = first - hidden.len();
+    Some((hidden, passing))
+}
+
+/// The four /proc/net files as they are right now.
+fn sockets_now(ctx: &ScanCtx) -> Result<Vec<SocketEntry>> {
+    let mut all = Vec::new();
+    for proto in Proto::ALL {
+        match ctx.sys.read_string(proto.proc_file()) {
+            Ok(text) => all.extend(parse_proc_net(&text, proto).0),
+            Err(e) if e.is_not_found() => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(all)
+}
+
+fn check_ss_consistency(ctx: &ScanCtx, col: &mut Collector) {
     if !ctx.sys.is_live() {
         return;
     }
@@ -631,24 +680,31 @@ fn check_ss_consistency(ctx: &ScanCtx, sockets: &[SocketEntry], col: &mut Collec
             return;
         }
     };
-    let out = match crate::external_tools::run_capture(&ss, &["-H", "-l", "-n", "-t", "-u"], 20) {
-        Ok(o) => o,
-        Err(e) => {
-            col.note(format!("ss could not run: {e}"));
-            return;
-        }
+    let mut error = None;
+    // /proc/net is read just before and just after ss, so both see the same moment.
+    let result = stays_hidden(Duration::from_secs(2), || {
+        let look = || -> Result<BTreeSet<(String, u16)>> {
+            let mut sockets = sockets_now(ctx)?;
+            let out = crate::external_tools::run_capture(&ss, &["-H", "-l", "-n", "-t", "-u"], 20)?;
+            sockets.extend(sockets_now(ctx)?);
+            Ok(missing_from_proc(&parse_ss_listeners(&out.stdout), &sockets))
+        };
+        look().map_err(|e| error = Some(e.to_string())).ok()
+    });
+    let Some((hidden, passing)) = result else {
+        col.note(format!("The comparison between ss and /proc/net could not be made: {}", error.unwrap_or_default()));
+        return;
     };
-    let ss_set = parse_ss_listeners(&out.stdout);
-    let proc_set: BTreeSet<(String, u16)> = sockets
-        .iter()
-        .filter(|s| s.is_listening())
-        .map(|s| (s.proto.family().to_string(), s.local.port()))
-        .collect();
-    for (proto, port) in ss_set.difference(&proc_set) {
+    if passing > 0 {
+        col.note(format!(
+            "{passing} port(s) differed between ss and /proc/net only for a moment (short-lived sockets) – not reported"
+        ));
+    }
+    for (proto, port) in &hidden {
         col.push(
             Finding::new(Severity::High, MODULE, "NET-SS-MISMATCH", format!("Port {proto}/{port} is visible in ss but not in /proc/net"))
-                .evidence(format!("ss (netlink) shows a listening {proto} socket on port {port} that is missing from /proc/net/{proto}*"))
-                .description("ss reads through netlink while /proc/net is read as a file. A rootkit that filters /proc can hide ports that are still visible through netlink. Short-lived sockets can give occasional false alarms – run again.")
+                .evidence(format!("ss (netlink) showed a listening {proto} socket on port {port} in {SS_LOOKS} comparisons in a row, each time missing from /proc/net/{proto}*"))
+                .description("ss reads through netlink while /proc/net is read as a file. A rootkit that filters /proc can hide ports that are still visible through netlink. Sockets that only live for a moment are ruled out by comparing several times.")
                 .verify(format!("ss -tulpne | grep ':{port} '"))
                 .verify(format!("grep -i ':{port:04X} ' /proc/net/{proto} /proc/net/{proto}6")),
         );

@@ -35,7 +35,7 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-DELETED-SOCKET` | Medium/Critical | A deleted binary holds a network socket |
 | `NET-LISTEN-UNKNOWN` | Medium/Low | A listening port that is not in the whitelist (grouped per program) |
 | `NET-ORPHAN-LISTEN` | High/Low | A listening socket without any owner process (Low when the NFS client explains it) |
-| `NET-SS-MISMATCH` | High | `ss` sees a listening port that `/proc/net` hides |
+| `NET-SS-MISMATCH` | High | `ss` sees a listening port that `/proc/net` hides, in three comparisons in a row (short-lived sockets only get a note) |
 | `NET-HIDDEN-PID` | High | A PID the scheduler knows but `/proc` does not list |
 | `NET-KTHREAD-FAKE` | Critical | A normal process disguised as a kernel thread (`[kworker/…]`) |
 | `NET-KTHREAD-NAME` | Low | A kernel thread with an unknown name |
