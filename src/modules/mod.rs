@@ -86,6 +86,9 @@ pub struct Inventory {
     /// Every installed package as "name version"; `None` when dpkg's list was not read.
     #[serde(default)]
     pub installed_packages: Option<Vec<String>>,
+    /// A fingerprint of dpkg's checksums and scripts for each installed package.
+    #[serde(default)]
+    pub package_sums: Option<BTreeMap<String, String>>,
     /// Loaded firewall rules that accept traffic, without counters; `None` when they were not read.
     #[serde(default)]
     pub firewall_rules: Option<Vec<String>>,

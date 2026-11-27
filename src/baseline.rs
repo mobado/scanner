@@ -62,6 +62,8 @@ pub struct Baseline {
     pub firewall_rules: Option<Vec<String>>,
     #[serde(default)]
     pub installed_packages: Option<Vec<String>>,
+    #[serde(default)]
+    pub package_sums: Option<BTreeMap<String, String>>,
 }
 
 /// The parts of a recorded key that identify it: the file and the fingerprint.
@@ -129,6 +131,9 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
                     .verify(format!("grep ' install {}:' /var/log/dpkg.log", package)),
             );
         }
+    }
+    if both("persistence") {
+        compare_package_sums(base, inv, src, out);
     }
     // "off" is only recorded when it is certain (as root)
     if both("net_proc") && base.boot.get("firewall").map(String::as_str) == Some("on") && inv.boot.get("firewall").map(String::as_str) == Some("off") {
@@ -204,6 +209,30 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
                     .verify("bluetoothctl devices Paired"),
             );
         }
+    }
+}
+
+/// Packages whose checksums or scripts changed although their version did not: apt only does that
+/// when a source rebuilds a package under the same version. High for packages no source offers.
+fn compare_package_sums(base: &Baseline, inv: &Inventory, src: &str, out: &mut Vec<Finding>) {
+    let (Some(old), Some(new)) = (&base.package_sums, &inv.package_sums) else { return };
+    let (Some(then), Some(now)) = (&base.installed_packages, &inv.installed_packages) else { return };
+    let then: BTreeSet<&String> = then.iter().collect();
+    // the packages that are installed in the same version as when the baseline was made
+    let same: BTreeSet<&str> = now.iter().filter(|p| then.contains(p)).filter_map(|p| p.split(' ').next()).collect();
+    let local: BTreeSet<&str> = inv.local_packages.iter().flatten().map(|p| p.strip_suffix(RETIRED).unwrap_or(p)).collect();
+    for (key, sum) in new {
+        let package = key.split(':').next().unwrap_or(key);
+        let Some(before) = old.get(key).filter(|b| *b != sum && same.contains(package)) else { continue };
+        let severity = if local.contains(package) { Severity::High } else { Severity::Medium };
+        out.push(
+            Finding::new(severity, MODULE, "BASE-PACKAGE-REPLACED", format!("A package changed without a new version since the baseline: {package}"))
+                .evidence(format!("{key}\nfingerprint now {sum}\nbefore {before}\n(compared with {src})"))
+                .description("The list of files or the install scripts that dpkg keeps for this package are different, but the version is the same. Installing another build of the package does this, and so does editing dpkg's records to hide a changed file.")
+                .verify(format!("dpkg -V {}", shq(package)))
+                .verify(format!("grep -E ' (install|upgrade) {}:' /var/log/dpkg.log", package))
+                .verify(format!("sudo apt install --reinstall {}   # restores the source's build, if a source offers it", shq(package))),
+        );
     }
 }
 
@@ -355,6 +384,7 @@ impl Baseline {
             local_packages: r.inventory.local_packages.clone(),
             firewall_rules: r.inventory.firewall_rules.clone(),
             installed_packages: r.inventory.installed_packages.clone(),
+            package_sums: r.inventory.package_sums.clone(),
         }
     }
 

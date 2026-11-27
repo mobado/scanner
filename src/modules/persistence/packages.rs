@@ -6,7 +6,8 @@ use crate::finding::{Finding, Severity};
 use crate::modules::common::{clip, shq};
 use crate::modules::{Collector, ScanCtx};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -233,13 +234,55 @@ impl AptRecords {
         }
     }
 
+    /// Read `/var/log/installer/status`: what the Debian installer had installed.
+    pub fn read_installer(&mut self, status: &str) {
+        self.history.extend(installed_packages(status).into_iter().map(|p| (p.name, p.version)));
+    }
+
+    /// Read aptitude's own log: "[INSTALL] name:amd64 1.0" or "[UPGRADE] name:amd64 1.0 -> 1.1".
+    pub fn read_aptitude(&mut self, text: &str) {
+        for line in text.lines() {
+            let Some((tag, entry)) = line.strip_prefix('[').and_then(|l| l.split_once("] ")) else { continue };
+            if !["INSTALL", "UPGRADE", "DOWNGRADE", "REINSTALL"].contains(&tag.split(',').next().unwrap_or("")) {
+                continue;
+            }
+            let mut words = entry.split_whitespace();
+            let (Some(name), Some(version)) = (words.next(), words.last()) else { continue };
+            self.history.insert((name.split(':').next().unwrap_or(name).to_string(), version.to_string()));
+        }
+    }
+
     pub fn installed_by_apt(&self, p: &Installed) -> bool {
         self.automatic.contains(&p.name) || self.history.contains(&(p.name.clone(), p.version.clone()))
     }
 }
 
-/// apt's records. The older, packed history files are only unpacked while one of the `wanted`
-/// packages is still unexplained, newest first.
+/// The text of a log file that may be packed.
+fn read_log(ctx: &ScanCtx, col: &mut Collector, path: &str) -> Option<String> {
+    if !compressed_file(path) {
+        return match ctx.sys.read_string(path) {
+            Ok(text) => Some(text),
+            Err(e) if e.is_permission_denied() => {
+                col.note(format!("{path} can only be read as root, so some old packages may be listed as local"));
+                None
+            }
+            Err(_) => None,
+        };
+    }
+    let mut text = Vec::new();
+    match unpack(&ctx.sys.path(path), |reader| {
+        let _ = reader.read_to_end(&mut text);
+    }) {
+        Ok(()) => Some(String::from_utf8_lossy(&text).into_owned()),
+        Err(why) => {
+            col.note(format!("The packed log {path} could not be read: {why}"));
+            None
+        }
+    }
+}
+
+/// What apt, aptitude and the installer recorded. The older apt history files are only read
+/// while one of the `wanted` packages is still unexplained, newest first.
 fn apt_records(ctx: &ScanCtx, col: &mut Collector, wanted: &[&Installed]) -> AptRecords {
     let mut records = AptRecords::default();
     if wanted.is_empty() {
@@ -248,8 +291,16 @@ fn apt_records(ctx: &ScanCtx, col: &mut Collector, wanted: &[&Installed]) -> Apt
     if let Ok(text) = ctx.sys.read_string("/var/lib/apt/extended_states") {
         records.read_states(&text);
     }
-    if let Ok(text) = ctx.sys.read_string("/var/log/apt/history.log") {
+    if let Some(text) = read_log(ctx, col, "/var/log/apt/history.log") {
         records.read_history(&text);
+    }
+    if let Some(text) = read_log(ctx, col, "/var/log/installer/status") {
+        records.read_installer(&text);
+    }
+    for name in ctx.sys.dir_names("/var/log").into_iter().filter(|n| n == "aptitude" || n.starts_with("aptitude.")) {
+        if let Some(text) = read_log(ctx, col, &format!("/var/log/{name}")) {
+            records.read_aptitude(&text);
+        }
     }
     // "history.log.2.gz" is older than "history.log.1.gz"
     let mut older: Vec<(u32, String)> = ctx
@@ -263,22 +314,38 @@ fn apt_records(ctx: &ScanCtx, col: &mut Collector, wanted: &[&Installed]) -> Apt
         if wanted.iter().all(|p| records.installed_by_apt(p)) {
             break;
         }
-        let path = format!("/var/log/apt/{name}");
-        if !compressed_file(&name) {
-            if let Ok(text) = ctx.sys.read_string(&path) {
-                records.read_history(&text);
-            }
-            continue;
-        }
-        let mut text = Vec::new();
-        match unpack(&ctx.sys.path(&path), |reader| {
-            let _ = reader.read_to_end(&mut text);
-        }) {
-            Ok(()) => records.read_history(&String::from_utf8_lossy(&text)),
-            Err(why) => col.note(format!("The old apt history {name} could not be read: {why}")),
+        if let Some(text) = read_log(ctx, col, &format!("/var/log/apt/{name}")) {
+            records.read_history(&text);
         }
     }
     records
+}
+
+/// A fingerprint of what dpkg keeps about each installed package: the checksums of its files and
+/// the scripts it runs. Keyed as dpkg names the files ("name" or "name:arch").
+pub fn package_sums(ctx: &ScanCtx, installed: &[Installed]) -> BTreeMap<String, String> {
+    const KEPT: [&str; 5] = ["md5sums", "preinst", "postinst", "prerm", "postrm"];
+    let names: HashSet<&str> = installed.iter().map(|p| p.name.as_str()).collect();
+    let mut files: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for file in ctx.sys.dir_names("/var/lib/dpkg/info") {
+        let Some((package, kind)) = file.rsplit_once('.') else { continue };
+        if KEPT.contains(&kind) && names.contains(package.split(':').next().unwrap_or(package)) {
+            files.entry(package.to_string()).or_default().push(kind.to_string());
+        }
+    }
+    files
+        .into_iter()
+        .map(|(package, mut kinds)| {
+            kinds.sort();
+            let mut sum = Sha256::new();
+            for kind in kinds {
+                let data = ctx.sys.read_bytes(format!("/var/lib/dpkg/info/{package}.{kind}")).unwrap_or_default();
+                sum.update(format!("{kind} {}\n", data.len()));
+                sum.update(&data);
+            }
+            (package, sum.finalize().iter().map(|b| format!("{b:02x}")).collect())
+        })
+        .collect()
 }
 
 /// Sort the installed packages against what the sources offer. A package counts as Debian's own
@@ -314,6 +381,8 @@ pub fn check_packages(ctx: &ScanCtx, col: &mut Collector) {
     }
     // what was installed when the baseline was made tells a new package from one a source dropped
     col.inventory.installed_packages = Some(installed.iter().map(|p| format!("{} {}", p.name, p.version)).collect());
+    // and the fingerprints tell a package that was swapped without a new version
+    col.inventory.package_sums = Some(package_sums(ctx, &installed));
     let wanted: HashMap<&str, &str> = installed.iter().map(|p| (p.name.as_str(), p.version.as_str())).collect();
     let Some(offered) = offered(ctx, col, &wanted) else {
         col.note("Locally installed packages were not looked for: apt has no package lists here (run apt update)");

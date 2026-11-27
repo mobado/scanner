@@ -213,7 +213,7 @@ every network, to one address, or only to this computer.
 | `PERS-APT-HOOK` | Critical/High | apt runs a suspicious command (`apt.conf.d` hooks) |
 | `PERS-HISTORY` | High–Low | Suspicious commands in a shell history (reverse shells, history switched off, logs deleted, download-and-run …); only those lines are shown |
 | `PERS-PYTHON-STARTUP` | High–Low | A `.pth` file with `import` lines, or `sitecustomize.py`/`usercustomize.py`, from no package or changed (system folders, `/usr/local`, `~/.local`, virtual environments). High when it runs text as code, starts programs or uses the network; a `.pth` file is only skipped when every code line is exactly what setuptools, editable installs, namespace packages, virtualenv or coverage write. `sitecustomize`/`usercustomize` (source, package or compiled) are also looked for in the folders that `.pth` files add. Every `.pth` file is recorded in the baseline |
-| `PERS-PYTHON-PATH` | High | A `.pth` file adds a folder in `/tmp`, `/dev/shm`, `/var/tmp` (or another temporary folder) or in another user's home (also through a link) |
+| `PERS-PYTHON-PATH` | High | A `.pth` file adds a folder that others control (also through a link): in a temporary folder or another user's home, or where the folder or one above it is writable by everyone, writable by a group with other members, or owned by someone other than root and the owner of the `.pth` file (or of the home it lies in). A sticky folder above an existing folder does not count |
 | `PERS-MOTD` | Critical–Medium | A script in `/etc/update-motd.d` from no package or changed; it runs as root at every login |
 | `PERS-LOGROTATE` | Critical–Low | A `postrotate`/`prerotate` script in a logrotate file from no package, changed, or with a suspicious command |
 | `PERS-ENV-PROXY` | Medium/Low | A proxy set in environment files, `curlrc`, `wgetrc` or git settings (desktop, browser, apt and pip proxies have their own rules) |
@@ -224,7 +224,7 @@ every network, to one address, or only to this computer.
 | `PERS-UNOWNED-LIB` | High/Medium | Programs and libraries in `/usr/lib` that no package lists or ships (copies and links of packaged files are skipped; Python packages and kernel modules have other checks). High among PAM and systemd files or with hidden names |
 | `PERS-UNOWNED-SYSTEM` | Medium/Low | Other files of no package in `/etc/systemd` (mount units, targets, scripts) |
 | `PERS-LOCAL-PACKAGE` | Low | Installed packages that no software source offers (a `.deb` from a file, or a removed source); old Debian kernels are only noted. Packed package lists (`.lz4`, `.gz`, `.xz` …) are read with apt's `apt-helper` |
-| `PERS-RETIRED-PACKAGE` | Info | Packages with a Debian maintainer (`debian.org` or a Debian team list) that the sources no longer carry **and that apt installed** (`/var/lib/apt/extended_states`, or `/var/log/apt/history.log*` with the same version, from a command that names no `.deb` file); one line. The maintainer is what the package says about itself, and `dpkg -i` writes in neither record. Old kernels need the same proof |
+| `PERS-RETIRED-PACKAGE` | Info | Packages with a Debian maintainer (`debian.org` or a Debian team list) that the sources no longer carry **and that apt installed**: named in `/var/lib/apt/extended_states`, or with the same version in `/var/log/apt/history.log*` (from a command that names no `.deb` file), `/var/log/aptitude*` or the installer's `/var/log/installer/status`. One line. The maintainer is what the package says about itself, and `dpkg -i` writes in none of these. Old kernels need the same proof. A package apt installed more than a year ago, after the installation, may have no record left (logs are kept 12 months) and is then listed as local |
 | `PERS-PKG-NEWER` | Medium/Low | A version newer than anything the sources offer (Medium for central system packages) |
 | `PERS-EDITOR-SCRIPT` | High/Medium | A Vim or Neovim script (also lazy.nvim plugins, `vim.cmd("!…")`) that runs a command typical of a break-in |
 | `PERS-EDITOR-EXTENSION` | Medium/Low | VS Code, VSCodium or Cursor extensions installed from a file, loaded from elsewhere, or in a folder the editor does not list (a folder must be the extension's id followed by its version) |
@@ -348,6 +348,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-ADDON-NEW` | Medium | A browser add-on that was not switched on before |
 | `BASE-EDITOR-NEW` | Low | A new editor extension |
 | `BASE-LOCAL-PACKAGE` | Medium | A package that no source offers and that was not installed in this version when the baseline was made, also one that looks like an old Debian package. Packages a release upgrade leaves behind were installed then and stay quiet |
+| `BASE-PACKAGE-REPLACED` | High/Medium | A package's checksum list or install scripts (`/var/lib/dpkg/info`) changed while its version stayed the same. High when no source offers the package |
 | `BASE-FIREWALL-OFF` | High | A firewall that was on is off |
 | `BASE-FIREWALL-RULE` | Medium/Low | A new accept rule since the baseline (root; compared without counters, with the members of named sets). Medium for incoming chains, Low for forwarded and other traffic. In Docker's and libvirt's own chains (not `DOCKER-USER`) private addresses and `veth*`/`br-*` names are ignored, so a new container is not a new rule |
 | `BASE-EFI-FILE-CHANGED` | Medium/Info | A boot file built on this computer (such as a local `grubx64.efi`) changed; Info when `dpkg.log` shows an update of GRUB (or fwupd) after the baseline, and the baseline then takes the new file in |
@@ -394,7 +395,10 @@ module names, changed system files and login record gaps.
 * Without **root**, other users' processes, `/root`, `/var/spool/cron` and debugfs are
   unreadable. The report says what was skipped.
 * Very large folders are only searched up to a limit; the notes then say `Incomplete` and which
-  search stopped early.
+  search stopped early. In home folders, ordinary folders are searched before hidden ones, the
+  hidden folders with Python environments each on their own, and package caches
+  (`.cargo/registry`, `.rustup`, `.npm`, `.gradle`, `.m2`, `.conda/pkgs`, `go/pkg/mod` …) not at
+  all.
 * A scan is a short moment: the password wallet is only heard while the scanner listens, and a
   program that read a password file and closed it before the scan leaves nothing open. A program
   that ends right after asking the wallet may not be identified.

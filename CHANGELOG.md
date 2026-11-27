@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.0
+* The home folder search reaches your projects first: package caches are skipped, ordinary
+  folders come before hidden ones, and the hidden folders with Python environments are searched
+  on their own.
+* `PERS-PYTHON-PATH` now looks at who can write: a folder added by a `.pth` file, or one above
+  it, that everyone, a group with other members or another user can change is High, wherever it
+  is.
+* Packages installed by the Debian installer or aptitude are recognised (`/var/log/installer/status`,
+  `/var/log/aptitude*`), so they no longer show as local.
+* The baseline keeps a fingerprint of dpkg's checksums and scripts for each package; a package
+  that changed without a new version is reported (`BASE-PACKAGE-REPLACED`).
+
 ## 0.16.0
 Fixes:
 * A planted `.deb` could hide by naming a Debian maintainer. A package now only counts as an old

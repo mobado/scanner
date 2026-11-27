@@ -7,7 +7,8 @@ use crate::finding::{Finding, Severity};
 use crate::modules::common::{clip, shq};
 use crate::modules::{homeindex, Collector, ScanCtx};
 use crate::pkgverify::{tidy, verify_paths, Verdict};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::os::unix::fs::MetadataExt;
 use std::time::SystemTime;
 
 type Homes = [(String, u32, String)];
@@ -168,14 +169,113 @@ fn home_of<'a>(homes: &'a Homes, path: &str) -> Option<&'a (String, u32, String)
         .max_by_key(|(_, _, home)| home.len())
 }
 
+/// The accounts and groups of the scanned system.
+#[derive(Default)]
+struct Accounts {
+    users: HashMap<u32, String>,
+    /// Group id → name and the user ids of its members (listed, or as their main group).
+    groups: HashMap<u32, (String, BTreeSet<u32>)>,
+}
+
+fn accounts(ctx: &ScanCtx) -> Accounts {
+    let mut found = Accounts::default();
+    let passwd = ctx.sys.read_string("/etc/passwd").unwrap_or_default();
+    let group = ctx.sys.read_string("/etc/group").unwrap_or_default();
+    let mut ids = HashMap::new();
+    let mut main = Vec::new();
+    for line in passwd.lines() {
+        let f: Vec<&str> = line.split(':').collect();
+        let (Some(name), Some(Ok(uid)), Some(Ok(gid))) = (f.first(), f.get(2).map(|v| v.parse::<u32>()), f.get(3).map(|v| v.parse::<u32>())) else { continue };
+        found.users.entry(uid).or_insert_with(|| name.to_string());
+        ids.insert(name.to_string(), uid);
+        main.push((gid, uid));
+    }
+    for line in group.lines() {
+        let f: Vec<&str> = line.split(':').collect();
+        let (Some(name), Some(Ok(gid))) = (f.first(), f.get(2).map(|v| v.parse::<u32>())) else { continue };
+        let entry = found.groups.entry(gid).or_insert_with(|| (name.to_string(), BTreeSet::new()));
+        entry.1.extend(f.get(3).into_iter().flat_map(|m| m.split(',')).filter_map(|m| ids.get(m.trim())));
+    }
+    for (gid, uid) in main {
+        found.groups.entry(gid).or_insert_with(|| (gid.to_string(), BTreeSet::new())).1.insert(uid);
+    }
+    found
+}
+
+/// Follow every link in a path, folder by folder, inside the scanned system.
+fn real_path(ctx: &ScanCtx, path: &str) -> String {
+    let mut rest: VecDeque<String> = path.split('/').filter(|p| !p.is_empty()).map(String::from).collect();
+    let mut done = String::new();
+    let mut links = 0;
+    while let Some(part) = rest.pop_front() {
+        if part == "." {
+            continue;
+        }
+        if part == ".." {
+            done.truncate(done.rfind('/').unwrap_or(0));
+            continue;
+        }
+        let next = format!("{done}/{part}");
+        match ctx.sys.read_link(&next) {
+            Some(target) if links < 40 => {
+                links += 1;
+                if target.starts_with('/') {
+                    done.clear();
+                }
+                for part in target.split('/').filter(|p| !p.is_empty()).rev() {
+                    rest.push_front(part.to_string());
+                }
+            }
+            _ => done = next,
+        }
+    }
+    if done.is_empty() { "/".into() } else { done }
+}
+
+/// Can someone other than root and the `trusted` users change what is in this folder, through
+/// its own rights or those of a folder above it? The check stops at a link (followed apart).
+fn writable_by(ctx: &ScanCtx, accounts: &Accounts, trusted: &BTreeSet<u32>, folder: &str) -> Option<String> {
+    let mut prefixes = vec!["/".to_string()];
+    let mut at = String::new();
+    for part in folder.split('/').filter(|p| !p.is_empty()) {
+        at = format!("{at}/{part}");
+        prefixes.push(at.clone());
+    }
+    let mut found = Vec::new();
+    for prefix in &prefixes {
+        match std::fs::symlink_metadata(ctx.sys.path(prefix)) {
+            Ok(meta) if meta.is_dir() => found.push((prefix, meta)),
+            _ => break,
+        }
+    }
+    // what does not exist yet can be made by whoever may write to the last folder that does
+    let last = found.len().checked_sub(1)?;
+    for (i, (place, meta)) in found.iter().enumerate() {
+        // in a sticky folder others can add files but not replace those of someone else
+        let counts = meta.mode() & 0o1000 == 0 || i == last;
+        if meta.mode() & 0o002 != 0 && counts {
+            return Some(format!("everyone can write to {place}"));
+        }
+        if meta.mode() & 0o020 != 0 && counts {
+            if let Some((group, members)) = accounts.groups.get(&meta.gid()) {
+                let others: Vec<&str> = members.iter().filter(|u| **u != 0 && !trusted.contains(u)).map(|u| accounts.users.get(u).map(String::as_str).unwrap_or("?")).collect();
+                if !others.is_empty() {
+                    return Some(format!("group {group} can write to {place} ({})", others.join(", ")));
+                }
+            }
+        }
+        if meta.uid() != 0 && !trusted.contains(&meta.uid()) {
+            let owner = accounts.users.get(&meta.uid()).cloned().unwrap_or_else(|| format!("user id {}", meta.uid()));
+            return Some(format!("{place} belongs to {owner}, who can change what runs"));
+        }
+    }
+    None
+}
+
 /// Why Python should not load code from a folder that the file `pth` adds, if it should not.
 /// Links on the way are followed.
-fn odd_folder(ctx: &ScanCtx, homes: &Homes, pth: &str, folder: &str) -> Option<String> {
-    let mut target = folder.to_string();
-    for _ in 0..8 {
-        let Some(link) = ctx.sys.read_link(&target) else { break };
-        target = tidy(&ctx.sys.resolve_link_target(&target, &link));
-    }
+fn odd_folder(ctx: &ScanCtx, homes: &Homes, accounts: &Accounts, pth: &str, folder: &str) -> Option<String> {
+    let target = real_path(ctx, folder);
     let why = |place: &str| {
         if ctx.cfg.is_temp_path(place) || ["/tmp/", "/var/tmp/", "/dev/shm/"].iter().any(|t| format!("{place}/").starts_with(t)) {
             return Some("a temporary folder, which others can write to".to_string());
@@ -183,13 +283,20 @@ fn odd_folder(ctx: &ScanCtx, homes: &Homes, pth: &str, folder: &str) -> Option<S
         let owner = home_of(homes, place)?;
         (home_of(homes, pth) != Some(owner)).then(|| format!("in the home folder of {}, who can change what runs", owner.0))
     };
-    why(folder).or_else(|| why(&target))
+    // whoever owns the path file, or the home it lies in, can already change what runs
+    let mut trusted: BTreeSet<u32> = home_of(homes, pth).map(|h| h.1).into_iter().collect();
+    trusted.extend(std::fs::symlink_metadata(ctx.sys.path(pth)).map(|m| m.uid()));
+    why(folder)
+        .or_else(|| why(&target))
+        .or_else(|| writable_by(ctx, accounts, &trusted, &target))
+        .or_else(|| writable_by(ctx, accounts, &trusted, folder))
 }
 
 /// Look at the folders `.pth` files add: Python searches them for `sitecustomize` and
 /// `usercustomize` too. Returns those files, each with whether its folder is an odd one.
 fn added_folders(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, files: &[String]) -> HashMap<String, (String, bool)> {
     let mut reached = HashMap::new();
+    let accounts = accounts(ctx);
     for pth in files.iter().filter(|f| f.ends_with(".pth")) {
         // every path file goes into the baseline, also one that only names folders
         record(ctx, col, pth);
@@ -197,7 +304,7 @@ fn added_folders(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, files: &[Str
         let folder = pth.rsplit_once('/').map(|(f, _)| f).unwrap_or("");
         let mut odd = Vec::new();
         for added in pth_folders(folder, &String::from_utf8_lossy(&bytes)) {
-            let why = odd_folder(ctx, homes, pth, &added);
+            let why = odd_folder(ctx, homes, &accounts, pth, &added);
             let runs = customize_files(ctx, &added);
             if let Some(why) = &why {
                 odd.push(format!("adds {added}: {why}"));
