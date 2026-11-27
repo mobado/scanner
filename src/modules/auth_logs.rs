@@ -284,7 +284,9 @@ fn describe_events(events: &[&Event], attempts: usize) -> String {
     let shown: Vec<&str> = users.iter().take(15).copied().collect();
     let more = if users.len() > 15 { format!(" (+{} more)", users.len() - 15) } else { String::new() };
     let latest: Vec<String> = events.iter().rev().take(3).rev().map(|e| clip(&e.line, 220)).collect();
-    format!("{attempts} attempt(s) between {first} and {last}\nuser names: {}{more}\nlatest:\n{}", clip(&shown.join(", "), 300), latest.join("\n"))
+    // Enter pressed at an empty login prompt leaves no name
+    let names = if shown.is_empty() { "(none given)".to_string() } else { clip(&shown.join(", "), 300) };
+    format!("{attempts} attempt(s) between {first} and {last}\nuser names: {names}{more}\nlatest:\n{}", latest.join("\n"))
 }
 
 fn level(count: usize, threshold: usize) -> Severity {

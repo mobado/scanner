@@ -54,6 +54,18 @@ impl<I: Iterator> Iterator for Capped<I> {
     }
 }
 
+/// Is this a program of the Steam client in someone's home folder? Valve installs it there
+/// (also for Debian's `steam-installer` package and the Flatpak), so no package owns it.
+pub fn is_steam_path(exe: &str) -> bool {
+    exe.starts_with("/home/") && ["/.local/share/Steam/", "/.steam/debian-installation/", "/.steam/steam/", "/.steam/root/"].iter().any(|d| exe.contains(d))
+}
+
+/// Ports the Steam client uses: games and Remote Play (27000–27100) and the local discovery of
+/// other Steam machines (4380).
+pub fn is_steam_port(port: u16) -> bool {
+    (27000..=27100).contains(&port) || port == 4380
+}
+
 /// The word for settings that only a cryptocurrency miner has (also matched in shell histories).
 pub const MINER_REASON: &str = "cryptocurrency miner settings";
 

@@ -6,6 +6,7 @@ use super::fs_perms::MODULE;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::pkgverify::{self, Verdict};
+use md5::{Digest, Md5};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
@@ -295,6 +296,23 @@ fn package_times(ctx: &ScanCtx, wanted: &HashSet<String>) -> HashMap<String, i64
     out
 }
 
+/// Settings files that a package's install script copies from a template, keeping its dates.
+const TEMPLATES: [(&str, &str); 1] = [("/etc/ssh/sshd_config", "/usr/share/openssh/sshd_config")];
+
+/// A settings file that still is what the package put there: `ucf`, which manages such files,
+/// recorded its checksum, or it equals the unchanged template it was copied from. An old date is
+/// then the package's own.
+fn kept_copy(ctx: &ScanCtx, path: &str) -> bool {
+    let Ok(data) = ctx.sys.read_bytes(path) else { return false };
+    let sum: String = Md5::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+    let recorded = ctx.sys.read_string("/var/lib/ucf/hashfile").is_ok_and(|t| t.lines().any(|l| l.split_once("  ").is_some_and(|(s, p)| s == sum && p.trim() == path)));
+    recorded
+        || TEMPLATES.iter().filter(|t| t.0 == path).any(|(_, template)| {
+            let unchanged = pkgverify::verify_paths(ctx.sys, &[template.to_string()], SystemTime::UNIX_EPOCH);
+            matches!(unchanged.get(*template), Some(Verdict::Upgraded { .. } | Verdict::MatchesButNoUpgrade { .. })) && ctx.sys.read_bytes(template).is_ok_and(|t| t == data)
+        })
+}
+
 /// Times that do not fit. A file's change time (ctime) is set by the kernel; its modification
 /// time (mtime) can be set to anything with `touch`.
 pub(crate) fn check_file_times(ctx: &ScanCtx, col: &mut Collector, already: &HashSet<String>) {
@@ -334,7 +352,7 @@ pub(crate) fn check_file_times(ctx: &ScanCtx, col: &mut Collector, already: &Has
                 let backdated = changed - modified > 30 * DAY && (program || m.mtime_nsec() == 0);
                 if modified > changed + DAY {
                     odd.push((Severity::Low, format!("{path}: modification time is later than the last change of the file")));
-                } else if watched && backdated {
+                } else if watched && backdated && !(!program && kept_copy(ctx, path)) {
                     let severity = if m.mode() & 0o6000 != 0 { Severity::Medium } else { Severity::Low };
                     odd.push((severity, format!("{path}: not from a package, dated {} days before the file last changed", (changed - modified) / DAY)));
                 }

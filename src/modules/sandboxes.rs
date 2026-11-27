@@ -1,7 +1,7 @@
 //! Newer ways to stay out of sight (part of `proc_audit`): io_uring in unknown programs, and
 //! processes in their own user, network or mount namespace that no known sandbox explains.
 
-use super::common::{clip, shq};
+use super::common::{clip, is_steam_path, shq};
 use super::proc_audit::MODULE;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
@@ -10,17 +10,19 @@ use std::collections::{BTreeMap, HashMap};
 
 /// Programs that isolate themselves or others as part of their job (matched as prefixes for
 /// families like `systemd-` and `containerd-`).
-const SANDBOXES: [&str; 40] = [
+const SANDBOXES: [&str; 43] = [
     "systemd", "bwrap", "flatpak", "xdg-", "chrome", "chromium", "brave", "firefox", "thunderbird", "msedge", "vivaldi",
     "opera", "electron", "code", "codium", "slack", "discord", "Discord", "signal-desktop", "spotify", "steam", "pressure-vessel",
     "docker", "containerd", "podman", "conmon", "runc", "crun", "snap", "lxc", "lxd", "incus", "libvirt", "qemu", "waydroid",
     "firejail", "evince", "glycin", "tracker", "localsearch",
+    // the Steam runtime's own container (Steam Linux Runtime)
+    "srt-bwrap", "pv-bwrap", "pv-adverb",
 ];
 
 fn is_sandbox(p: &ProcInfo) -> bool {
     let exe = p.exe_path().unwrap_or("");
     // a copy in a home or temporary folder is not the sandbox its name claims
-    let installed = exe.is_empty() || ["/usr/", "/opt/", "/snap/", "/app/", "/var/lib/flatpak/", "/lib/"].iter().any(|d| exe.starts_with(d)) || exe.contains("/.local/share/Steam/");
+    let installed = exe.is_empty() || ["/usr/", "/opt/", "/snap/", "/app/", "/var/lib/flatpak/", "/lib/"].iter().any(|d| exe.starts_with(d)) || is_steam_path(exe);
     installed && p.candidate_names().iter().any(|n| SANDBOXES.iter().any(|s| n.starts_with(s)))
 }
 

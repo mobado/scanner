@@ -4,7 +4,7 @@
 //! Reads /proc/net/{tcp,tcp6,udp,udp6} directly, converts hex to IP/port and
 //! maps socket inodes to /proc/<pid>/fd/* for the exact PID, UID and command line.
 
-use super::common::{clip, shq};
+use super::common::{clip, is_steam_path, is_steam_port, shq};
 use super::{Collector, ScanCtx};
 use crate::error::{Result, ScanError};
 use crate::finding::{Finding, Severity};
@@ -475,10 +475,17 @@ fn check_socket_owner(
             && (cfg.report_loopback_listeners || !(ip_is_loopback(&s.local.ip()) || ip_is_link_local(&s.local.ip())))
         {
             let user_app = p.uid != 0 && p.exe_path().map(|e| ["/usr/", "/opt/", "/app/", "/snap/"].iter().any(|d| e.starts_with(d))).unwrap_or(false);
+            // the Steam client waiting on Steam's own ports (Remote Play) is ordinary
+            let steam = p.uid != 0 && p.exe_path().is_some_and(is_steam_path) && is_steam_port(s.local.port());
+            let severity = if steam { Severity::Info } else if user_app { Severity::Low } else { Severity::Medium };
             col.push(
-                Finding::new(if user_app { Severity::Low } else { Severity::Medium }, MODULE, "NET-LISTEN-UNKNOWN", format!("Unknown listening port {}/{} ({})", s.proto.family(), s.local.port(), p.display_name()))
+                Finding::new(severity, MODULE, "NET-LISTEN-UNKNOWN", format!("Unknown listening port {}/{} ({})", s.proto.family(), s.local.port(), p.display_name()))
                     .evidence(format!("{}\nreachable from {}", proc_evidence(p, s), exposure(&s.local.ip())))
-                    .description("The port is not in the whitelist. Check that the service is intended and otherwise add it to allowed_listen_ports.")
+                    .description(if steam {
+                        "Steam uses this port for games and Remote Play. Turn Remote Play off in Steam's settings if you do not stream games to other devices."
+                    } else {
+                        "The port is not in the whitelist. Check that the service is intended and otherwise add it to allowed_listen_ports."
+                    })
                     .verify(format!("ss -tulpn | grep ':{} '", s.local.port()))
                     .verify(format!("dpkg -S {}", shq(p.exe_path().unwrap_or("?"))))
                     .verify(format!("systemctl status {}", p.pid)),
@@ -903,7 +910,9 @@ fn check_masquerade(ctx: &ScanCtx, col: &mut Collector) {
         }
         let kthread_like = |n: &str| cfg.kernel_thread_prefixes.iter().any(|k| n.starts_with(k.as_str()));
         if p.is_kernel_thread() {
-            if !kthread_like(&p.comm) {
+            // NVIDIA's driver names this thread "vidmem lazy free"
+            let nvidia = p.comm.starts_with("vidmem lazy") && ctx.sys.read_string("/proc/modules").is_ok_and(|m| m.lines().any(|l| l.starts_with("nvidia ")));
+            if !kthread_like(&p.comm) && !nvidia {
                 col.push(
                     Finding::new(Severity::Low, MODULE, "NET-KTHREAD-NAME", format!("Unusual kernel thread name: [{}]", p.comm))
                         .evidence(format!("PID {} PPID {} namn [{}]", p.pid, p.ppid, p.comm))
@@ -935,7 +944,9 @@ fn check_masquerade(ctx: &ScanCtx, col: &mut Collector) {
         }
         let a0_clean = argv0.trim_start_matches('-');
         // The whole argv[0] is the exe path (even with spaces in directory names) – nothing disguised.
-        if Some(a0_clean) == p.exe_path() || basename(a0_clean) == exe_b {
+        // "/proc/self/exe" is how Chromium, Electron and Steam start their own helpers: it names
+        // no other program.
+        if Some(a0_clean) == p.exe_path() || basename(a0_clean) == exe_b || a0_clean == "/proc/self/exe" {
             continue;
         }
         let a0_name = basename(a0_clean.split([':', ' ']).next().unwrap_or(a0_clean));

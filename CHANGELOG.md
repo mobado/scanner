@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.18.1
+Fewer false alarms on a gaming desktop:
+* Steam's helpers started as `/proc/self/exe` are no longer "disguised process names".
+* The Steam Linux Runtime container (`srt-bwrap`, `pv-adverb`) and Steam's own browser sandbox
+  explain their namespaces.
+* Steam's game and Remote Play ports are Info.
+* NVIDIA's kernel thread `vidmem lazy free` is known while the driver is loaded.
+* `sshd_config` and other settings that still are what their package put there are no longer
+  reported for keeping the package's date.
+* A login attempt without a user name says "(none given)".
+
 ## 0.18.0
 * Packages stay protected after updates: a new version that apt installed from a source (shown
   by its history, with dpkg's files untouched since) is written into the automatic baseline with

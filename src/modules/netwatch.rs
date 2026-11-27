@@ -4,7 +4,7 @@
 use super::net_proc::{Connection, MODULE};
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{clip, shq};
+use crate::modules::common::{clip, is_steam_path, is_steam_port, shq};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::unix::fs::MetadataExt;
@@ -291,11 +291,18 @@ fn check_outbound(ctx: &ScanCtx, col: &mut Collector, resolvers: &BTreeSet<Strin
         let odd_place = list.iter().any(|c| !c.exe.as_deref().map(|e| ["/usr/", "/opt/", "/snap/", "/app/"].iter().any(|d| e.starts_with(d))).unwrap_or(false));
         let root = list.iter().any(|c| c.uid == 0);
         let ports: BTreeSet<u16> = list.iter().map(|c| c.remote_port).collect();
+        // the Steam client talking to Steam's game ports
+        let steam = !root && list.iter().all(|c| c.exe.as_deref().is_some_and(is_steam_path) && is_steam_port(c.remote_port));
+        let severity = if steam { Severity::Info } else if odd_place || root { Severity::Medium } else { Severity::Low };
         let ports: Vec<String> = ports.iter().take(8).map(|p| p.to_string()).collect();
         col.push(
-            Finding::new(if odd_place || root { Severity::Medium } else { Severity::Low }, MODULE, "NET-OUTBOUND-UNUSUAL", format!("Outgoing connections to unusual ports: {name}"))
+            Finding::new(severity, MODULE, "NET-OUTBOUND-UNUSUAL", format!("Outgoing connections to unusual ports: {name}"))
                 .evidence(format!("remote port(s) {}\n{}", ports.join(", "), list.iter().take(12).map(|c| describe(c)).collect::<Vec<_>>().join("\n")))
-                .description("The program is connected to computers on the internet on ports that normal web, mail, SSH and time services don't use. Games and chat programs do this; so do botnets and remote-control backdoors. Check the program and the address.")
+                .description(if steam {
+                    "Steam connects to its game servers on these ports."
+                } else {
+                    "The program is connected to computers on the internet on ports that normal web, mail, SSH and time services don't use. Games and chat programs do this; so do botnets and remote-control backdoors. Check the program and the address."
+                })
                 .verify(format!("ss -tunap | grep -F -- {}", shq(&name)))
                 .verify(format!("getent hosts {}", list.first().map(|c| c.remote_addr.as_str()).unwrap_or(""))),
         );
