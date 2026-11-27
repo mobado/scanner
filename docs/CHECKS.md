@@ -356,7 +356,8 @@ A newer version records more kinds of files than an older baseline holds. Those 
 exactly what their package ships (also through a link the package ships) are not reported;
 those from no package that have not changed since before the baseline become one
 `BASE-PERSIST-WATCHED` line; only files changed after the baseline are listed one by one. All
-of them are taken into the automatic baseline after a clean scan as root.
+of them are taken into the automatic baseline after a clean scan as root; it counts as updated
+once such a scan has included both `persistence` and `desktop_session`.
 
 ### How an apt upgrade is verified
 

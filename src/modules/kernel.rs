@@ -141,7 +141,6 @@ fn check_modprobe_config(ctx: &ScanCtx, col: &mut Collector) {
         for name in ctx.sys.dir_names(dir) {
             let path = format!("{dir}/{name}");
             let Ok(text) = ctx.sys.read_string(&path) else { continue };
-            crate::modules::persistence::record(ctx, col, &path);
             for (i, line) in text.lines().enumerate() {
                 let t = line.trim();
                 let Some(rest) = t.strip_prefix("install ").or_else(|| t.strip_prefix("remove ")) else { continue };
@@ -157,11 +156,5 @@ fn check_modprobe_config(ctx: &ScanCtx, col: &mut Collector) {
                 }
             }
         }
-    }
-    for path in ["/etc/modules"] {
-        crate::modules::persistence::record(ctx, col, path);
-    }
-    for name in ctx.sys.dir_names("/etc/modules-load.d") {
-        crate::modules::persistence::record(ctx, col, &format!("/etc/modules-load.d/{name}"));
     }
 }

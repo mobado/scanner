@@ -178,9 +178,13 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
             base.bluetooth = report.inventory.bluetooth.clone();
             added.push("the Bluetooth devices".to_string());
         }
-        base.scanner_version = env!("CARGO_PKG_VERSION").to_string();
-        if added.is_empty() && base.save(path).is_ok() {
-            return AutoBaseline::NotNeeded;
+        // Until every module that records files has run, new kinds of files stay "newly
+        // tracked": otherwise a scan with a module left out would turn them into alarms.
+        if report.modules.iter().any(|m| m == "desktop_session") {
+            base.scanner_version = env!("CARGO_PKG_VERSION").to_string();
+            if added.is_empty() && base.save(path).is_ok() {
+                return AutoBaseline::NotNeeded;
+            }
         }
     }
     if added.is_empty() {

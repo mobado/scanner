@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.1
+* Fixed a false High alarm: `/var/lib/dpkg/diversions` was only recorded by the file permission
+  module, which the window's ordinary scan leaves out. That scan still marked the automatic
+  baseline as up to date, so the next full scan reported the file as new. Files the baseline
+  compares are now always recorded by `persistence`, and the baseline is only marked as updated
+  after a scan with both `persistence` and `desktop_session`.
+
 ## 0.13.0
 * Python code that runs at every start: `.pth` files, `sitecustomize.py`, `usercustomize.py`,
   also in virtual environments.

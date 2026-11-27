@@ -78,6 +78,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     startup::check_startup(ctx, col, &homes);
     editors::check_editors(ctx, col, &homes);
     packages::check_packages(ctx, col);
+    record_system_files(ctx, col);
     history::check_histories(ctx, col, &homes);
     system::check_duplicate_ids(ctx, col, &accounts);
     col.inventory.accounts = extra::collect_accounts(ctx, &accounts);
@@ -107,6 +108,23 @@ pub(crate) fn home_dirs(ctx: &ScanCtx, accounts: &[Account]) -> Vec<(String, u32
         }
     }
     out
+}
+
+/// Files that other modules judge (diversions, kernel module settings, firewall rules). The
+/// baseline compares files whenever persistence ran, so they are recorded here: a module that
+/// was left out of one scan must not make them look new or gone in the next.
+fn record_system_files(ctx: &ScanCtx, col: &mut Collector) {
+    for path in ["/var/lib/dpkg/diversions", "/etc/modules"] {
+        record(ctx, col, path);
+    }
+    for dir in ["/etc/modprobe.d", "/run/modprobe.d", "/etc/modules-load.d", "/etc/firewalld", "/etc/firewalld/zones", "/etc/firewalld/direct"] {
+        for name in ctx.sys.dir_names(dir) {
+            record(ctx, col, &format!("{dir}/{name}"));
+        }
+    }
+    for name in ["ufw.conf", "user.rules", "user6.rules", "before.rules", "after.rules"] {
+        record(ctx, col, &format!("/etc/ufw/{name}"));
+    }
 }
 
 /// Put the file's SHA-256 into the inventory (for the baseline).

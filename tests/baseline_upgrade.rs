@@ -2,7 +2,8 @@
 //! files (the case of a real root report: 4 high and 19 medium false alarms). Made-up files in
 //! a temporary directory; nothing on the real system is read or changed.
 
-use scanner::baseline::{newly_tracked, Baseline};
+use scanner::autobaseline::auto_save_to;
+use scanner::baseline::{self, newly_tracked, Baseline};
 use scanner::config::Config;
 use scanner::finding::Finding;
 use scanner::report::Report;
@@ -110,6 +111,49 @@ fn an_older_baseline_gives_one_quiet_line_instead_of_alarms() {
     let loud: Vec<(&str, &str)> = report.findings.iter().filter(|f| f.severity >= Severity::High).map(|f| (f.rule.as_str(), f.title.as_str())).collect();
     assert!(loud.iter().all(|f| !f.0.starts_with("BASE-")), "{loud:?}");
     assert!(report.findings.iter().all(|f| f.module != "baseline" || f.severity <= Severity::Medium));
+}
+
+#[test]
+fn leaving_a_module_out_does_not_make_watched_files_look_new() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/etc/passwd", "anna:x:1000:1000::/home/anna:/bin/bash\n");
+    for path in ["/var/lib/dpkg/diversions", "/etc/modprobe.d/own.conf", "/etc/ufw/ufw.conf", "/etc/modules"] {
+        write(root, path, "# x\n");
+    }
+    let sys = SysRoot::new(root);
+    let run = |modules: &[ModuleId]| run_scan(&sys, &Config::default(), &ScanOptions { modules: modules.to_vec(), ..ScanOptions::default() }, &|_| {});
+    // the window's ordinary scan leaves out the file permissions
+    let usual = run(&[ModuleId::NetProc, ModuleId::Persistence, ModuleId::DesktopSession, ModuleId::Kernel]);
+    for path in ["/var/lib/dpkg/diversions", "/etc/modprobe.d/own.conf", "/etc/ufw/ufw.conf", "/etc/modules"] {
+        assert!(usual.inventory.persistence_files.contains_key(path), "{path}");
+    }
+    // the other modules record no files that persistence does not
+    let others = run(&[ModuleId::NetProc, ModuleId::FsPerms, ModuleId::Kernel]);
+    assert!(others.inventory.persistence_files.is_empty(), "{:?}", others.inventory.persistence_files.keys());
+    let everything = run(&ModuleId::ALL);
+    let (changes, _) = baseline::compare(&Baseline::from_report(&usual), &everything.inventory, &everything.modules);
+    assert!(!changes.iter().any(|f| f.rule == "BASE-PERSIST-NEW" || f.rule == "BASE-PERSIST-REMOVED"), "{changes:?}");
+
+    // an old baseline moves to the new version only after a scan that records every file
+    let file = dir.path().join("auto.json");
+    let mut old = Baseline::from_report(&usual);
+    old.scanner_version = "0.9.0".into();
+    old.persistence_files.remove("/var/lib/dpkg/diversions");
+    old.save(&file).expect("save");
+    let as_root = |mut report: Report| {
+        report.scan_root = "/".into();
+        report.running_as_root = true;
+        report.findings.clear();
+        report.summary = Default::default();
+        report
+    };
+    auto_save_to(&as_root(run(&[ModuleId::Persistence])), &file);
+    let partial = Baseline::load(&file).expect("load");
+    assert_eq!(partial.scanner_version, "0.9.0");
+    assert!(partial.persistence_files.contains_key("/var/lib/dpkg/diversions"));
+    auto_save_to(&as_root(run(&[ModuleId::Persistence, ModuleId::DesktopSession])), &file);
+    assert_eq!(Baseline::load(&file).expect("load").scanner_version, env!("CARGO_PKG_VERSION"));
 }
 
 #[test]

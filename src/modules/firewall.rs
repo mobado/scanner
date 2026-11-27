@@ -5,7 +5,6 @@
 use super::common::clip;
 use super::net_proc::MODULE;
 use super::netwatch::is_public;
-use super::persistence::record;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use std::collections::BTreeSet;
@@ -106,14 +105,6 @@ fn open_ports(col: &Collector) -> String {
 }
 
 pub(crate) fn run(ctx: &ScanCtx, col: &mut Collector) {
-    for path in ["/etc/ufw/ufw.conf", "/etc/ufw/user.rules", "/etc/ufw/user6.rules", "/etc/ufw/before.rules", "/etc/ufw/after.rules", "/etc/nftables.conf"] {
-        record(ctx, col, path);
-    }
-    for dir in ["/etc/firewalld", "/etc/firewalld/zones", "/etc/firewalld/direct"] {
-        for name in ctx.sys.dir_names(dir) {
-            record(ctx, col, &format!("{dir}/{name}"));
-        }
-    }
     let live = (ctx.sys.is_live() && ctx.privileged)
         .then(|| crate::external_tools::find_binary("nft"))
         .flatten()

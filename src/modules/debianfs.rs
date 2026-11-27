@@ -5,7 +5,6 @@ use super::common::{clip, shq};
 use super::fs_perms::MODULE;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
-use crate::modules::persistence::record;
 
 /// On Debian 13 these are links into /usr.
 const MERGED: [(&str, &str); 4] = [("/bin", "usr/bin"), ("/sbin", "usr/sbin"), ("/lib", "usr/lib"), ("/lib64", "usr/lib64")];
@@ -46,7 +45,6 @@ pub fn diversions(text: &str) -> Vec<(String, String, String)> {
 fn check_diversions(ctx: &ScanCtx, col: &mut Collector) {
     let path = "/var/lib/dpkg/diversions";
     let Ok(text) = ctx.sys.read_string(path) else { return };
-    record(ctx, col, path);
     let local: Vec<String> = diversions(&text)
         .into_iter()
         .filter(|(from, _, package)| package == ":" && ["/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/", "/usr/lib/", "/lib/", "/usr/libexec/"].iter().any(|d| from.starts_with(d)))
