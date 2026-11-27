@@ -4,6 +4,24 @@ Every finding has a stable **rule id**. Use it in `ignore_rules` (whitelist) to 
 whole rule off, or look it up here. Severities are the usual level; some rules go up or down
 depending on the evidence (for example a binary deleted from `/usr` is Low, from `/home` High).
 
+## Levels and context
+
+| Level | Meaning |
+|-------|---------|
+| Critical / High | What was found is itself suspicious |
+| Medium | It works, but changes what runs or who sees your data |
+| Low | Worth a look |
+| Info | Ordinary desktop activity, listed on one line each; it never changes the verdict. Hidden in the window until you switch it on (`--min-severity low` leaves it out of reports) |
+
+* Findings about files in a home folder, Medium or lower, are marked **user level**: yours to
+  review, not a change to the system.
+* Low findings that are everyday life become Info, for example autostart entries for installed
+  programs, own session scripts, AppImages, downloads that can run, administrator actions and
+  busy programs; outgoing connections, listening ports and similar are Info when the program
+  comes from a package.
+* A finding about a process ends with a `context:` line: PID, parent, user, package and start
+  time. A finding about a file says its package (for system folders) and when it changed.
+
 ## Network and hidden processes (`net_proc`)
 
 | Rule | Usual level | Meaning |
@@ -40,6 +58,9 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-DNS-HANDED` | Low | DNS servers handed out by the network or VPN that are not well known |
 | `NET-DNS-LEAK` | Low | Traffic goes through a VPN but a DNS server sits on the local network |
 | `NET-PROMISC` | Medium | A network card in promiscuous (sniffing) mode (`IFF_PROMISC`) |
+| `NET-LOCAL-EXPOSED` | High/Medium | A service meant for this computer listens to the network: debuggers (High), databases, AI model and agent (MCP) servers, development servers, sync and torrent control pages |
+| `NET-LLMNR` | Info | Names are looked up by asking the local network (LLMNR, or mDNS by systemd-resolved) |
+| `NET-ROUTE-TABLE` | Low | Routes in separate tables, which the ordinary route list does not show (Tailscale's and wg-quick's are only noted) |
 | `NET-SNIFFER` | High–Low | A raw packet socket for all protocols (`/proc/net/packet`), mapped to its program; network services such as NetworkManager are skipped, tcpdump and Wireshark are Medium |
 | `NET-NAT-REDIRECT` | Low/Medium | Firewall rules (`nft`; Medium for old `iptables-legacy`) that redirect or forward traffic; Docker/libvirt rules are skipped (needs root; `nft` not in the timer service) |
 
@@ -70,7 +91,8 @@ every network, to one address, or only to this computer.
 | Rule | Usual level | Meaning |
 |------|-------------|---------|
 | `SVC-WEBSHELL` | Critical/High | A script in a web folder (`web_roots`) that runs what a visitor sends |
-| `SVC-CONTAINER-SOCKET` | Critical | The Docker/Podman/containerd socket is writable by everyone |
+| `SVC-CONTAINER-SOCKET` | Critical | The Docker/Podman/containerd socket (also a user's rootless one) is writable by everyone |
+| `SVC-PODMAN-API` | High | Podman's control service listens on the network |
 | `SVC-DOCKER-API` | High | The Docker API listens unencrypted on port 2375 |
 | `SVC-CONTAINER-PRIVILEGED` | High | Processes in a privileged container |
 | `SVC-CONTAINER-SOCKET-MOUNT` | High | The container engine socket is mounted into a container |
@@ -112,6 +134,8 @@ every network, to one address, or only to this computer.
 | `PROC-ENV-INJECT` | High–Low | A running program has a variable that loads code: `NODE_OPTIONS=--require`, `PYTHONSTARTUP`, `BASH_ENV`, `LD_AUDIT`, `PERL5OPT`, `RUBYOPT`, `-javaagent`, library paths in temporary folders … |
 | `PROC-SSH-SOCKET` | Medium | `SSH_AUTH_SOCK` points somewhere key agents do not normally put their socket |
 | `PROC-ENV-SECRETS` | Medium/Low | Programs carry API keys, tokens or passwords in their environment (**names only**, values are never reported); Medium when a browser, viewer or temporary program has one |
+| `PROC-SECRET-SERVICE` | High/Medium | Another program than the usual one answers as the password wallet (`org.freedesktop.secrets`, KWallet) or as the desktop portal on the session bus |
+| `PROC-KEY-LIBRARY` | High | SSH, GnuPG, sudo, OpenVPN or a wallet has loaded a library from a temporary or home folder |
 | `PROC-SECRET-CALL` | Critical–Low | A program asked the password wallet (Secret Service, GNOME Keyring, KWallet) for secrets while the scanner listened: full scan (`wallet_watch_secs` = 15) or `--watch-wallet SECS`. Medium for scripts and command line tools, High/Critical from odd folders; installed programs are only named in the notes. Passwords never pass through the scanner (`dbus-monitor --profile` shows who asked for what) |
 | `PROC-IO-URING` | High–Low | A program outside the system folders uses io_uring, which sidesteps system call monitoring |
 | `PROC-NAMESPACE` | High/Medium | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps, Steam), container, Snap or system service explains. A mount namespace alone only counts for programs in home or temporary folders |
@@ -134,6 +158,8 @@ every network, to one address, or only to this computer.
 | `FS-PACKAGE-CHANGED` | Critical | Any program in `/usr/bin` or `/usr/sbin` rewritten after its package was installed and no longer matching it |
 | `FS-TIMESTAMP` | Medium/Low | Times that do not fit (timestomping): a modification time later than the change time, or a file from no package in `/usr/bin`, `/usr/sbin` or startup folders in `/etc` dated long before it last changed |
 | `FS-SYSTEM-UNPACKAGED` | High | A PAM module that no package installed |
+| `FS-USRMERGE` | High | `/bin`, `/sbin`, `/lib` or `/lib64` is not the link into `/usr` that Debian 13 uses |
+| `FS-DIVERSION` | Medium | A system program or library diverted by hand with `dpkg-divert` |
 | `FS-DOWNLOAD-PROGRAM` | Low | Files in the download folder that are allowed to run (one finding per folder; `download_dirs` and the XDG setting) |
 | `FS-DOWNLOAD-DISGUISED` | Medium | A download that looks like a document but runs (`invoice.pdf.desktop`) |
 | `FS-SCRIPT-SUSPICIOUS` | High | A script in the download folder or `~/.local/bin` with a command typical of a break-in |
@@ -180,6 +206,13 @@ every network, to one address, or only to this computer.
 | `PERS-APT-THIRDPARTY` | Low | A software source whose host is not in `trusted_apt_hosts` (`*.debian.org`) |
 | `PERS-APT-HOOK` | Critical/High | apt runs a suspicious command (`apt.conf.d` hooks) |
 | `PERS-HISTORY` | High–Low | Suspicious commands in a shell history (reverse shells, history switched off, logs deleted, download-and-run …); only those lines are shown |
+| `PERS-KERNEL-HOOK` | Critical–Medium | A script in `/etc/kernel/*.d` or `initramfs/post-update.d` that no package installed; it runs as root at every kernel installation |
+| `PERS-UKI` | Info | Unified kernel images on the EFI partition (recorded, so the baseline notices a change) |
+| `PERS-QUADLET` | Critical–Info | A Podman Quadlet starts a container; Medium with host folders, host network or full privileges, higher with a suspicious command |
+| `PERS-GPG-PROGRAM` | High/Medium | GnuPG is set to run a pinentry, smart card or other program from an odd place or from no package |
+| `PERS-KEY-MODULE` | Critical–Medium | A PKCS#11 / p11-kit library (also in browser, SSH and OpenVPN settings) from an odd place or from no package, or a module that runs a command |
+| `PERS-APT-CONFIG` | Medium/Low | apt accepts unsigned or old lists, skips certificate checks, or uses a proxy (passwords are not shown) |
+| `PERS-APT-KEY` | Medium/Info | Signing keys from no package: trusted for every source (`trusted.gpg.d`), or only for the sources that name them |
 | `PERS-TRANSIENT-UNIT` | Critical–Medium | A service created on the fly (`systemd-run`) with a suspicious command |
 | `PERS-ENV-INJECT` | High–Low | `/etc/environment`, `environment.d`, `.pam_environment` or a shell start file sets a variable that loads code (as `PROC-ENV-INJECT`) |
 | `PERS-SYSACCT-SHELL` / `PERS-EMPTY-PASSWORD` / `PERS-SUDO-NOPASSWD` | High–Low | Account and sudo settings |
@@ -188,8 +221,8 @@ every network, to one address, or only to this computer.
 
 Everything tied to a graphical session. Each title starts with a label: `[xdg]` (shared
 standards), `[kde]`, `[gnome]`, `[xfce]`, `[wm]` (sway, i3 and other window managers),
-`[login]` (login screen), `[x11]`, `[input]`, `[remote]`, `[flatpak]`, `[snap]` and
-`[appimage]`.
+`[login]` (login screen), `[x11]`, `[input]`, `[remote]`, `[media]` (sound, camera, screen),
+`[portal]`, `[flatpak]`, `[snap]` and `[appimage]`.
 
 **Servers.** If the machine has no desktop session, login screen or X server installed and no
 graphical program running, only the keyboard check runs and the report notes it. A baseline
@@ -221,6 +254,18 @@ made then reports `BASE-DESKTOP-NEW` (High) when a desktop appears.
 | `DESK-APPIMAGE` | Low | AppImage programs in home folders (nothing verifies or updates them) |
 | `PERS-GNOME-EXTENSION` | Low | Own GNOME Shell extensions that are switched on (read from the dconf database) |
 | `PERS-X11-OPEN` | Medium | `xhost +` opens the X11 display to others |
+| `PERS-LAUNCHER` | Critical–Medium | A menu entry in a home folder with a suspicious command, one that starts something from a hidden, cache or download folder, or one that replaces an installed program's entry |
+| `DESK-AUTOLOGIN` | Medium | SDDM, GDM, LightDM or greetd logs a user in by itself |
+| `DESK-LINGER` | Low | Services of a user run without a login (lingering) |
+| `DESK-SESSION-REMOTE` / `-ROOT` | Medium/Info | A graphical session from another computer, or a desktop running as root |
+| `DESK-XSERVER-OPEN` | High | Xorg or Xwayland runs without access control or accepts network connections |
+| `DESK-XWAYLAND-KEYS` | Medium/Low | KDE lets X11 programs see all typing, or the mouse, under Wayland |
+| `DESK-INPUT-INJECT` | High–Low | A program that can type and click for you (`ydotool`, `wtype`, `xdotool`, holders of `/dev/uinput`) |
+| `DESK-INPUT-GROUP` / `-OPEN` | Medium / High | Users in the `input` group; keyboard devices open to everyone |
+| `DESK-AUDIO-EXEC` / `-NETWORK` / `-SCRIPT` / `-VIRTUAL` | High–Info | PipeWire/WirePlumber settings from no package that start programs, send audio over the network, run own scripts or add virtual devices |
+| `DESK-RECORDING` | High–Info | A program is recording sound or video right now (`pw-dump`); High from an odd place, Medium for recording tools |
+| `DESK-DEVICE-OPEN` | High–Info | A program holds the camera or microphone device itself |
+| `DESK-PORTAL-GRANT` | Low/Info | Apps with a remembered permission to control or record the screen (Low), or to use camera, microphone, location or the background |
 | `PROC-INPUT-READER` | High/Medium | A program that reads `/dev/input` directly and is not a known compositor, key or mouse tool (High from outside the system folders), known keyloggers, or `xinput test`. The report's notes also say whether each session is Wayland or X11 |
 
 ## Pending updates (`updates`)
@@ -273,6 +318,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-PERSIST-NEW` / `-CHANGED` / `-REMOVED` | High–Low | A persistence file appeared / changed / disappeared |
 | `BASE-SSH-KEY-NEW` | **Critical** | A new key in an `authorized_keys` file |
 | `BASE-BLUETOOTH-NEW` | High/Medium | A new paired Bluetooth device (High for a keyboard) |
+| `BASE-ADDON-NEW` | Medium | A browser add-on that was not switched on before |
 | `BASE-DEVICE-NEW` | Medium | A USB keyboard or Thunderbolt device that was not connected before |
 | `BASE-APPARMOR-OFF` | High | AppArmor or SELinux stopped protecting |
 | `BASE-DESKTOP-NEW` | High/Medium | A graphical desktop appeared on a machine that had none; a virtual or remote screen (Xvnc, x11vnc, Xvfb) started running |

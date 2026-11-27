@@ -156,6 +156,31 @@ pub fn verify_paths(sys: &SysRoot, paths: &[String], baseline_time: SystemTime) 
         .collect()
 }
 
+/// The package that owns each path (from the file lists and the recorded checksums).
+pub fn packages_of(sys: &SysRoot, paths: &[String]) -> HashMap<String, String> {
+    if paths.is_empty() {
+        return HashMap::new();
+    }
+    let mut owners: HashMap<String, String> = package_records(sys, paths).into_iter().filter_map(|(path, list)| Some((path, list.first()?.0.clone()))).collect();
+    let mut wanted: HashMap<String, &String> = HashMap::new(); // dpkg name → path
+    for p in paths {
+        for n in dpkg_names(p) {
+            wanted.insert(n, p);
+        }
+    }
+    for file in sys.dir_names("/var/lib/dpkg/info") {
+        let Some(pkg) = file.strip_suffix(".list") else { continue };
+        let Ok(text) = sys.read_string(format!("/var/lib/dpkg/info/{file}")) else { continue };
+        for line in text.lines() {
+            if let Some(path) = wanted.get(line.trim_start_matches('/')) {
+                // folders are in many lists; the first owner is enough
+                owners.entry((*path).clone()).or_insert_with(|| pkg.to_string());
+            }
+        }
+    }
+    owners
+}
+
 /// Which of these paths does an installed package own (listed in its file list, shipped
 /// with a checksum, or registered as a configuration file)?
 pub fn owned_paths(sys: &SysRoot, paths: &[String]) -> HashSet<String> {

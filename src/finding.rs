@@ -4,10 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-/// Severity. The order is Low < Medium < High < Critical,
-/// so `sort` + `rev` puts Critical first.
+/// Severity. The order is Info < Low < Medium < High < Critical,
+/// so `sort` + `rev` puts Critical first. Info is ordinary activity worth knowing about: it
+/// never changes the verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Severity {
+    Info,
     Low,
     Medium,
     High,
@@ -16,15 +18,17 @@ pub enum Severity {
 
 impl Severity {
     /// From most to least severe.
-    pub const ALL_DESC: [Severity; 4] = [
+    pub const ALL_DESC: [Severity; 5] = [
         Severity::Critical,
         Severity::High,
         Severity::Medium,
         Severity::Low,
+        Severity::Info,
     ];
 
     pub fn as_str(&self) -> &'static str {
         match self {
+            Severity::Info => "INFO",
             Severity::Low => "LOW",
             Severity::Medium => "MEDIUM",
             Severity::High => "HIGH",
@@ -35,6 +39,7 @@ impl Severity {
     /// Label for the terminal and the window.
     pub fn label(&self) -> &'static str {
         match self {
+            Severity::Info => "Info",
             Severity::Low => "Low",
             Severity::Medium => "Medium",
             Severity::High => "High",
@@ -45,6 +50,7 @@ impl Severity {
     /// ANSI colour code for terminal output.
     pub fn ansi(&self) -> &'static str {
         match self {
+            Severity::Info => "\x1b[37m",
             Severity::Low => "\x1b[36m",
             Severity::Medium => "\x1b[33m",
             Severity::High => "\x1b[31m",
@@ -55,6 +61,7 @@ impl Severity {
     /// Raise one step (Critical stays).
     pub fn bump(self) -> Severity {
         match self {
+            Severity::Info => Severity::Low,
             Severity::Low => Severity::Medium,
             Severity::Medium => Severity::High,
             Severity::High | Severity::Critical => Severity::Critical,
@@ -73,12 +80,13 @@ impl FromStr for Severity {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
+            "info" | "i" => Ok(Severity::Info),
             "low" | "l" => Ok(Severity::Low),
             "medium" | "med" | "m" => Ok(Severity::Medium),
             "high" | "h" => Ok(Severity::High),
             "critical" | "crit" | "c" => Ok(Severity::Critical),
             other => Err(format!(
-                "unknown severity '{other}' (use low, medium, high or critical)"
+                "unknown severity '{other}' (use info, low, medium, high or critical)"
             )),
         }
     }
@@ -101,6 +109,10 @@ pub struct Finding {
     /// Concrete commands for manual verification.
     #[serde(default)]
     pub verify: Vec<String>,
+    /// About a user's own files (autostart, shell files, settings): something to review,
+    /// not a change to the system.
+    #[serde(default)]
+    pub user_level: bool,
 }
 
 impl Finding {
@@ -113,6 +125,7 @@ impl Finding {
             evidence: String::new(),
             description: String::new(),
             verify: Vec::new(),
+            user_level: false,
         }
     }
 

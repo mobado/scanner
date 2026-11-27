@@ -112,7 +112,7 @@ fn desktop_settings_that_run_commands_or_reroute() {
     assert_eq!(of(&report, "PERS-SCREEN-LOCK").len(), 1);
     assert_eq!(of(&report, "PERS-GNOME-EXTENSION").len(), 1);
     assert_eq!(of(&report, "PERS-X11-OPEN").len(), 1);
-    assert_eq!(of(&report, "PERS-DBUS-SERVICE").iter().map(|f| f.0).collect::<Vec<_>>(), vec![Severity::Medium]);
+    assert_eq!(of(&report, "PERS-DBUS-SERVICE").iter().map(|f| f.0).collect::<Vec<_>>(), vec![Severity::High]);
     assert_eq!(of(&report, "PERS-PORTAL").len(), 1);
     assert!(!report.inventory.persistence_files.keys().any(|k| k.ends_with("ksmserverrc")), "session state changes at every logout");
 }
@@ -138,7 +138,7 @@ fn autostart_replacements_and_unknown_programs() {
     assert_eq!(auto.len(), 3, "{auto:?}");
     assert!(auto.iter().any(|(s, t)| *s == Severity::Medium && t.contains("replaces a system entry")));
     assert!(auto.iter().any(|(s, t)| *s == Severity::Medium && t.ends_with("helper.desktop") && t.contains("no package")));
-    assert!(auto.iter().any(|(s, t)| *s == Severity::Low && t.ends_with("app.desktop")));
+    assert!(auto.iter().any(|(s, t)| *s == Severity::Info && t.ends_with("app.desktop")));
 }
 
 #[test]

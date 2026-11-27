@@ -24,12 +24,16 @@ const ACCENT: Color32 = Color32::from_rgb(0x3d, 0xa5, 0x8a);
 const OK: Color32 = Color32::from_rgb(0x4c, 0xb8, 0x6b);
 const WARN: Color32 = Color32::from_rgb(0xe0, 0x9b, 0x2d);
 
+/// Which levels the list shows at first: all but Info (order as `Severity::ALL_DESC`).
+const DEFAULT_SHOWN: [bool; 5] = [true, true, true, true, false];
+
 fn sev_color(s: Severity) -> Color32 {
     match s {
         Severity::Critical => Color32::from_rgb(0xe0, 0x3e, 0x52),
         Severity::High => Color32::from_rgb(0xf0, 0x7a, 0x3a),
         Severity::Medium => Color32::from_rgb(0xe4, 0xc0, 0x3c),
         Severity::Low => Color32::from_rgb(0x4a, 0x9a, 0xd4),
+        Severity::Info => Color32::from_rgb(0x8b, 0x98, 0xa8),
     }
 }
 
@@ -71,7 +75,7 @@ pub struct ScannerApp {
     progress: Arc<Mutex<String>>,
     report: Option<Report>,
     self_test: Option<SelfTestResult>,
-    show_sev: [bool; 4],
+    show_sev: [bool; 5],
     module_filter: String,
     /// Show only what differs from the baseline.
     only_changes: bool,
@@ -119,7 +123,8 @@ impl ScannerApp {
             progress: Arc::new(Mutex::new(String::new())),
             report: None,
             self_test: None,
-            show_sev: [true; 4],
+            // Info is ordinary activity: hidden until asked for
+            show_sev: DEFAULT_SHOWN,
             module_filter: "all".into(),
             only_changes: false,
             search: String::new(),
@@ -157,7 +162,7 @@ impl ScannerApp {
             deep_pid_scan: self.deep_pid,
             watch_wallet_secs: None,
             baseline_compare: (!self.baseline_compare.trim().is_empty()).then(|| PathBuf::from(self.baseline_compare.trim())),
-            min_severity: Severity::Low,
+            min_severity: Severity::Info,
         };
         if opts.modules.is_empty() && opts.tools.is_empty() {
             self.status = "Choose at least one module or tool.".into();
@@ -264,7 +269,8 @@ impl ScannerApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
-        let ready = (shot.frames >= 120 && !busy) || shot.frames >= 1200;
+        // a fast screen draws thousands of frames while the scan runs, so the limit is a time
+        let ready = (shot.frames >= 120 && !busy) || ctx.input(|i| i.time) >= 15.0;
         if ready && !shot.requested {
             shot.requested = true;
             let path = shot.path.clone();
@@ -486,9 +492,9 @@ impl ScannerApp {
         let counts: Vec<usize> = Severity::ALL_DESC.iter().map(|s| r.summary.count(*s)).collect();
         let (total, secs, procs) = (r.summary.total, r.duration_ms as f64 / 1000.0, r.inventory.process_count);
         let mut clicked: Option<usize> = None;
-        let only = |show: &[bool; 4], i: usize| show.iter().enumerate().all(|(j, on)| *on == (j == i));
+        let only = |show: &[bool; 5], i: usize| show.iter().enumerate().all(|(j, on)| *on == (j == i));
         let show = self.show_sev;
-        ui.columns(5, |cols| {
+        ui.columns(6, |cols| {
             for (i, sev) in Severity::ALL_DESC.iter().enumerate() {
                 let n = counts[i];
                 let active = only(&show, i);
@@ -511,7 +517,7 @@ impl ScannerApp {
                     clicked = Some(i);
                 }
             }
-            egui::Frame::new().fill(CARD).stroke(Stroke::new(1.0, BORDER)).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(12, 8)).show(&mut cols[4], |ui| {
+            egui::Frame::new().fill(CARD).stroke(Stroke::new(1.0, BORDER)).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(12, 8)).show(&mut cols[5], |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(total.to_string()).size(26.0).strong());
@@ -524,9 +530,9 @@ impl ScannerApp {
         });
         if let Some(i) = clicked {
             if only(&self.show_sev, i) {
-                self.show_sev = [true; 4];
+                self.show_sev = DEFAULT_SHOWN;
             } else {
-                self.show_sev = [false; 4];
+                self.show_sev = [false; 5];
                 self.show_sev[i] = true;
             }
             self.tab = Tab::Findings;
@@ -570,7 +576,7 @@ impl ScannerApp {
             .iter()
             .enumerate()
             .filter(|(_, f)| {
-                let idx = Severity::ALL_DESC.iter().position(|s| *s == f.severity).unwrap_or(3);
+                let idx = Severity::ALL_DESC.iter().position(|s| *s == f.severity).unwrap_or(4);
                 self.show_sev[idx]
                     && (self.module_filter == "all" || f.module == self.module_filter)
                     && (!self.only_changes || r.baseline_compared.is_none() || f.module == scanner::baseline::MODULE)
@@ -1035,11 +1041,12 @@ fn list_row(ui: &mut egui::Ui, f: &Finding, selected: bool) -> egui::Response {
 fn finding_detail(ui: &mut egui::Ui, ctx: &egui::Context, f: &Finding) -> Option<HideAction> {
     let mut action = None;
     let c = sev_color(f.severity);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         egui::Frame::new().fill(c).corner_radius(CornerRadius::same(4)).inner_margin(Margin::symmetric(8, 2)).show(ui, |ui| {
             ui.label(RichText::new(f.severity.label().to_uppercase()).small().strong().color(Color32::BLACK));
         });
-        ui.label(RichText::new(format!("{} · {}", f.module, f.rule)).color(MUTED));
+        let level = if f.user_level { " · user level" } else { "" };
+        ui.label(RichText::new(format!("{} · {}{level}", f.module, f.rule)).color(MUTED));
     });
     ui.add_space(6.0);
     ui.label(RichText::new(&f.title).size(18.0).strong().color(Color32::WHITE));

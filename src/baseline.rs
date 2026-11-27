@@ -50,6 +50,8 @@ pub struct Baseline {
     pub bluetooth: Option<Vec<String>>,
     #[serde(default)]
     pub peripherals: Option<Vec<String>>,
+    #[serde(default)]
+    pub addons: Option<Vec<String>>,
 }
 
 /// The parts of a recorded key that identify it: the file and the fingerprint.
@@ -72,6 +74,16 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
                     .description("Whoever holds the private half of this key can log in as this user without a password. Unless you added it, remove the line and treat the machine as broken into.")
                     .verify(format!("ssh-keygen -lf {}", shq(&file)))
                     .verify(format!("ls -l --time-style=full-iso {}", shq(&file))),
+            );
+        }
+    }
+    if let (true, Some(old), Some(new)) = (both("fs_perms"), &base.addons, &inv.addons) {
+        for addon in new.iter().filter(|a| !old.contains(a)) {
+            out.push(
+                Finding::new(Severity::Medium, MODULE, "BASE-ADDON-NEW", format!("New browser add-on since the baseline: {}", crate::modules::common::clip(addon.rsplit(": ").next().unwrap_or(addon), 80)))
+                    .evidence(format!("{addon}\n(compared with {src})"))
+                    .description("Add-ons can read pages and passwords as you type them. Check that you installed this one.")
+                    .verify("Open the browser's add-on page and look for it"),
             );
         }
     }
@@ -113,7 +125,23 @@ pub fn newly_tracked(path: &str) -> bool {
 
 /// Kinds of files that later versions started to track: in a baseline made by an older
 /// version they are new to the baseline, not suspicious.
-pub const NEWLY_TRACKED: [&str; 68] = [
+pub const NEWLY_TRACKED: [&str; 84] = [
+    "/.local/share/applications/",
+    "/pipewire/",
+    "/wireplumber/",
+    "/systemd/linger/",
+    "/.gnupg/",
+    "pkcs11",
+    "/p11-kit/modules/",
+    "/var/lib/dpkg/diversions",
+    "/usr/share/keyrings/",
+    "/etc/kernel/",
+    "/etc/initramfs/post-update.d/",
+    "/EFI/Linux/",
+    "/containers/systemd/",
+    "/kwin/effects/",
+    "/etc/greetd/",
+    "/etc/sddm.conf.d/",
     "/etc/environment.d/",
     "/usr/local/lib/environment.d/",
     "/.config/environment.d/",
@@ -217,6 +245,7 @@ impl Baseline {
             ssh_keys: r.inventory.ssh_keys.clone(),
             bluetooth: r.inventory.bluetooth.clone(),
             peripherals: r.inventory.peripherals.clone(),
+            addons: r.inventory.addons.clone(),
         }
     }
 

@@ -15,6 +15,7 @@ pub mod autobaseline;
 pub mod baseline;
 pub mod config;
 pub mod config_update;
+pub mod context;
 pub mod error;
 pub mod external_tools;
 pub mod finding;

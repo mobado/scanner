@@ -180,8 +180,7 @@ fn check_hidden(ctx: &ScanCtx, col: &mut Collector, home: &str) {
     if total > SHOWN {
         col.note(format!("{} more hidden program files in {home} were not listed", total - SHOWN));
     }
-    let bin = format!("{home}/.local/bin");
-    for entry in files(ctx, &bin, 1) {
+    for entry in [".local/bin", "bin"].iter().flat_map(|d| files(ctx, &format!("{home}/{d}"), 1)) {
         let name = entry.file_name().to_string_lossy().to_lowercase();
         if looks_like_script(&name, program_kind(entry.path())) {
             if let Some(line) = suspicious_line(ctx, &entry) {

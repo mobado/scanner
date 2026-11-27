@@ -11,6 +11,8 @@ pub struct Summary {
     pub high: usize,
     pub medium: usize,
     pub low: usize,
+    #[serde(default)]
+    pub info: usize,
     pub total: usize,
 }
 
@@ -21,6 +23,7 @@ impl Summary {
             Severity::High => self.high,
             Severity::Medium => self.medium,
             Severity::Low => self.low,
+            Severity::Info => self.info,
         }
     }
 }
@@ -78,6 +81,7 @@ impl Report {
                 Severity::High => s.high += 1,
                 Severity::Medium => s.medium += 1,
                 Severity::Low => s.low += 1,
+                Severity::Info => s.info += 1,
             }
         }
         s.total = self.findings.len();
@@ -123,7 +127,7 @@ impl Report {
             VerdictLevel::Alarm => "ALARM",
         };
         let s = &self.summary;
-        format!("{tag} {}: {} ({} critical, {} high, {} medium, {} low)", self.hostname, v.headline, s.critical, s.high, s.medium, s.low)
+        format!("{tag} {}: {} ({} critical, {} high, {} medium, {} low, {} info)", self.hostname, v.headline, s.critical, s.high, s.medium, s.low, s.info)
     }
 
     /// A plain-language conclusion for people who do not read every finding.
@@ -202,8 +206,8 @@ impl Report {
         let s = &self.summary;
         let _ = writeln!(
             o,
-            "{bold} SUMMARY:{reset} {} critical · {} high · {} medium · {} low  ({} findings in total)",
-            s.critical, s.high, s.medium, s.low, s.total
+            "{bold} SUMMARY:{reset} {} critical · {} high · {} medium · {} low · {} info  ({} findings in total)",
+            s.critical, s.high, s.medium, s.low, s.info, s.total
         );
         let v = self.verdict();
         let _ = writeln!(o, "{bold} VERDICT:{reset} {}", v.headline);
@@ -219,9 +223,17 @@ impl Report {
             let tag = if color { format!("{} {} {reset}", sev.ansi(), sev.label().to_uppercase()) } else { format!("[{}]", sev.label().to_uppercase()) };
             let _ = writeln!(o, "{tag} {bold}{} finding(s){reset}", group.len());
             let _ = writeln!(o, "{}", "─".repeat(78));
+            // ordinary activity: one line each, so it does not bury the rest
+            if sev == Severity::Info {
+                let _ = writeln!(o, "   Ordinary activity, listed for review. The JSON and HTML reports have the details.");
+                for f in &group {
+                    let _ = writeln!(o, "  • {}{}  {dim}({}){reset}", if f.user_level { "[user] " } else { "" }, f.title, f.rule);
+                }
+                continue;
+            }
             for (i, f) in group.iter().enumerate() {
                 let _ = writeln!(o, "{bold}{}. {}{reset}", i + 1, f.title);
-                let _ = writeln!(o, "   {dim}module {} · rule {}{reset}", f.module, f.rule);
+                let _ = writeln!(o, "   {dim}module {} · rule {}{}{reset}", f.module, f.rule, if f.user_level { " · user level (your own files): review" } else { "" });
                 if !f.description.is_empty() {
                     let _ = writeln!(o, "   {}", f.description);
                 }

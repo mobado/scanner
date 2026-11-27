@@ -40,19 +40,20 @@ pre{background:#12161c;padding:8px;border-radius:4px;overflow:auto;font-size:13p
             esc(&v.detail)
         ));
         let s = &self.summary;
-        o.push_str(&format!("<p>{} critical · {} high · {} medium · {} low ({} total)</p>", s.critical, s.high, s.medium, s.low, s.total));
+        o.push_str(&format!("<p>{} critical · {} high · {} medium · {} low · {} info ({} total)</p>", s.critical, s.high, s.medium, s.low, s.info, s.total));
         for f in &self.findings {
             let c = match f.severity {
                 Severity::Critical => "#e03e52",
                 Severity::High => "#f07a3a",
                 Severity::Medium => "#e4c03c",
                 Severity::Low => "#4a9ad4",
+                Severity::Info => "#8b98a8",
             };
             o.push_str(&format!(
                 "<div class=\"f\" style=\"border-color:{c}\"><span class=\"tag\" style=\"background:{c}\">{}</span> <span class=\"muted\">{} · {}</span><h3>{}</h3>",
                 f.severity.label().to_uppercase(),
                 esc(&f.module),
-                esc(&f.rule),
+                esc(&format!("{}{}", f.rule, if f.user_level { " · user level" } else { "" })),
                 esc(&f.title)
             ));
             if !f.description.is_empty() {

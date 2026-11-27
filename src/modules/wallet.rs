@@ -63,7 +63,7 @@ pub fn judge_caller(cfg: &Config, names: &[String], exe: &str) -> (Severity, &'s
 }
 
 /// A user's session bus: (uid, gid, address).
-fn sessions(ctx: &ScanCtx) -> Vec<(u32, u32, String)> {
+pub(crate) fn sessions(ctx: &ScanCtx) -> Vec<(u32, u32, String)> {
     let own: Option<u32> = ctx.sys.read_string("/proc/self/status").ok().and_then(|s| crate::procinfo::status_field(&s, "Uid").and_then(|v| v.split_whitespace().next().and_then(|u| u.parse().ok())));
     let passwd = ctx.sys.read_string("/etc/passwd").unwrap_or_default();
     passwd
@@ -81,7 +81,7 @@ fn sessions(ctx: &ScanCtx) -> Vec<(u32, u32, String)> {
 
 /// The command that runs `program` on the user's bus: as that user when the scan runs as root,
 /// because a session bus only talks to its owner.
-fn as_user(ctx: &ScanCtx, uid: u32, gid: u32, program: PathBuf, args: Vec<String>) -> Option<(PathBuf, Vec<String>)> {
+pub(crate) fn as_user(ctx: &ScanCtx, uid: u32, gid: u32, program: PathBuf, args: Vec<String>) -> Option<(PathBuf, Vec<String>)> {
     if !ctx.privileged || uid == 0 {
         return Some((program, args));
     }
@@ -137,6 +137,54 @@ fn listen(ctx: &ScanCtx, uid: u32, gid: u32, address: &str, secs: u64) -> Option
     let _ = child.kill();
     let _ = child.wait();
     (!failed).then(|| calls.into_values().collect())
+}
+
+/// Names on the session bus that receive passwords or hand out files and the screen, with the
+/// programs that normally provide them.
+const OWNERS: [(&str, &[&str]); 4] = [
+    ("org.freedesktop.secrets", &["gnome-keyring-daemon", "gnome-keyring-d", "ksecretd", "kwalletd5", "kwalletd6", "keepassxc", "oo7-daemon"]),
+    ("org.kde.kwalletd6", &["ksecretd", "kwalletd6"]),
+    ("org.kde.kwalletd5", &["ksecretd", "kwalletd5", "kwalletd6"]),
+    ("org.freedesktop.portal.Desktop", &["xdg-desktop-portal", "xdg-desktop-por"]),
+];
+
+/// How worrying it is that this program answers to the name. `None` for the usual providers.
+pub fn judge_owner(cfg: &Config, name: &str, program: &[String], exe: &str) -> Option<Severity> {
+    let usual = OWNERS.iter().find(|o| o.0 == name)?.1;
+    let installed = ["/usr/", "/opt/", "/app/", "/snap/"].iter().any(|d| exe.starts_with(d)) && !exe.starts_with("/usr/local/");
+    if installed && program.iter().any(|p| usual.contains(&p.as_str())) {
+        None
+    } else if !installed || cfg.is_temp_path(exe) || risky_home_place(exe, cfg).is_some() {
+        Some(Severity::High)
+    } else {
+        Some(Severity::Medium)
+    }
+}
+
+/// Who answers when a program asks for saved passwords or for the screen?
+pub(crate) fn check_owners(ctx: &ScanCtx, col: &mut Collector) {
+    if !ctx.sys.is_live() {
+        return;
+    }
+    for (uid, gid, address) in sessions(ctx) {
+        let mut usual = Vec::new();
+        for (name, _) in OWNERS {
+            // a name nobody holds gives no answer
+            let Some(p) = caller(ctx, uid, gid, &address, name) else { continue };
+            match judge_owner(ctx.cfg, name, &p.candidate_names(), p.exe_path().unwrap_or("")) {
+                None => usual.push(format!("{name}: {}", p.display_name())),
+                Some(severity) => col.push(
+                    Finding::new(severity, MODULE, "PROC-SECRET-SERVICE", format!("An unusual program answers as {name}: {}", p.display_name()))
+                        .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\nholds {name} on the session bus of user {uid}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300)))
+                        .description("Programs send passwords to whoever holds this name, or ask it for files and screen pictures. Another wallet program you chose looks like this; so does an impostor.")
+                        .verify(format!("busctl --user status {name}")),
+                ),
+            }
+        }
+        if !usual.is_empty() {
+            col.note(format!("Session bus of user {uid}: {}", usual.join(", ")));
+        }
+    }
 }
 
 pub(crate) fn watch(ctx: &ScanCtx, col: &mut Collector) {

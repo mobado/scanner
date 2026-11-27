@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.12.0
+* New level **Info** for ordinary desktop activity: one line each, never changes the verdict,
+  hidden in the window until switched on. Findings about your own files are marked user level.
+* Every finding about a process or file says parent process, user, package and time.
+* Desktop: automatic login, lingering users, remote and root sessions, weakened KDE screen
+  lock, open X servers, KDE's X11 key access, programs that type for you, the input group,
+  menu entries in home folders.
+* Sound and screen: PipeWire/WirePlumber commands and network audio, programs recording,
+  camera and microphone devices, portal permissions.
+* Keys: GnuPG helper programs, PKCS#11 and p11-kit libraries, libraries loaded into key
+  programs, who answers as the password wallet and desktop portal.
+* Network: services that should only listen locally (debuggers, databases, AI and development
+  servers), LLMNR, separate routing tables.
+* Containers: Podman Quadlets, rootless sockets and the Podman API; scripts in `~/bin`.
+* Debian: merged `/usr` links, hand-made diversions, apt download settings and signing keys,
+  kernel installation hooks, unified kernel images.
+* Baseline: new browser add-ons.
+
 ## 0.11.1
 Fewer false alarms:
 * KDE screen lock: the password box closing after a fingerprint or smart card unlock is no

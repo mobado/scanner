@@ -15,7 +15,9 @@ settings, keyboard readers, remote desktop programs, Flatpak and Snap permission
 rules, downloads and browser add-ons, programs holding saved passwords or cookies open, keys
 and tokens that others can read, environment variables that load code, io_uring and unexplained
 namespaces, suspicious USB and Thunderbolt devices, packet sniffers, Bluetooth, file sharing
-and DNS settings, boot options, AppArmor, failed logins and administrator actions, and pending
+and DNS settings, automatic login and open X servers, programs recording sound or the screen,
+GnuPG and PKCS#11 libraries, local services open to the network, Podman containers, apt keys
+and settings, boot options, AppArmor, failed logins and administrator actions, and pending
 updates.
 It can also run debsums, chkrootkit, rkhunter and lynis.
 .PP
@@ -60,6 +62,10 @@ Walk the whole PID range to find hidden processes (slower).
 .BI \-\-watch\-wallet " SECS"
 Listen this long for programs asking the password wallet (Secret Service, KWallet). The full
 scan listens 15 seconds. Passwords never pass through the scanner.
+.TP
+.BI \-\-min\-severity " LEVEL"
+Show only findings from this level up: info (the default), low, medium, high or critical.
+Info is ordinary desktop activity; it is listed on one line each and never changes the verdict.
 .TP
 .BI \-\-baseline\-save " FILE"
 Save a baseline of SUID/SGID files, listening ports and persistence files.

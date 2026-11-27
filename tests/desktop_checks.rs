@@ -89,12 +89,12 @@ fn autostart_session_scripts_and_polkit() {
     let auto = of(&report, "PERS-AUTOSTART");
     assert_eq!(auto.len(), 4, "{auto:?}");
     assert!(has(&auto, "added.desktop", Severity::Medium));
-    assert!(has(&auto, "sync.desktop", Severity::Low));
+    assert!(has(&auto, "sync.desktop", Severity::Info));
     assert!(has(&auto, "own.desktop", Severity::Medium));
     assert!(has(&auto, "bad.desktop", Severity::Critical));
     let scripts = of(&report, "PERS-SESSION-SCRIPT");
     assert!(has(&scripts, "99extra", Severity::Critical) || has(&scripts, "99extra", Severity::High), "{scripts:?}");
-    assert!(has(&scripts, "path.sh", Severity::Low), "{scripts:?}");
+    assert!(has(&scripts, "path.sh", Severity::Info), "{scripts:?}");
     assert!(!scripts.iter().any(|(_, t)| t.ends_with("20x11-common")));
     assert_eq!(of(&report, "PERS-DM-SCRIPT").len(), 1);
     let polkit = of(&report, "PERS-POLKIT");
@@ -128,7 +128,7 @@ fn downloads_and_hidden_programs() {
 
     let programs = of(&report, "FS-DOWNLOAD-PROGRAM");
     assert_eq!(programs.len(), 1, "{programs:?}");
-    assert!(has(&programs, "/home/anna/Fetched", Severity::Low));
+    assert!(has(&programs, "/home/anna/Fetched", Severity::Info));
     assert!(has(&of(&report, "FS-DOWNLOAD-DISGUISED"), "faktura.pdf.desktop", Severity::Medium));
     let scripts = of(&report, "FS-SCRIPT-SUSPICIOUS");
     assert_eq!(scripts.len(), 1, "{scripts:?}");
@@ -219,7 +219,7 @@ fn appimages_busy_programs_and_downloads_that_run() {
     let busy = of(&report, "PROC-HIGH-CPU");
     assert_eq!(busy.len(), 2, "{busy:?}");
     assert!(has(&busy, "worker", Severity::Medium) && has(&busy, "game", Severity::Medium));
-    assert!(has(&of(&report, "PROC-APPIMAGE"), "tool", Severity::Low));
+    assert!(has(&of(&report, "PROC-APPIMAGE"), "tool", Severity::Info));
     assert!(of(&report, "PROC-TMP-EXE").is_empty());
     assert!(has(&of(&report, "PROC-HOME-EXE"), "Downloads/game", Severity::Medium));
 }

@@ -114,7 +114,7 @@ fn variables_that_load_code_and_secrets_are_never_printed() {
     let report = scan(root, &[ModuleId::ProcAudit, ModuleId::Persistence]);
     assert_eq!(levels(&report, "PROC-ENV-INJECT"), vec![Severity::High]);
     assert_eq!(levels(&report, "PROC-SSH-SOCKET"), vec![Severity::Medium]);
-    assert_eq!(levels(&report, "PROC-ENV-SECRETS"), vec![Severity::Low]);
+    assert_eq!(levels(&report, "PROC-ENV-SECRETS"), vec![Severity::Info]);
     assert_eq!(levels(&report, "PERS-ENV-INJECT"), vec![Severity::High]);
     assert!(of(&report, "PROC-ENV-SECRETS")[0].evidence.contains("OPENAI_API_KEY"));
     let everything = serde_json::to_string(&report).expect("json");
@@ -250,7 +250,7 @@ fn bad_usb_thunderbolt_and_new_devices() {
     let after = scan(root, &[ModuleId::Kernel]);
     assert_eq!(levels(&after, "KERN-USB-BADUSB"), vec![Severity::High]);
     assert_eq!(levels(&after, "KERN-THUNDERBOLT-OPEN"), vec![Severity::Medium]);
-    assert_eq!(levels(&after, "KERN-THUNDERBOLT"), vec![Severity::Low]);
+    assert_eq!(levels(&after, "KERN-THUNDERBOLT"), vec![Severity::Info]);
     let (changes, _) = baseline::compare(&Baseline::from_report(&before), &after.inventory, &after.modules);
     assert_eq!(changes.iter().filter(|f| f.rule == "BASE-DEVICE-NEW").count(), 2);
 }

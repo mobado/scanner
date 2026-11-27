@@ -64,6 +64,12 @@ fn without_password(value: &str) -> String {
 
 // ---------------------------------------------------------------- D-Bus services and portals
 
+/// Service names that give whoever owns them passwords, files or the screen.
+const SENSITIVE_NAMES: [&str; 6] = [
+    "org.freedesktop.secrets", "org.kde.kwalletd5", "org.kde.kwalletd6", "org.freedesktop.portal.Desktop",
+    "org.freedesktop.impl.portal.Secret", "org.freedesktop.impl.portal.PermissionStore",
+];
+
 fn check_dbus_and_portals(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, has_dpkg: bool) {
     // names that the installed system already provides
     let system: HashSet<String> = ctx
@@ -85,13 +91,19 @@ fn check_dbus_and_portals(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, has
             let (service, exec) = (get("Name"), get("Exec"));
             let judged = judge_desktop_command(ctx, &exec);
             let replaces = system.contains(&service);
+            // whoever answers to these names gets passwords, files or the screen
+            let sensitive = SENSITIVE_NAMES.contains(&service.as_str());
             let severity = match &judged {
+                _ if sensitive => Severity::High,
                 Some((s, _)) => (*s).max(Severity::Medium),
                 None if replaces => Severity::Medium,
                 None => Severity::Low,
             };
             let mut evidence = vec![format!("Name={service}"), format!("Exec={exec}")];
             evidence.extend(judged.map(|(_, why)| why));
+            if sensitive {
+                evidence.push("this name hands out saved passwords or access to files and the screen".into());
+            }
             if replaces {
                 evidence.push("a service with this name is installed with the system; this file takes its place".into());
             }
@@ -124,6 +136,24 @@ fn check_dbus_and_portals(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, has
 /// Lines "key=value" whose key starts with `prefix`.
 fn values_of(text: &str, prefix: &str) -> Vec<String> {
     parse_unit(text).into_iter().filter(|(_, k, v)| k.starts_with(prefix) && !v.is_empty()).map(|(_, _, v)| v).collect()
+}
+
+/// Settings in kscreenlockerrc that weaken the lock.
+pub fn weak_kde_lock(text: &str) -> Vec<String> {
+    parse_unit(text)
+        .into_iter()
+        .filter(|(g, k, v)| {
+            g == "Daemon"
+                && match k.as_str() {
+                    "Autolock" | "LockOnResume" | "RequirePassword" => v == "false",
+                    "Timeout" => v == "0",
+                    // seconds after locking during which no password is asked
+                    "LockGrace" => v.parse::<u64>().map(|n| n > 300).unwrap_or(false),
+                    _ => false,
+                }
+        })
+        .map(|(_, k, v)| format!("{k}={v}"))
+        .collect()
 }
 
 /// Window rules that make windows invisible: the names of the rule groups.
@@ -172,6 +202,11 @@ fn check_kde(ctx: &ScanCtx, col: &mut Collector, home: &str) {
         .read_string(format!("{config}/kwinrc"))
         .map(|t| parse_unit(&t).into_iter().filter(|(g, k, v)| g == "Plugins" && k.ends_with("Enabled") && v == "true").map(|(_, k, _)| k.trim_end_matches("Enabled").to_string()).collect())
         .unwrap_or_default();
+    let effects = format!("{home}/.local/share/kwin/effects");
+    for id in ctx.sys.dir_names(&effects) {
+        record(ctx, col, &format!("{effects}/{id}/metadata.json"));
+        record(ctx, col, &format!("{effects}/{id}/contents/code/main.js"));
+    }
     let scripts = format!("{home}/.local/share/kwin/scripts");
     for id in ctx.sys.dir_names(&scripts) {
         let mut code = String::new();
@@ -207,8 +242,10 @@ fn check_kde(ctx: &ScanCtx, col: &mut Collector, home: &str) {
     }
     let locker = format!("{config}/kscreenlockerrc");
     if let Ok(text) = ctx.sys.read_string(&locker) {
-        if parse_unit(&text).iter().any(|(g, k, v)| g == "Daemon" && k == "Autolock" && v == "false") {
-            setting_finding(col, Severity::Low, "PERS-SCREEN-LOCK", format!("The automatic screen lock is switched off: {locker}"), &locker, vec!["Autolock=false".into()], "The screen stays open when you leave. Switch on automatic locking if you did not choose this.");
+        let weak = weak_kde_lock(&text);
+        if !weak.is_empty() {
+            let severity = if weak.iter().any(|w| w.starts_with("RequirePassword")) { Severity::Medium } else { Severity::Low };
+            setting_finding(col, severity, "PERS-SCREEN-LOCK", format!("The screen lock is weakened: {locker}"), &locker, weak, "The screen can stay open, or open again without a password, when you leave. Change it in System Settings, Screen Locking, if you did not choose this.");
         }
     }
     let proxy = format!("{config}/kioslaverc");

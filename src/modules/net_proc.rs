@@ -430,7 +430,21 @@ fn check_socket_owner(
         }
     }
 
-    if s.is_listening() {
+    // a database, debugger, AI or development server that the whole network can reach
+    let exposed = s.is_listening() && !ip_is_loopback(&s.local.ip()) && !ip_is_link_local(&s.local.ip()) && !cfg.is_listen_allowed(s.proto.family(), s.local.port()) && !is_shell;
+    let service = exposed.then(|| local_only_service(&names, &p.cmdline_str(), s.local.port())).flatten();
+    if let Some((what, severity)) = service {
+        // once per port, also when it listens on both IPv4 and IPv6
+        once(
+            &format!("EXPOSED:{}", s.local.port()),
+            Finding::new(severity, MODULE, "NET-LOCAL-EXPOSED", format!("{what} is open to the network: {} on port {}", p.display_name(), s.local.port()))
+                .evidence(format!("{}\nreachable from {}", proc_evidence(p, s), exposure(&s.local.ip())))
+                .description("Such services are meant for this computer only and often have no password. Make it listen on 127.0.0.1 (and ::1) instead, or close the port in the firewall.")
+                .verify(format!("ss -tulpn | grep ':{} '", s.local.port()))
+                .verify(format!("ps -o pid,user,lstart,cmd -p {}", p.pid)),
+            col,
+        );
+    } else if s.is_listening() {
         // a script's server that only this computer can reach is how local web apps and
         // development tools work, not a way in from outside
         if is_interp && !is_shell && ip_is_loopback(&s.local.ip()) {
@@ -503,6 +517,37 @@ fn check_socket_owner(
             col,
         );
     }
+}
+
+/// Services that belong on 127.0.0.1: (what it is, how serious it is to expose it).
+pub fn local_only_service(names: &[String], cmdline: &str, port: u16) -> Option<(&'static str, Severity)> {
+    let named = |list: &[&str]| names.iter().any(|n| list.contains(&n.as_str()));
+    let line = cmdline.to_ascii_lowercase();
+    let says = |list: &[&str]| list.iter().any(|w| line.contains(w));
+    let word = |w: &str| line.split(|c: char| !c.is_ascii_alphanumeric()).any(|t| t == w);
+    let node = named(&["node", "nodejs"]);
+    // a debugger runs whatever it is sent
+    let debugger = says(&["--remote-debugging-port", "--inspect", "debugpy"]);
+    let open_debugger = says(&["--remote-debugging-address=0.0.0.0", "--inspect=0.0.0.0", "--inspect-brk=0.0.0.0", "debugpy"]);
+    if debugger && (open_debugger || port == 9222 || port == 9229) || node && port == 9229 {
+        return Some(("A debugger", Severity::High));
+    }
+    if named(&["redis-server", "valkey-server", "mongod", "memcached", "mysqld", "mariadbd", "postgres", "influxd", "couchdb", "etcd"]) || says(&["org.elasticsearch"]) {
+        return Some(("A database", Severity::Medium));
+    }
+    if named(&["ollama", "llama-server", "lm-studio", "lmstudio", "koboldcpp", "localai"]) || says(&["comfyui", "text-generation-webui", "open-webui", "gradio", "vllm", "lmstudio"]) {
+        return Some(("An AI model service", Severity::Medium));
+    }
+    if word("mcp") || says(&["mcp-server", "modelcontextprotocol"]) {
+        return Some(("An AI agent tool server", Severity::Medium));
+    }
+    if says(&["jupyter", "/vite", "webpack-dev-server", "webpack serve", "next dev", "ng serve", "flask run", "manage.py runserver", "http.server", "php -s ", "live-server"]) {
+        return Some(("A development server", Severity::Medium));
+    }
+    if named(&["syncthing"]) && port == 8384 || named(&["transmission-daemon", "transmission-qt", "transmission-gtk"]) && port == 9091 || named(&["qbittorrent", "qbittorrent-nox"]) && port == 8080 {
+        return Some(("A program's control page", Severity::Medium));
+    }
+    None
 }
 
 fn check_orphan(ctx: &ScanCtx, s: &SocketEntry, col: &mut Collector) {

@@ -90,8 +90,8 @@ struct Cli {
     #[arg(long, value_name = "DIR", default_value = "/")]
     root: PathBuf,
 
-    /// Only show findings from this level and up (low, medium, high, critical)
-    #[arg(long, value_name = "LEVEL", default_value = "low")]
+    /// Only show findings from this level and up (info, low, medium, high, critical)
+    #[arg(long, value_name = "LEVEL", default_value = "info")]
     min_severity: String,
 
     /// No colours in terminal output
@@ -320,12 +320,13 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
         Some(path) => {
             std::fs::write(path, &text).with_context(|| format!("could not write {}", path.display()))?;
             eprintln!(
-                "Report saved: {} – {} critical, {} high, {} medium, {} low",
+                "Report saved: {} – {} critical, {} high, {} medium, {} low, {} info",
                 path.display(),
                 report.summary.critical,
                 report.summary.high,
                 report.summary.medium,
-                report.summary.low
+                report.summary.low,
+                report.summary.info
             );
         }
         None => println!("{text}"),

@@ -253,6 +253,109 @@ fn record_native_hosts(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
     }
 }
 
+// ---------------------------------------------------------------- kernel hooks and unified kernel images
+
+/// Scripts that run as root whenever a kernel is installed or a boot image is rebuilt, and
+/// unified kernel images on the EFI partition.
+fn check_kernel_hooks(ctx: &ScanCtx, col: &mut Collector, has_dpkg: bool) {
+    let files: Vec<String> = ["/etc/kernel/preinst.d", "/etc/kernel/postinst.d", "/etc/kernel/prerm.d", "/etc/kernel/postrm.d", "/etc/initramfs/post-update.d", "/etc/kernel/install.d"]
+        .iter()
+        .flat_map(|d| files_below(ctx, d, 1))
+        .collect();
+    let owned = owned_paths(ctx.sys, &files);
+    for path in files {
+        record(ctx, col, &path);
+        let runs = std::fs::metadata(ctx.sys.path(&path)).map(|m| m.mode() & 0o111 != 0).unwrap_or(false);
+        if !runs || owned.contains(&path) {
+            continue;
+        }
+        let (issues, lines) = serious_lines(ctx, &ctx.sys.read_string(&path).unwrap_or_default());
+        let severity = match max_severity(&issues) {
+            Some(s) => s,
+            None if !has_dpkg => continue,
+            None => Severity::Medium,
+        };
+        col.push(simple(
+            severity,
+            "PERS-KERNEL-HOOK",
+            format!("Kernel installation script that no package installed: {path}"),
+            &path,
+            format!("{path}\n{}", clip(&lines.join("\n"), 600)),
+            "It runs as root every time a kernel or boot image is installed, and can change what starts at boot. Drivers built by hand and boot signing use such scripts.".into(),
+        ));
+    }
+    for path in ["/etc/kernel/cmdline", "/etc/kernel/uki.conf", "/etc/kernel/install.conf"] {
+        record(ctx, col, path);
+    }
+    let images: Vec<String> = ["/boot/efi/EFI/Linux", "/efi/EFI/Linux", "/boot/EFI/Linux"]
+        .iter()
+        .flat_map(|d| files_below(ctx, d, 1))
+        .filter(|p| p.to_ascii_lowercase().ends_with(".efi"))
+        .collect();
+    if !images.is_empty() {
+        for path in &images {
+            record(ctx, col, path);
+        }
+        col.push(simple(
+            Severity::Info,
+            "PERS-UKI",
+            "Unified kernel images are used".into(),
+            &images[0],
+            images.join("\n"),
+            "Kernel, start options and boot image are one file on the EFI partition. apt's checksums do not cover it, so the baseline watches it for changes; Secure Boot with your own signature protects it.".into(),
+        ));
+    }
+}
+
+// ---------------------------------------------------------------- Podman quadlets
+
+/// What a Quadlet file asks for beyond an ordinary container.
+pub fn quadlet_risks(text: &str) -> Vec<String> {
+    parse_unit(text)
+        .into_iter()
+        .filter(|(section, _, _)| section == "Container" || section == "Kube" || section == "Pod")
+        .filter_map(|(_, key, value)| {
+            let privileged = key == "PodmanArgs" && value.contains("--privileged") || key == "SecurityLabelDisable" && value == "true";
+            let host_folder = key == "Volume" && ["/", "/etc", "/home", "/root", "%h", "/var/run/docker.sock", "/run/docker.sock"].iter().any(|h| value.split(':').next() == Some(*h));
+            let host_network = key == "Network" && value == "host";
+            let capability = key == "AddCapability" && ["ALL", "CAP_SYS_ADMIN", "SYS_ADMIN"].iter().any(|c| value.contains(c));
+            (privileged || host_folder || host_network || capability).then(|| format!("{key}={value}"))
+        })
+        .collect()
+}
+
+fn check_quadlets(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
+    let mut files: Vec<String> = ["/etc/containers/systemd", "/usr/local/share/containers/systemd"].iter().flat_map(|d| files_below(ctx, d, 3)).collect();
+    for (_, _, home) in homes {
+        files.extend(files_below(ctx, &format!("{home}/.config/containers/systemd"), 3));
+    }
+    for path in files.into_iter().filter(|p| [".container", ".kube", ".pod", ".volume", ".network", ".image"].iter().any(|e| p.ends_with(e))) {
+        record(ctx, col, &path);
+        if !path.ends_with(".container") && !path.ends_with(".kube") && !path.ends_with(".pod") {
+            continue;
+        }
+        let Ok(text) = ctx.sys.read_string(&path) else { continue };
+        let commands: Vec<String> = parse_unit(&text).into_iter().filter(|(_, k, _)| k == "Exec" || k.starts_with("ExecStart")).map(|(_, _, v)| v).collect();
+        let issues: Vec<CmdIssue> = commands.iter().flat_map(|c| analyze_command(c, ctx.cfg)).filter(|i| i.severity >= Severity::High).collect();
+        let risks = quadlet_risks(&text);
+        let severity = max_severity(&issues).unwrap_or(if risks.is_empty() { Severity::Info } else { Severity::Medium });
+        let mut lines = vec![path.clone()];
+        lines.extend(risks);
+        lines.extend(commands.iter().map(|c| format!("Exec={}", clip(c, 200))));
+        if !issues.is_empty() {
+            lines.push(reasons(&issues));
+        }
+        col.push(simple(
+            severity,
+            "PERS-QUADLET",
+            format!("A container starts with the system or at login: {path}"),
+            &path,
+            clip(&lines.join("\n"), 700),
+            "Podman turns this file into a service. A container with host folders, the host network or full privileges is not shut off from the computer.".into(),
+        ));
+    }
+}
+
 // ---------------------------------------------------------------- binfmt_misc
 
 /// (enabled, interpreter, flags) from a `/proc/sys/fs/binfmt_misc/<name>` file.
@@ -637,6 +740,8 @@ pub fn check_hooks(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
     check_git(ctx, col, homes);
     check_package_tools(ctx, col, homes, has_dpkg);
     check_initramfs_sources(ctx, col, has_dpkg);
+    check_kernel_hooks(ctx, col, has_dpkg);
+    check_quadlets(ctx, col, homes);
     check_boot_images(ctx, col);
     // saved firewall rules and boot loader settings belong in the baseline too
     for path in ["/etc/nftables.conf", "/etc/iptables/rules.v4", "/etc/iptables/rules.v6", "/etc/default/grub"] {

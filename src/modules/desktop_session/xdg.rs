@@ -2,7 +2,7 @@
 
 use super::MODULE;
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{analyze_command, analyze_user_command, clip, max_severity, program_words, reasons, shq, CmdIssue};
+use crate::modules::common::{analyze_command, analyze_user_command, clip, max_severity, program_words, reasons, risky_home_place, shq, CmdIssue};
 use crate::modules::persistence::record;
 use crate::modules::persistence::rules::{check_system_scripts, files_at, script_issues, session_finding};
 use crate::modules::{Collector, ScanCtx};
@@ -242,6 +242,51 @@ fn check_autostart(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, St
             _ => continue,
         };
         col.push(Finding::new(severity, MODULE, "PERS-AUTOSTART", title).evidence(evidence).description(description).verify(format!("cat {}", shq(&path))));
+    }
+}
+
+/// Menu entries in a user's own folder: they can replace an installed program's entry, so that
+/// clicking the usual icon starts something else.
+pub(super) fn check_user_launchers(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)]) {
+    for (_, _, home) in homes {
+        let dir = format!("{home}/.local/share/applications");
+        for name in ctx.sys.dir_names(&dir).into_iter().filter(|n| n.ends_with(".desktop")).take(500) {
+            let path = format!("{dir}/{name}");
+            let Ok(text) = ctx.sys.read_string(&path) else { continue };
+            record(ctx, col, &path);
+            let (Some(exec), hidden) = desktop_entry(&text) else { continue };
+            if hidden {
+                continue;
+            }
+            let issues: Vec<CmdIssue> = analyze_user_command(&exec, ctx.cfg).into_iter().filter(|i| i.severity >= Severity::High).collect();
+            let words = program_words(&exec);
+            let odd: Vec<&String> = words.iter().filter(|w| w.starts_with('/') && risky_home_place(w, ctx.cfg).is_some()).collect();
+            let first = words.first().map(|w| crate::procinfo::basename(w).to_string()).unwrap_or_default();
+            let usual = ctx
+                .sys
+                .read_string(format!("/usr/share/applications/{name}"))
+                .ok()
+                .and_then(|t| desktop_entry(&t).0)
+                .and_then(|e| program_words(&e).first().map(|w| crate::procinfo::basename(w).to_string()));
+            let mut evidence = format!("{path}\nExec={}", clip(&exec, 400));
+            let (severity, title) = if let Some(severity) = max_severity(&issues) {
+                evidence.push_str(&format!("\n{}", reasons(&issues)));
+                (severity, format!("Menu entry with a suspicious command: {name}"))
+            } else if !odd.is_empty() {
+                (Severity::Medium, format!("Menu entry starts something from a hidden, cache or download folder: {name}"))
+            } else if let Some(usual) = usual.filter(|u| *u != first && !starts_installed_program(ctx, &exec)) {
+                evidence.push_str(&format!("\nthe installed entry of the same name starts {usual}"));
+                (Severity::Medium, format!("Menu entry replaces an installed program: {name}"))
+            } else {
+                continue;
+            };
+            col.push(
+                Finding::new(severity, MODULE, "PERS-LAUNCHER", title)
+                    .evidence(evidence)
+                    .description("This file in your own folder decides what starts when you click the entry or open a file with it. Programs you installed by hand add such entries; so can malware.")
+                    .verify(format!("cat {}", shq(&path))),
+            );
+        }
     }
 }
 

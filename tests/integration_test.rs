@@ -177,6 +177,7 @@ fn baseline_compare_skips_modules_not_scanned() {
         ssh_keys: None,
         bluetooth: None,
         peripherals: None,
+        addons: None,
     };
     let (f, notes) = baseline::compare(&b, &Default::default(), &["fs_perms".to_string()]);
     assert!(f.is_empty());
@@ -590,6 +591,7 @@ fn random_ports_of_a_known_program_are_not_new_listeners() {
         ssh_keys: None,
         bluetooth: None,
         peripherals: None,
+        addons: None,
     };
     let mut inv = scanner::modules::Inventory::default();
     for p in [35622, 37707, 45314] {

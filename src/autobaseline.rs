@@ -154,6 +154,10 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
             base.ssh_keys = report.inventory.ssh_keys.clone();
             added.push("the SSH keys".to_string());
         }
+        if base.addons.is_none() && report.inventory.addons.is_some() {
+            base.addons = report.inventory.addons.clone();
+            added.push("the browser add-ons".to_string());
+        }
         if base.peripherals.is_none() && report.inventory.peripherals.is_some() {
             base.peripherals = report.inventory.peripherals.clone();
             added.push("the connected hardware".to_string());

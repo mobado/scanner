@@ -121,7 +121,7 @@ impl Default for ScanOptions {
             deep_pid_scan: false,
             watch_wallet_secs: None,
             baseline_compare: None,
-            min_severity: Severity::Low,
+            min_severity: Severity::Info,
         }
     }
 }
@@ -267,6 +267,9 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
             Err(e) => col.note(format!("The baseline could not be read: {e}")),
         }
     }
+
+    progress("Adding context to the findings …");
+    crate::context::add(sys, &processes, &mut col);
 
     // Whitelist, minimum severity and duplicates
     let mut seen = HashSet::new();

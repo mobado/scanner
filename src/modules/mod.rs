@@ -12,6 +12,7 @@ pub mod kernel;
 pub mod kernelstate;
 pub mod bootchain;
 pub mod netlocal;
+pub mod debianfs;
 pub mod hardware;
 pub mod sandboxes;
 pub mod secrets;
@@ -70,6 +71,9 @@ pub struct Inventory {
     /// Paired Bluetooth devices; `None` when they could not be read.
     #[serde(default)]
     pub bluetooth: Option<Vec<String>>,
+    /// Browser add-ons that are switched on ("profile: id name"); `None` when not read.
+    #[serde(default)]
+    pub addons: Option<Vec<String>>,
     /// USB keyboards and Thunderbolt devices; `None` when the machine's buses were not read.
     #[serde(default)]
     pub peripherals: Option<Vec<String>>,

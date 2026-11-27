@@ -41,6 +41,79 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     check_promiscuous(ctx, col);
     check_nat(ctx, col);
     check_packet_sockets(ctx, col);
+    check_name_broadcasts(col);
+    check_route_tables(ctx, col);
+}
+
+/// LLMNR (port 5355) and multicast DNS answered by systemd-resolved: names are asked on the
+/// local network, where anyone may answer.
+fn check_name_broadcasts(col: &mut Collector) {
+    let mut lines: Vec<String> = col
+        .inventory
+        .connections
+        .iter()
+        .filter(|c| c.listening && c.proto.starts_with("udp") && (c.local_port == 5355 || c.local_port == 5353 && c.process.as_deref() == Some("systemd-resolve")))
+        .map(|c| format!("{} port {} ({}) {}", c.proto, c.local_port, if c.local_port == 5355 { "LLMNR" } else { "mDNS" }, c.process.as_deref().unwrap_or("")))
+        .collect();
+    lines.sort();
+    lines.dedup();
+    if !lines.is_empty() {
+        col.push(
+            Finding::new(Severity::Info, MODULE, "NET-LLMNR", "Names are also looked up by asking the local network (LLMNR)")
+                .evidence(lines.join("\n"))
+                .description("On a network you do not control, another computer can answer such questions with its own address. Set LLMNR=no (and MulticastDNS=no) in /etc/systemd/resolved.conf if you do not need it.")
+                .verify("resolvectl status"),
+        );
+    }
+}
+
+/// Routes outside the ordinary tables, from `ip -j route show table all`: (expected, other).
+/// Tailscale's and wg-quick's own tables are expected.
+pub fn separate_routes(json: &str) -> (Vec<String>, Vec<String>) {
+    let Ok(serde_json::Value::Array(routes)) = serde_json::from_str::<serde_json::Value>(json) else { return (Vec::new(), Vec::new()) };
+    let mut tables: BTreeMap<(String, String), (usize, bool)> = BTreeMap::new();
+    for r in &routes {
+        let get = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("");
+        let table = get("table");
+        if ["", "main", "local", "default", "254", "255", "253"].contains(&table) || ["local", "broadcast", "unreachable", "anycast"].contains(&get("type")) {
+            continue;
+        }
+        let entry = tables.entry((table.to_string(), get("dev").to_string())).or_default();
+        entry.0 += 1;
+        entry.1 |= get("dst") == "default";
+    }
+    let (mut expected, mut other) = (Vec::new(), Vec::new());
+    for ((table, device), (count, everything)) in tables {
+        let line = format!("table {table} through {device}: {count} route(s){}", if everything { ", including all traffic" } else { "" });
+        let tailscale = table == "52" && device.starts_with("tailscale");
+        let wireguard = table == "51820" && !device.is_empty();
+        if tailscale || wireguard {
+            expected.push(format!("{line} ({})", if tailscale { "Tailscale" } else { "WireGuard" }));
+        } else {
+            other.push(line);
+        }
+    }
+    (expected, other)
+}
+
+fn check_route_tables(ctx: &ScanCtx, col: &mut Collector) {
+    if !ctx.sys.is_live() {
+        return;
+    }
+    let Some(ip) = crate::external_tools::find_binary("ip") else { return };
+    let Ok(out) = crate::external_tools::run_capture(&ip, &["-j", "route", "show", "table", "all"], 20) else { return };
+    let (expected, other) = separate_routes(&out.stdout);
+    if !expected.is_empty() {
+        col.note(format!("VPN routing tables: {}", expected.join("; ")));
+    }
+    if !other.is_empty() {
+        col.push(
+            Finding::new(Severity::Low, MODULE, "NET-ROUTE-TABLE", "Some traffic takes separate routing tables")
+                .evidence(clip(&other.join("\n"), 900))
+                .description("Routing rules can send chosen traffic a different way than the ordinary routes show, for example through a tunnel. VPNs and containers do this; check that you know each one.")
+                .verify("ip rule show; ip route show table all"),
+        );
+    }
 }
 
 /// Programs that open raw packet sockets to run the network itself.

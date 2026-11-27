@@ -81,8 +81,13 @@ fn check_web_roots(ctx: &ScanCtx, col: &mut Collector) {
 }
 
 fn check_docker(ctx: &ScanCtx, col: &mut Collector) {
-    for sock in ["/run/docker.sock", "/run/podman/podman.sock", "/run/containerd/containerd.sock"] {
-        if let Ok(m) = std::fs::symlink_metadata(ctx.sys.path(sock)) {
+    let mut sockets: Vec<String> = ["/run/docker.sock", "/run/podman/podman.sock", "/run/containerd/containerd.sock"].map(String::from).to_vec();
+    // rootless Podman and Docker keep a socket for each user
+    for user in ctx.sys.dir_names("/run/user") {
+        sockets.extend([format!("/run/user/{user}/podman/podman.sock"), format!("/run/user/{user}/docker.sock")]);
+    }
+    for sock in sockets {
+        if let Ok(m) = std::fs::symlink_metadata(ctx.sys.path(&sock)) {
             if m.mode() & 0o002 != 0 {
                 col.push(
                     Finding::new(Severity::Critical, MODULE, "SVC-CONTAINER-SOCKET", format!("Everyone can control the container engine: {sock}"))
@@ -91,6 +96,17 @@ fn check_docker(ctx: &ScanCtx, col: &mut Collector) {
                         .verify(format!("stat {sock}")),
                 );
             }
+        }
+    }
+    for p in ctx.processes.iter().filter(|p| p.display_name() == "podman") {
+        let words = &p.cmdline;
+        if words.iter().any(|w| w == "service") && words.iter().any(|w| w.starts_with("tcp:")) {
+            col.push(
+                Finding::new(Severity::High, MODULE, "SVC-PODMAN-API", "Podman's control service listens on the network")
+                    .evidence(format!("PID {} UID {}\ncmdline=\"{}\"", p.pid, p.uid, clip(&p.cmdline_str(), 300)))
+                    .description("Anyone who reaches this port can start containers as this user, and as root when root runs it. It has no password.")
+                    .verify(format!("ss -tlnp | grep 'pid={},'", p.pid)),
+            );
         }
     }
     for proto in [Proto::Tcp, Proto::Tcp6] {

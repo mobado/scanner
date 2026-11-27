@@ -82,6 +82,40 @@ pub fn chromium_addons(ctx: &ScanCtx, preferences: &Value) -> Vec<AddOn> {
     out
 }
 
+/// Every add-on that is switched on, as "id name", for the baseline.
+pub fn enabled_addons(data: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    // Chromium's Preferences
+    for (id, entry) in data.pointer("/extensions/settings").and_then(Value::as_object).into_iter().flatten() {
+        let off = entry.get("state").and_then(Value::as_i64) == Some(0)
+            || entry.get("disable_reasons").map(|r| r.as_array().map(|a| !a.is_empty()).unwrap_or_else(|| r.as_i64().unwrap_or(0) != 0)).unwrap_or(false);
+        // 5 and 10 are parts of the browser itself
+        let built_in = matches!(entry.get("location").and_then(Value::as_i64), Some(5 | 10));
+        let Some(name) = entry.pointer("/manifest/name").and_then(Value::as_str) else { continue };
+        if !off && !built_in && !text(entry, "path").starts_with("/usr/") {
+            out.push(format!("{id} {name}"));
+        }
+    }
+    // Firefox's extensions.json
+    for a in data.get("addons").and_then(Value::as_array).into_iter().flatten() {
+        let built_in = ["app-builtin", "app-builtin-addons", "app-system-defaults", "app-system-addons"].contains(&text(a, "location"));
+        if a.get("active").and_then(Value::as_bool) == Some(true) && !built_in && text(a, "type") == "extension" && !text(a, "path").starts_with("/usr/") {
+            out.push(format!("{} {}", text(a, "id"), a.pointer("/defaultLocale/name").and_then(Value::as_str).unwrap_or("")));
+        }
+    }
+    out
+}
+
+fn record_addons(col: &mut Collector, profile: &str, data: &Value) {
+    let list = col.inventory.addons.get_or_insert_with(Vec::new);
+    for addon in enabled_addons(data) {
+        let entry = format!("{profile}: {}", clip(&addon, 160));
+        if !list.contains(&entry) {
+            list.push(entry);
+        }
+    }
+}
+
 /// Judge Firefox's `extensions.json`.
 pub fn firefox_addons(data: &Value) -> Vec<AddOn> {
     let Some(list) = data.get("addons").and_then(Value::as_array) else { return Vec::new() };
@@ -317,6 +351,7 @@ fn check_chromium(ctx: &ScanCtx, col: &mut Collector, home: &str) {
             let mut settings = Vec::new();
             for file in ["Preferences", "Secure Preferences"] {
                 let Some(data) = read_json(ctx, &format!("{profile}/{file}")) else { continue };
+                record_addons(col, &profile, &data);
                 for s in chromium_settings(&data) {
                     if !settings.contains(&s) {
                         settings.push(s);
@@ -345,6 +380,7 @@ fn check_firefox(ctx: &ScanCtx, col: &mut Collector, home: &str) {
         for name in ctx.sys.dir_names(&root) {
             let profile = format!("{root}/{name}");
             if let Some(data) = read_json(ctx, &format!("{profile}/extensions.json")) {
+                record_addons(col, &profile, &data);
                 report_addons(col, &profile, firefox_addons(&data));
             }
             // user.js wins over prefs.js, so it comes last
@@ -413,6 +449,8 @@ fn check_policies(ctx: &ScanCtx, col: &mut Collector) {
 }
 
 pub(crate) fn check_browsers(ctx: &ScanCtx, col: &mut Collector, homes: &[String]) {
+    // an empty list is a result too: the first add-on is then news
+    col.inventory.addons.get_or_insert_with(Vec::new);
     for home in homes {
         check_chromium(ctx, col, home);
         check_firefox(ctx, col, home);

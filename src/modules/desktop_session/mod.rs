@@ -9,6 +9,8 @@ pub mod apps;
 pub mod environments;
 pub mod gvdb;
 pub mod input;
+pub mod media;
+pub mod session;
 pub mod xdg;
 
 use super::persistence::home_dirs;
@@ -51,13 +53,13 @@ pub fn graphical_signs(ctx: &ScanCtx) -> Vec<String> {
 
 /// Is this a file that the desktop_session module records for the baseline?
 pub fn is_desktop_path(path: &str) -> bool {
-    const PARTS: [&str; 30] = [
+    const PARTS: [&str; 34] = [
         "/flatpak/overrides/",
         "/autostart/", "/autostart-scripts/", "/plasma-workspace/", "/etc/X11/", "/etc/gdm3/", "/etc/sddm", "/etc/lightdm/",
         "/dbus-1/", "/xdg-desktop-portal/", "/.config/sway/", "/.config/swayidle/", "/.config/i3/", "/.i3/", "openbox/",
         "lxsession/", "/.config/hypr/", "/.config/labwc/", "/.config/wayfire.ini", "/.fluxbox/", "/.xscreensaver",
         "/etc/sway/", "/kwin/", "/kglobalaccel/", "/.config/xfce4/", "/gnome-session/", "/etc/dconf/", "/.xprofile",
-        "/.xinitrc", "/.xsession",
+        "/.xinitrc", "/.xsession", "/pipewire/", "/wireplumber/", "/.local/share/applications/", "/systemd/linger/",
     ];
     PARTS.iter().any(|p| path.contains(p))
 }
@@ -73,7 +75,12 @@ pub fn label_of(rule: &str, evidence: &str) -> &'static str {
         "DESK-APPIMAGE" => return "appimage",
         "PERS-DM-SCRIPT" => return "login",
         "PERS-X11-OPEN" => return "x11",
-        "PROC-INPUT-READER" => return "input",
+        "PROC-INPUT-READER" | "DESK-INPUT-INJECT" | "DESK-INPUT-GROUP" | "DESK-INPUT-OPEN" => return "input",
+        "DESK-AUTOLOGIN" | "DESK-LINGER" | "DESK-SESSION-REMOTE" | "DESK-SESSION-ROOT" => return "login",
+        "DESK-XSERVER-OPEN" => return "x11",
+        "DESK-XWAYLAND-KEYS" => return "kde",
+        "DESK-AUDIO-EXEC" | "DESK-AUDIO-NETWORK" | "DESK-AUDIO-VIRTUAL" | "DESK-AUDIO-SCRIPT" | "DESK-RECORDING" | "DESK-DEVICE-OPEN" => return "media",
+        "DESK-PORTAL-GRANT" => return "portal",
         _ => {}
     }
     let path = evidence.lines().next().unwrap_or("");
@@ -98,6 +105,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     // a program that records the keyboard or shows the screen matters on any machine
     input::check_input(ctx, col);
     apps::check_remote_screens(ctx, col);
+    session::check_input_reach(ctx, col);
     let signs = graphical_signs(ctx);
     if signs.is_empty() {
         col.note("desktop_session: no graphical desktop was found on this machine, so the desktop checks were skipped (the baseline reports if one appears)");
@@ -107,6 +115,9 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
         xdg::check_xdg(ctx, col, &homes);
         environments::check_environments(ctx, col, &homes);
         apps::check_apps(ctx, col, &homes);
+        session::check_session(ctx, col, &homes);
+        media::check_media(ctx, col, &homes);
+        xdg::check_user_launchers(ctx, col, &homes);
         input::note_sessions(ctx, col);
     }
     col.inventory.desktop = Some(signs);
