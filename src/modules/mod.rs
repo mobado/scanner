@@ -6,6 +6,7 @@ pub mod auth_logs;
 pub mod browsers;
 pub mod filemarks;
 pub mod homefiles;
+pub mod homeindex;
 pub mod fs_perms;
 pub mod integrity;
 pub mod kernel;
@@ -82,6 +83,9 @@ pub struct Inventory {
     /// Names of packages no software source offers; `None` when they could not be compared.
     #[serde(default)]
     pub local_packages: Option<Vec<String>>,
+    /// Every installed package as "name version"; `None` when dpkg's list was not read.
+    #[serde(default)]
+    pub installed_packages: Option<Vec<String>>,
     /// Loaded firewall rules that accept traffic, without counters; `None` when they were not read.
     #[serde(default)]
     pub firewall_rules: Option<Vec<String>>,

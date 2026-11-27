@@ -212,7 +212,8 @@ every network, to one address, or only to this computer.
 | `PERS-APT-THIRDPARTY` | Low | A software source whose host is not in `trusted_apt_hosts` (`*.debian.org`) |
 | `PERS-APT-HOOK` | Critical/High | apt runs a suspicious command (`apt.conf.d` hooks) |
 | `PERS-HISTORY` | High–Low | Suspicious commands in a shell history (reverse shells, history switched off, logs deleted, download-and-run …); only those lines are shown |
-| `PERS-PYTHON-STARTUP` | High–Low | A `.pth` file with `import` lines, or `sitecustomize.py`/`usercustomize.py`, from no package or changed (system folders, `/usr/local`, `~/.local`, virtual environments). High when it runs text as code, starts programs or uses the network; a `.pth` file is only skipped when every code line is exactly what setuptools, editable installs, namespace packages, virtualenv or coverage write |
+| `PERS-PYTHON-STARTUP` | High–Low | A `.pth` file with `import` lines, or `sitecustomize.py`/`usercustomize.py`, from no package or changed (system folders, `/usr/local`, `~/.local`, virtual environments). High when it runs text as code, starts programs or uses the network; a `.pth` file is only skipped when every code line is exactly what setuptools, editable installs, namespace packages, virtualenv or coverage write. `sitecustomize`/`usercustomize` (source, package or compiled) are also looked for in the folders that `.pth` files add. Every `.pth` file is recorded in the baseline |
+| `PERS-PYTHON-PATH` | High | A `.pth` file adds a folder in `/tmp`, `/dev/shm`, `/var/tmp` (or another temporary folder) or in another user's home (also through a link) |
 | `PERS-MOTD` | Critical–Medium | A script in `/etc/update-motd.d` from no package or changed; it runs as root at every login |
 | `PERS-LOGROTATE` | Critical–Low | A `postrotate`/`prerotate` script in a logrotate file from no package, changed, or with a suspicious command |
 | `PERS-ENV-PROXY` | Medium/Low | A proxy set in environment files, `curlrc`, `wgetrc` or git settings (desktop, browser, apt and pip proxies have their own rules) |
@@ -223,11 +224,12 @@ every network, to one address, or only to this computer.
 | `PERS-UNOWNED-LIB` | High/Medium | Programs and libraries in `/usr/lib` that no package lists or ships (copies and links of packaged files are skipped; Python packages and kernel modules have other checks). High among PAM and systemd files or with hidden names |
 | `PERS-UNOWNED-SYSTEM` | Medium/Low | Other files of no package in `/etc/systemd` (mount units, targets, scripts) |
 | `PERS-LOCAL-PACKAGE` | Low | Installed packages that no software source offers (a `.deb` from a file, or a removed source); old Debian kernels are only noted. Packed package lists (`.lz4`, `.gz`, `.xz` …) are read with apt's `apt-helper` |
-| `PERS-RETIRED-PACKAGE` | Info | Packages with a Debian maintainer (`debian.org` or a Debian team list) that the sources no longer carry, usually left from an upgrade; one line. The maintainer is what the package says about itself |
+| `PERS-RETIRED-PACKAGE` | Info | Packages with a Debian maintainer (`debian.org` or a Debian team list) that the sources no longer carry **and that apt installed** (`/var/lib/apt/extended_states`, or `/var/log/apt/history.log*` with the same version, from a command that names no `.deb` file); one line. The maintainer is what the package says about itself, and `dpkg -i` writes in neither record. Old kernels need the same proof |
 | `PERS-PKG-NEWER` | Medium/Low | A version newer than anything the sources offer (Medium for central system packages) |
 | `PERS-EDITOR-SCRIPT` | High/Medium | A Vim or Neovim script (also lazy.nvim plugins, `vim.cmd("!…")`) that runs a command typical of a break-in |
 | `PERS-EDITOR-EXTENSION` | Medium/Low | VS Code, VSCodium or Cursor extensions installed from a file, loaded from elsewhere, or in a folder the editor does not list (a folder must be the extension's id followed by its version) |
-| `PERS-VSCODE-TASK` | High/Medium | A project's `.vscode/tasks.json` runs a task when the folder is opened (`runOn: folderOpen`); High when the command is typical of a break-in. Recorded in the baseline |
+| `PERS-VSCODE-TASK` | High/Medium | A project's `.vscode/tasks.json`, or a user's own `tasks.json` (VS Code, VSCodium, Cursor, profiles), runs a task when a folder is opened (`runOn: folderOpen`); High when the command is typical of a break-in or `task.allowAutomaticTasks` is `"on"`. Recorded in the baseline |
+| `PERS-VSCODE-AUTOTASKS` | Low | The user's settings run folder tasks without asking (`task.allowAutomaticTasks: "on"`) |
 | `PERS-JETBRAINS-PLUGIN` | Info | Plugins added to IntelliJ, PyCharm and other JetBrains editors (`~/.local/share/JetBrains/*/`); new ones show as `BASE-EDITOR-NEW` |
 | `PERS-KERNEL-HOOK` | Critical–Medium | A script in `/etc/kernel/*.d` or `initramfs/post-update.d` that no package installed; it runs as root at every kernel installation |
 | `PERS-UKI` | Info | Unified kernel images on the EFI partition (recorded, so the baseline notices a change) |
@@ -345,10 +347,10 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-BLUETOOTH-NEW` | High/Medium | A new paired Bluetooth device (High for a keyboard) |
 | `BASE-ADDON-NEW` | Medium | A browser add-on that was not switched on before |
 | `BASE-EDITOR-NEW` | Low | A new editor extension |
-| `BASE-LOCAL-PACKAGE` | Medium | A new package from outside the software sources (Debian packages retired by an upgrade do not count) |
+| `BASE-LOCAL-PACKAGE` | Medium | A package that no source offers and that was not installed in this version when the baseline was made, also one that looks like an old Debian package. Packages a release upgrade leaves behind were installed then and stay quiet |
 | `BASE-FIREWALL-OFF` | High | A firewall that was on is off |
-| `BASE-FIREWALL-RULE` | Medium/Low | A new accept rule since the baseline (root; compared without counters, with the members of named sets). Medium for incoming chains, Low for forwarded and other traffic |
-| `BASE-EFI-FILE-CHANGED` | Medium | A boot file built on this computer (such as a local `grubx64.efi`) changed |
+| `BASE-FIREWALL-RULE` | Medium/Low | A new accept rule since the baseline (root; compared without counters, with the members of named sets). Medium for incoming chains, Low for forwarded and other traffic. In Docker's and libvirt's own chains (not `DOCKER-USER`) private addresses and `veth*`/`br-*` names are ignored, so a new container is not a new rule |
+| `BASE-EFI-FILE-CHANGED` | Medium/Info | A boot file built on this computer (such as a local `grubx64.efi`) changed; Info when `dpkg.log` shows an update of GRUB (or fwupd) after the baseline, and the baseline then takes the new file in |
 | `BASE-DEVICE-NEW` | Medium | A USB keyboard or Thunderbolt device that was not connected before |
 | `BASE-APPARMOR-OFF` | High | AppArmor or SELinux stopped protecting |
 | `BASE-DESKTOP-NEW` | High/Medium | A graphical desktop appeared on a machine that had none; a virtual or remote screen (Xvnc, x11vnc, Xvfb) started running |

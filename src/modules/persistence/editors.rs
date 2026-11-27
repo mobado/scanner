@@ -6,7 +6,7 @@ use super::history::judge_command;
 use super::{record, MODULE};
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{analyze_command, capped, clip, shq};
-use crate::modules::{Collector, ScanCtx};
+use crate::modules::{homeindex, Collector, ScanCtx};
 use serde_json::Value;
 use walkdir::WalkDir;
 
@@ -241,51 +241,101 @@ pub fn folder_open_tasks(text: &str) -> Option<Vec<String>> {
     )
 }
 
-/// Project folders whose `.vscode/tasks.json` runs commands as soon as they are opened.
-fn check_folder_tasks(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
-    const SKIPPED: [&str; 6] = ["node_modules", "Trash", "Steam", "flatpak", "containers", "target"];
-    for (_, _, home) in homes {
-        let walk = WalkDir::new(ctx.sys.path(home))
-            .max_depth(8)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| {
-                let name = e.file_name().to_string_lossy();
-                e.depth() == 0 || !e.file_type().is_dir() || name == ".vscode" || !(name.starts_with('.') || SKIPPED.contains(&name.as_ref()))
-            })
-            .filter_map(|e| e.ok());
-        let found: Vec<String> = capped(walk, 500_000, format!("{home} for VS Code tasks (files and folders)"))
-            .filter(|e| e.file_type().is_file() && e.file_name() == "tasks.json" && e.path().parent().is_some_and(|p| p.ends_with(".vscode")))
-            .map(|e| ctx.sys.display(e.path()))
-            .collect();
-        for path in found {
-            let Ok(text) = ctx.sys.read_string(&path) else { continue };
-            let tasks = folder_open_tasks(&text);
-            if tasks.as_ref().is_some_and(Vec::is_empty) {
-                continue;
+/// Where VS Code and its relatives keep a user's own settings and tasks, below a home folder.
+const USER_FOLDERS: [&str; 8] = [
+    ".config/Code/User", ".config/Code - Insiders/User", ".config/Code - OSS/User", ".config/VSCodium/User", ".config/Cursor/User",
+    ".var/app/com.visualstudio.code/config/Code/User", ".var/app/com.vscodium.codium/config/VSCodium/User", ".vscode-server/data/User",
+];
+
+/// The user folders a home has, with their profiles, and the settings of a remote server.
+fn user_folders(ctx: &ScanCtx, home: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for folder in USER_FOLDERS.iter().map(|f| format!("{home}/{f}")) {
+        if !ctx.sys.exists(&folder) {
+            continue;
+        }
+        found.extend(ctx.sys.dir_names(format!("{folder}/profiles")).into_iter().map(|p| format!("{folder}/profiles/{p}")));
+        found.push(folder);
+    }
+    found.push(format!("{home}/.vscode-server/data/Machine"));
+    found
+}
+
+/// Do these settings let folder tasks run without asking (`task.allowAutomaticTasks`)?
+pub fn allows_automatic_tasks(settings: &str) -> bool {
+    const KEY: &str = "task.allowAutomaticTasks";
+    match serde_json::from_str::<Value>(&plain_json(settings)) {
+        Ok(json) => json.get(KEY).and_then(Value::as_str) == Some("on"),
+        // a damaged file: look at the line that sets it
+        Err(_) => settings.lines().map(str::trim).any(|l| !l.starts_with("//") && l.contains(KEY) && l.contains("\"on\"")),
+    }
+}
+
+/// A `tasks.json` with tasks that start by themselves. `own` is a user's own file, which counts
+/// for every window; `allowed` names the settings file that lets such tasks run unasked.
+fn judge_tasks(ctx: &ScanCtx, col: &mut Collector, path: &str, own: bool, allowed: Option<&str>) {
+    let Ok(bytes) = ctx.sys.read_bytes(path) else { return };
+    let text = String::from_utf8_lossy(&bytes);
+    let tasks = folder_open_tasks(&text);
+    if tasks.as_ref().is_some_and(Vec::is_empty) {
+        return;
+    }
+    record(ctx, col, path);
+    // a file that cannot be read as settings is judged as plain text
+    let commands = tasks.unwrap_or_else(|| text.lines().map(|l| l.trim().to_string()).filter(|l| l.contains("\"command\"") || l.contains("folderOpen")).collect());
+    let mut suspicious = false;
+    let mut lines: Vec<String> = commands
+        .iter()
+        .map(|command| {
+            let typed = judge_command(ctx, command).filter(|j| j.0 >= Severity::Medium).map(|j| j.1);
+            let why = typed.or_else(|| analyze_command(command, ctx.cfg).into_iter().find(|i| i.severity >= Severity::Critical).map(|i| i.reason));
+            suspicious |= why.is_some();
+            match why {
+                Some(why) => format!("{}  ← {why}", clip(command, 220)),
+                None => clip(command, 220),
             }
-            record(ctx, col, &path);
-            // a file that cannot be read as settings is judged as plain text
-            let commands = tasks.unwrap_or_else(|| text.lines().map(|l| l.trim().to_string()).filter(|l| l.contains("\"command\"") || l.contains("folderOpen")).collect());
-            let mut suspicious = false;
-            let lines: Vec<String> = commands
-                .iter()
-                .map(|command| {
-                    let typed = judge_command(ctx, command).filter(|j| j.0 >= Severity::Medium).map(|j| j.1);
-                    let why = typed.or_else(|| analyze_command(command, ctx.cfg).into_iter().find(|i| i.severity >= Severity::Critical).map(|i| i.reason));
-                    suspicious |= why.is_some();
-                    match why {
-                        Some(why) => format!("{}  ← {why}", clip(command, 220)),
-                        None => clip(command, 220),
-                    }
-                })
-                .collect();
+        })
+        .collect();
+    if let Some(settings) = allowed {
+        lines.insert(0, format!("runs without asking: task.allowAutomaticTasks is \"on\" in {settings}"));
+    }
+    let (title, text) = if own {
+        ("Your VS Code tasks run a command whenever a window opens", "A task in your own tasks.json with runOn folderOpen starts in every folder you open, once automatic tasks are allowed. Check that you added it.")
+    } else {
+        ("A project runs a command as soon as its folder is opened", "VS Code and its relatives run this task when the folder is opened, once you trust the folder and allow automatic tasks. Cloned projects use it to run code on your computer. Check the command before you open the folder.")
+    };
+    col.push(
+        Finding::new(if suspicious || allowed.is_some() { Severity::High } else { Severity::Medium }, MODULE, "PERS-VSCODE-TASK", format!("{title}: {path}"))
+            .evidence(format!("{path}\n{}", clip(&lines.join("\n"), 700)))
+            .description(text)
+            .verify(format!("cat {}", shq(path))),
+    );
+}
+
+/// Tasks that start when a folder is opened, in projects and in the user's own settings.
+fn check_folder_tasks(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
+    for (user, _, home) in homes {
+        let folders = user_folders(ctx, home);
+        let mut allowed = Vec::new();
+        for settings in folders.iter().map(|f| format!("{f}/settings.json")) {
+            if ctx.sys.read_bytes(&settings).is_ok_and(|b| allows_automatic_tasks(&String::from_utf8_lossy(&b))) {
+                allowed.push(settings);
+            }
+        }
+        if let Some(first) = allowed.first() {
             col.push(
-                Finding::new(if suspicious { Severity::High } else { Severity::Medium }, MODULE, "PERS-VSCODE-TASK", format!("A project runs a command as soon as its folder is opened: {path}"))
-                    .evidence(format!("{path}\n{}", clip(&lines.join("\n"), 700)))
-                    .description("VS Code and its relatives can run this task when the folder is opened (after you allow automatic tasks or trust the folder). Cloned projects use it to run code on your computer. Check the command before you open the folder.")
-                    .verify(format!("cat {}", shq(&path))),
+                Finding::new(Severity::Low, MODULE, "PERS-VSCODE-AUTOTASKS", format!("VS Code runs folder tasks of {user} without asking"))
+                    .evidence(allowed.join("\n"))
+                    .description("With task.allowAutomaticTasks \"on\", a trusted project can run commands the moment you open it, with no question. Set it to \"off\" unless you need it.")
+                    .verify(format!("grep -n allowAutomaticTasks {}", shq(first))),
             );
+        }
+        let allowed = allowed.first().map(String::as_str);
+        for path in folders.iter().map(|f| format!("{f}/tasks.json")) {
+            judge_tasks(ctx, col, &path, true, allowed);
+        }
+        for path in &homeindex::of(ctx, home).vscode_tasks {
+            judge_tasks(ctx, col, path, false, allowed);
         }
     }
 }

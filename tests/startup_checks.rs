@@ -10,7 +10,7 @@ use scanner::modules::desktop_session::xdg::mime_handlers;
 use scanner::modules::firewall::read_ruleset;
 use scanner::modules::persistence::editors::listed_extensions;
 use scanner::modules::persistence::hooks::{listens_to_network, trigger_lines};
-use scanner::modules::persistence::packages::{compare_versions, installed_packages, local_packages};
+use scanner::modules::persistence::packages::{compare_versions, installed_packages, local_packages, AptRecords};
 use scanner::modules::persistence::python::{pth_code, python_danger, usual_pth_line};
 use scanner::modules::persistence::startup::{logrotate_scripts, proxy_settings};
 use scanner::modules::procrights::dangerous_capabilities;
@@ -96,7 +96,8 @@ fn python_startup_files() {
     assert_eq!(levels(&report, "PERS-PYTHON-STARTUP"), vec![Severity::Medium, Severity::High]);
     let recorded = &report.inventory.persistence_files;
     assert!(recorded.contains_key("/home/anna/code/p/.venv/lib/python3.13/site-packages/_virtualenv.pth"));
-    assert!(!recorded.contains_key("/home/anna/.local/lib/python3.13/site-packages/paths.pth"));
+    // a file that only adds folders is watched too: such a folder can hold startup code
+    assert!(recorded.contains_key("/home/anna/.local/lib/python3.13/site-packages/paths.pth"));
 }
 
 #[test]
@@ -187,7 +188,9 @@ fn files_of_no_package_and_local_packages() {
     let installed = installed_packages(status);
     assert_eq!(installed.len(), 5);
     let offered: HashMap<String, Vec<String>> = [("dpkg", "1.22"), ("sudo", "9.5"), ("waiting", "1.1")].iter().map(|(n, v)| (n.to_string(), vec![v.to_string()])).collect();
-    let local = local_packages(&installed, &offered);
+    let mut apt = AptRecords::default();
+    apt.read_history("Commandline: apt upgrade\nInstall: linux-image-1:amd64 (1, automatic)\n");
+    let local = local_packages(&installed, &offered, &apt);
     assert_eq!(local.unknown.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["own"]);
     assert_eq!(local.newer.iter().map(|p| p.0.name.as_str()).collect::<Vec<_>>(), vec!["sudo"]);
     assert_eq!(local.kernels, vec!["linux-image-1"]);

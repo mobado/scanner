@@ -6,6 +6,7 @@ use crate::error::ScanError;
 use crate::finding::{Finding, Severity};
 use crate::modules::common::shq;
 use crate::modules::desktop_session::is_desktop_path;
+use crate::modules::firewall::comparable_rule;
 use crate::modules::fs_perms::SuidEntry;
 use crate::modules::persistence::extra::{is_login_shell, AccountEntry};
 use crate::modules::persistence::packages::RETIRED;
@@ -59,6 +60,8 @@ pub struct Baseline {
     pub local_packages: Option<Vec<String>>,
     #[serde(default)]
     pub firewall_rules: Option<Vec<String>>,
+    #[serde(default)]
+    pub installed_packages: Option<Vec<String>>,
 }
 
 /// The parts of a recorded key that identify it: the file and the fingerprint.
@@ -105,15 +108,24 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
         }
     }
     if let (true, Some(old), Some(new)) = (both("persistence"), &base.local_packages, &inv.local_packages) {
-        // a package that Debian retired after the baseline is no news
         let name = |p: &str| p.strip_suffix(RETIRED).unwrap_or(p).to_string();
         let known: BTreeSet<String> = old.iter().map(|p| name(p)).collect();
-        for package in new.iter().filter(|p| !known.contains(&name(p)) && !p.ends_with(RETIRED)) {
+        for entry in new.iter().filter(|p| !known.contains(&name(p))) {
+            let package = name(entry);
+            // installed in this very version when the baseline was made: only its source is gone
+            let installed_then = base.installed_packages.as_ref().zip(inv.installed_packages.as_ref()).is_some_and(|(then, now)| {
+                now.iter().filter(|p| p.split(' ').next() == Some(package.as_str())).any(|p| then.contains(p))
+            });
+            if installed_then {
+                continue;
+            }
+            // apt cannot install what no source offers, so a new package that looks retired is news
+            let claims = if entry.ends_with(RETIRED) { " It looks like an old Debian package, but it was not installed like this when the baseline was made." } else { "" };
             out.push(
                 Finding::new(Severity::Medium, MODULE, "BASE-LOCAL-PACKAGE", format!("New package from outside the software sources since the baseline: {package}"))
                     .evidence(format!("{package}\n(compared with {src})"))
-                    .description("A .deb from a file runs its install scripts as root, and apt never checks or updates it. Check that you installed it.")
-                    .verify(format!("apt-cache policy {}", shq(package)))
+                    .description(format!("A .deb from a file runs its install scripts as root, and apt never checks or updates it. Check that you installed it.{claims}"))
+                    .verify(format!("apt-cache policy {}", shq(&package)))
                     .verify(format!("grep ' install {}:' /var/log/dpkg.log", package)),
             );
         }
@@ -129,12 +141,22 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
         );
     }
     if let (true, Some(old), Some(new)) = (both("net_proc"), &base.firewall_rules, &inv.firewall_rules) {
-        let known: BTreeSet<&String> = old.iter().collect();
+        let known: BTreeSet<String> = old.iter().map(|r| comparable_rule(r)).collect();
         for (into, severity, title) in [
             (true, Severity::Medium, "New firewall rule(s) that let traffic in since the baseline"),
             (false, Severity::Low, "New firewall rule(s) that accept forwarded or other traffic since the baseline"),
         ] {
-            let fresh: Vec<&str> = new.iter().filter(|r| !known.contains(r) && r.starts_with("incoming ") == into).map(String::as_str).collect();
+            // one line for rules that only differ in a container's address
+            let mut shown = BTreeSet::new();
+            let fresh: Vec<&str> = new
+                .iter()
+                .filter(|r| r.starts_with("incoming ") == into)
+                .filter(|r| {
+                    let form = comparable_rule(r);
+                    !known.contains(&form) && shown.insert(form)
+                })
+                .map(String::as_str)
+                .collect();
             if fresh.is_empty() {
                 continue;
             }
@@ -203,7 +225,11 @@ pub fn newly_tracked(path: &str) -> bool {
         ||["/etc/xdg/openbox/", "/etc/xdg/lxsession/", "/etc/sway/", "/usr/local/share/autostart/"].iter().any(|p| path.starts_with(p))
         || path.contains("-generators/")
         || path.contains("/.git/hooks/")
-        || path.ends_with("/.vscode/tasks.json")
+        // project tasks and a user's own VS Code tasks
+        || path.ends_with("/tasks.json")
+        // Python startup files as packages or compiled
+        || ["customize/__init__.py", "customize.pyc"].iter().any(|e| path.ends_with(e))
+        || path.contains("customize.cpython")
         || path == "/etc/kernel/cmdline"
         || path.contains("/NativeMessagingHosts/")
         || path.contains("/native-messaging-hosts/")
@@ -328,6 +354,7 @@ impl Baseline {
             editor_plugins: r.inventory.editor_plugins.clone(),
             local_packages: r.inventory.local_packages.clone(),
             firewall_rules: r.inventory.firewall_rules.clone(),
+            installed_packages: r.inventory.installed_packages.clone(),
         }
     }
 
@@ -487,9 +514,12 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
         } else if own && (path.ends_with("mimeapps.list") || path.ends_with("/.vimrc") || path.contains("/.vim/") || path.contains("/.config/nvim/")) {
             f.severity = Severity::Medium;
             f.description = "Your editor's settings or the list of programs that open your files is new or changed. Using the editor or choosing a default program does this; check that it was you.".into();
-        } else if path.ends_with("/.vscode/tasks.json") && own {
+        } else if path.ends_with("/tasks.json") && own {
             f.severity = Severity::Medium;
-            f.description = "A project's task that runs when the folder is opened is new or changed. Check the command it runs before you open the folder.".into();
+            f.description = "A task that runs when a folder is opened is new or changed. Check the command it runs.".into();
+        } else if path.ends_with(".pth") && own {
+            f.severity = Severity::Medium;
+            f.description = "A Python path file in your home folder is new or changed. Installing or removing a Python package does this; check the folders and lines it names.".into();
         } else if path.ends_with("/pkcs11.txt") && own {
             // browsers and mail programs write these themselves; PERS-KEY-MODULE judges the libraries
             f.severity = Severity::Medium;

@@ -6,8 +6,8 @@ use crate::finding::{Finding, Severity};
 use crate::modules::common::{clip, shq};
 use crate::modules::{Collector, ScanCtx};
 use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -103,9 +103,15 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
     a.0.cmp(&b.0).then_with(|| compare_part(a.1.as_bytes(), b.1.as_bytes())).then_with(|| compare_part(a.2.as_bytes(), b.2.as_bytes()))
 }
 
+const PACKED: [&str; 6] = [".lz4", ".gz", ".xz", ".zst", ".bz2", ".lzma"];
+
+fn compressed_file(name: &str) -> bool {
+    PACKED.iter().any(|e| name.ends_with(e))
+}
+
 /// A package list that apt keeps packed (`Acquire::GzipIndexes`, usual in containers).
 fn compressed(name: &str) -> bool {
-    [".lz4", ".gz", ".xz", ".zst", ".bz2", ".lzma"].iter().any(|e| name.strip_suffix(e).is_some_and(|n| n.ends_with("_Packages")))
+    PACKED.iter().any(|e| name.strip_suffix(e).is_some_and(|n| n.ends_with("_Packages")))
 }
 
 /// Add the versions a package list offers for the wanted packages.
@@ -127,8 +133,8 @@ fn read_list(reader: &mut impl BufRead, wanted: &HashMap<&str, &str>, out: &mut 
     }
 }
 
-/// Unpack a list with apt's own helper, which only writes it to its output.
-fn read_compressed(path: &Path, wanted: &HashMap<&str, &str>, out: &mut HashMap<String, Vec<String>>) -> Result<(), String> {
+/// Unpack a file with apt's own helper, which only writes it to its output.
+fn unpack(path: &Path, read: impl FnOnce(&mut BufReader<std::process::ChildStdout>)) -> Result<(), String> {
     let mut child = Command::new(APT_HELPER)
         .arg("cat-file")
         .arg(path)
@@ -138,7 +144,7 @@ fn read_compressed(path: &Path, wanted: &HashMap<&str, &str>, out: &mut HashMap<
         .spawn()
         .map_err(|e| format!("{APT_HELPER}: {e}"))?;
     if let Some(stdout) = child.stdout.take() {
-        read_list(&mut BufReader::new(stdout), wanted, out);
+        read(&mut BufReader::new(stdout));
     }
     match child.wait() {
         Ok(status) if status.success() => Ok(()),
@@ -162,7 +168,7 @@ fn offered(ctx: &ScanCtx, col: &mut Collector, wanted: &HashMap<&str, &str>) -> 
         if !compressed(&name) {
             let Ok(file) = std::fs::File::open(&path) else { continue };
             read_list(&mut BufReader::new(file), wanted, &mut out);
-        } else if let Err(why) = read_compressed(&path, wanted, &mut out) {
+        } else if let Err(why) = unpack(&path, |reader| read_list(reader, wanted, &mut out)) {
             col.note(format!("The compressed package list {name} could not be read: {why}"));
         }
     }
@@ -189,14 +195,102 @@ pub struct Local {
     pub retired: Vec<Installed>,
 }
 
-/// Sort the installed packages against what the sources offer.
-pub fn local_packages(installed: &[Installed], offered: &HashMap<String, Vec<String>>) -> Local {
+/// What apt's own records say it installed. `dpkg -i` writes in neither of them.
+#[derive(Debug, Default)]
+pub struct AptRecords {
+    /// Packages apt marked as installed to satisfy another one (`/var/lib/apt/extended_states`).
+    pub automatic: HashSet<String>,
+    /// (name, version) that apt's history says it installed from its sources.
+    pub history: HashSet<(String, String)>,
+}
+
+impl AptRecords {
+    /// Read the names in `extended_states`.
+    pub fn read_states(&mut self, text: &str) {
+        self.automatic.extend(text.lines().filter_map(|l| l.strip_prefix("Package: ")).map(|n| n.trim().to_string()));
+    }
+
+    /// Read `/var/log/apt/history.log`. Commands that name a `.deb` file don't count: apt
+    /// installed that file because someone handed it over, not because a source offered it.
+    pub fn read_history(&mut self, text: &str) {
+        for block in text.split("\n\n") {
+            let from_file = block.lines().filter_map(|l| l.strip_prefix("Commandline: ")).any(|c| c.split_whitespace().any(|w| w.trim_matches(['"', '\'']).ends_with(".deb")));
+            if from_file {
+                continue;
+            }
+            for line in block.lines() {
+                // "Upgrade: name:amd64 (old, new), …" names the new version second
+                let Some((list, second)) = ["Install: ", "Reinstall: "].iter().find_map(|k| line.strip_prefix(k).map(|l| (l, false))).or_else(|| ["Upgrade: ", "Downgrade: "].iter().find_map(|k| line.strip_prefix(k).map(|l| (l, true)))) else { continue };
+                for entry in list.split("), ") {
+                    let Some((name, versions)) = entry.split_once(" (") else { continue };
+                    let name = name.split(':').next().unwrap_or(name);
+                    let mut versions = versions.trim_end_matches(')').split(", ");
+                    let first = versions.next();
+                    let Some(version) = (if second { versions.next() } else { first }) else { continue };
+                    self.history.insert((name.to_string(), version.to_string()));
+                }
+            }
+        }
+    }
+
+    pub fn installed_by_apt(&self, p: &Installed) -> bool {
+        self.automatic.contains(&p.name) || self.history.contains(&(p.name.clone(), p.version.clone()))
+    }
+}
+
+/// apt's records. The older, packed history files are only unpacked while one of the `wanted`
+/// packages is still unexplained, newest first.
+fn apt_records(ctx: &ScanCtx, col: &mut Collector, wanted: &[&Installed]) -> AptRecords {
+    let mut records = AptRecords::default();
+    if wanted.is_empty() {
+        return records;
+    }
+    if let Ok(text) = ctx.sys.read_string("/var/lib/apt/extended_states") {
+        records.read_states(&text);
+    }
+    if let Ok(text) = ctx.sys.read_string("/var/log/apt/history.log") {
+        records.read_history(&text);
+    }
+    // "history.log.2.gz" is older than "history.log.1.gz"
+    let mut older: Vec<(u32, String)> = ctx
+        .sys
+        .dir_names("/var/log/apt")
+        .into_iter()
+        .filter_map(|n| Some((n.strip_prefix("history.log.")?.split('.').next()?.parse().ok()?, n)))
+        .collect();
+    older.sort();
+    for (_, name) in older {
+        if wanted.iter().all(|p| records.installed_by_apt(p)) {
+            break;
+        }
+        let path = format!("/var/log/apt/{name}");
+        if !compressed_file(&name) {
+            if let Ok(text) = ctx.sys.read_string(&path) {
+                records.read_history(&text);
+            }
+            continue;
+        }
+        let mut text = Vec::new();
+        match unpack(&ctx.sys.path(&path), |reader| {
+            let _ = reader.read_to_end(&mut text);
+        }) {
+            Ok(()) => records.read_history(&String::from_utf8_lossy(&text)),
+            Err(why) => col.note(format!("The old apt history {name} could not be read: {why}")),
+        }
+    }
+    records
+}
+
+/// Sort the installed packages against what the sources offer. A package counts as Debian's own
+/// old one only when its maintainer is Debian and apt's records show that apt installed it: the
+/// maintainer is only what the package says about itself.
+pub fn local_packages(installed: &[Installed], offered: &HashMap<String, Vec<String>>, apt: &AptRecords) -> Local {
     let mut out = Local::default();
     for p in installed {
         match offered.get(&p.name) {
             // kernels of earlier updates leave the sources while they stay installed
-            None if p.name.starts_with("linux-") && p.maintainer.contains("Debian Kernel") => out.kernels.push(p.name.clone()),
-            None if from_debian(&p.maintainer) => out.retired.push(p.clone()),
+            None if p.name.starts_with("linux-") && p.maintainer.contains("Debian Kernel") && apt.installed_by_apt(p) => out.kernels.push(p.name.clone()),
+            None if from_debian(&p.maintainer) && apt.installed_by_apt(p) => out.retired.push(p.clone()),
             None => out.unknown.push(p.clone()),
             Some(versions) if !versions.contains(&p.version) => {
                 // older than offered is an update that is waiting
@@ -218,6 +312,8 @@ pub fn check_packages(ctx: &ScanCtx, col: &mut Collector) {
     if installed.is_empty() {
         return;
     }
+    // what was installed when the baseline was made tells a new package from one a source dropped
+    col.inventory.installed_packages = Some(installed.iter().map(|p| format!("{} {}", p.name, p.version)).collect());
     let wanted: HashMap<&str, &str> = installed.iter().map(|p| (p.name.as_str(), p.version.as_str())).collect();
     let Some(offered) = offered(ctx, col, &wanted) else {
         col.note("Locally installed packages were not looked for: apt has no package lists here (run apt update)");
@@ -228,9 +324,11 @@ pub fn check_packages(ctx: &ScanCtx, col: &mut Collector) {
         col.note("Locally installed packages were not looked for: apt's package lists look incomplete (run apt update)");
         return;
     }
-    let Local { unknown, newer, kernels, retired } = local_packages(&installed, &offered);
+    // only packages that claim to be Debian's and that no source offers need apt's records
+    let claiming: Vec<&Installed> = installed.iter().filter(|p| !offered.contains_key(&p.name) && (from_debian(&p.maintainer) || p.maintainer.contains("Debian Kernel"))).collect();
+    let Local { unknown, newer, kernels, retired } = local_packages(&installed, &offered, &apt_records(ctx, col, &claiming));
     let line = |p: &Installed| format!("{} {} (maintainer: {})", p.name, p.version, if p.maintainer.is_empty() { "not stated" } else { &p.maintainer });
-    // the baseline remembers Debian's retired packages too, marked so that they stay quiet
+    // the baseline remembers Debian's retired packages too, marked as such
     col.inventory.local_packages = Some(
         unknown.iter().map(|p| p.name.clone()).chain(newer.iter().map(|n| n.0.name.clone())).chain(retired.iter().map(|p| format!("{}{RETIRED}", p.name))).collect(),
     );
@@ -242,7 +340,7 @@ pub fn check_packages(ctx: &ScanCtx, col: &mut Collector) {
         col.push(
             Finding::new(Severity::Info, MODULE, "PERS-RETIRED-PACKAGE", format!("{} Debian package(s) installed that the sources no longer carry", retired.len()))
                 .evidence(clip(&names.join(", "), 1500))
-                .description("Packages with a Debian maintainer that no source offers, usually left over from an upgrade to a new Debian release. They get no more updates; apt autoremove or apt purge removes the ones you do not need.")
+                .description("Packages with a Debian maintainer that apt installed and no source offers any more, usually left over from an upgrade to a new Debian release. They get no more updates; apt autoremove or apt purge removes the ones you do not need.")
                 .verify("apt list '~o'")
                 .verify(format!("apt-cache policy {}", shq(&retired[0].name))),
         );

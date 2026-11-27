@@ -7,7 +7,7 @@ use super::{record, MODULE};
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{capped, clip, cut_short, max_severity, reasons, shq};
 use crate::modules::secrets::{hide_secrets, judge_proxy};
-use crate::modules::{debianfs, Collector, ScanCtx};
+use crate::modules::{debianfs, homeindex, Collector, ScanCtx};
 use crate::pkgverify::{verify_paths, Verdict};
 use md5::{Digest, Md5};
 use std::collections::{HashMap, HashSet};
@@ -163,27 +163,27 @@ fn check_proxy_files(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
 
 /// Proxy auto-config files, which decide for browsers which server their traffic takes.
 fn check_pac_files(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
-    let mut roots: Vec<(String, usize)> = vec![("/etc".into(), 3)];
-    roots.extend(homes.iter().map(|(_, _, h)| (h.clone(), 3)));
+    let walk = WalkDir::new(ctx.sys.path("/etc"))
+        .max_depth(3)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !e.file_type().is_dir() || !e.file_name().to_string_lossy().starts_with('.'))
+        .filter_map(|e| e.ok());
+    let mut candidates: Vec<String> = capped(walk, 30_000, "/etc for proxy auto-config files (files and folders)")
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+            e.file_type().is_file() && (name.ends_with(".pac") || name == "wpad.dat")
+        })
+        .map(|e| ctx.sys.display(e.path()))
+        .collect();
+    for (_, _, home) in homes {
+        candidates.extend(homeindex::of(ctx, home).pac_files.iter().cloned());
+    }
     let mut found = Vec::new();
-    for (root, depth) in roots {
-        let walk = WalkDir::new(ctx.sys.path(&root))
-            .max_depth(depth)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| e.depth() == 0 || !e.file_type().is_dir() || e.file_name() == ".config" || !e.file_name().to_string_lossy().starts_with('.'))
-            .filter_map(|e| e.ok());
-        let walk = capped(walk, 30_000, format!("{root} for proxy auto-config files (files and folders)"));
-        for entry in walk.filter(|e| e.file_type().is_file()) {
-            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            if !(name.ends_with(".pac") || name == "wpad.dat") {
-                continue;
-            }
-            let path = ctx.sys.display(entry.path());
-            if ctx.sys.read_string(&path).map(|t| t.contains("FindProxyForURL")).unwrap_or(false) {
-                record(ctx, col, &path);
-                found.push(path);
-            }
+    for path in candidates {
+        if ctx.sys.read_string(&path).map(|t| t.contains("FindProxyForURL")).unwrap_or(false) {
+            record(ctx, col, &path);
+            found.push(path);
         }
     }
     if !found.is_empty() {

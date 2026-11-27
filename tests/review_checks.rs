@@ -218,6 +218,8 @@ fn debian_packages_retired_by_an_upgrade_are_one_quiet_line() {
     let status = "Package: dpkg\nStatus: install ok installed\nVersion: 1.22\n\nPackage: libold1\nStatus: install ok installed\nMaintainer: A <a@debian.org>\nVersion: 1\n\nPackage: libold2\nStatus: install ok installed\nMaintainer: B <b@lists.alioth.debian.org>\nVersion: 1\n";
     write(root, "/var/lib/dpkg/status", status);
     write(root, "/var/lib/apt/lists/deb.debian.org_dists_trixie_main_binary-amd64_Packages", "Package: dpkg\nVersion: 1.22\n");
+    write(root, "/var/lib/apt/extended_states", "Package: libold1\nArchitecture: amd64\nAuto-Installed: 1\n");
+    write(root, "/var/log/apt/history.log", "Start-Date: 2025-01-01  10:00:00\nCommandline: apt-get install libold2\nInstall: libold2:amd64 (1)\nEnd-Date: 2025-01-01  10:00:01\n");
     let report = scan(root, &[ModuleId::Persistence]);
     assert!(of(&report, "PERS-LOCAL-PACKAGE").is_empty());
     let retired = of(&report, "PERS-RETIRED-PACKAGE");

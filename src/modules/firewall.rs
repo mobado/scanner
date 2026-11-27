@@ -38,6 +38,40 @@ struct Chain {
     rules: Vec<String>,
 }
 
+/// A saved accept rule as the baseline compares it. Docker and libvirt write rules with each
+/// container's address and interface; in their chains private addresses and the random interface
+/// names are left out, so a new container is not a new kind of rule. `DOCKER-USER` holds rules
+/// people write themselves and is compared as it is.
+pub fn comparable_rule(rule: &str) -> String {
+    let Some((head, body)) = rule.split_once(": ") else { return rule.to_string() };
+    let words: Vec<&str> = head.split_whitespace().collect();
+    let Some((chain, table)) = words.split_last() else { return rule.to_string() };
+    let theirs = (chain.starts_with("DOCKER") && *chain != "DOCKER-USER")
+        || chain.starts_with("LIBVIRT_")
+        || table.iter().any(|w| w.starts_with("libvirt") || w.starts_with("docker"));
+    if !theirs {
+        return rule.to_string();
+    }
+    let body: Vec<String> = body
+        .split_whitespace()
+        .map(|word| {
+            let core = word.trim_matches(['"', ',', '{', '}']);
+            let address = core.split('/').next().unwrap_or(core);
+            let plain = if core.starts_with("veth") {
+                "veth*"
+            } else if core.strip_prefix("br-").is_some_and(|id| id.len() >= 8 && id.chars().all(|c| c.is_ascii_hexdigit())) {
+                "br-*"
+            } else if address.parse::<IpAddr>().is_ok_and(|ip| !is_public(&ip) && !ip.is_unspecified()) {
+                return word.replace(address, "<address>");
+            } else {
+                return word.to_string();
+            };
+            word.replace(core, plain)
+        })
+        .collect();
+    format!("{head}: {}", body.join(" "))
+}
+
 /// A rule without its packet counter, rule number and time left.
 fn without_counter(rule: &str) -> String {
     let rule = rule.split(" # handle ").next().unwrap_or(rule);

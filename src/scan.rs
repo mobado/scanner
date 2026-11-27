@@ -183,6 +183,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
 
     // left over from an earlier scan in this thread
     crate::modules::common::take_cut_short();
+    crate::modules::homeindex::forget();
     let mut modules_run = Vec::new();
     for m in ModuleId::ALL {
         if !opts.modules.contains(&m) {
@@ -263,7 +264,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
                     ));
                 }
                 // both kinds go into the automatic baseline
-                upgraded_files = apt.upgraded.into_iter().chain(apt.matching).map(|(p, _)| p).collect();
+                upgraded_files = apt.upgraded.into_iter().chain(apt.matching).map(|(p, _)| p).chain(apt.rewritten).collect();
                 // New ports of a program you trust in the whitelist (installed under /usr) are not news.
                 f.retain(|x| {
                     x.rule != "BASE-LISTEN-NEW"

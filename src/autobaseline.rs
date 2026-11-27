@@ -80,6 +80,12 @@ pub fn refresh_upgraded(report: &Report, path: &std::path::Path) -> Result<usize
     let mut base = Baseline::load(path)?;
     let mut n = 0;
     for file in &report.upgraded_files {
+        // a boot file that GRUB or fwupd wrote again after their update
+        let key = format!("efi_file {file}");
+        if let Some(hash) = report.inventory.boot.get(&key) {
+            base.boot.insert(key, hash.clone());
+            n += 1;
+        }
         if let Some(e) = report.inventory.suid.iter().find(|e| &e.path == file) {
             base.suid.retain(|x| &x.path != file);
             base.suid.push(e.clone());
@@ -137,6 +143,16 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
         if !fresh.is_empty() {
             base.boot.extend(fresh.into_iter().map(|(k, v)| (k.clone(), v.clone())));
             added.push("the boot files built on this computer".to_string());
+        }
+    }
+    if base.installed_packages.is_none() && ran("persistence") {
+        if let Some(now) = &report.inventory.installed_packages {
+            // packages the comparison still has to report are not taken as installed back then
+            let name = |p: &str| p.strip_suffix(crate::modules::persistence::packages::RETIRED).unwrap_or(p).to_string();
+            let known: Vec<String> = base.local_packages.iter().flatten().map(|p| name(p)).collect();
+            let news: Vec<String> = report.inventory.local_packages.iter().flatten().map(|p| name(p)).filter(|p| base.local_packages.is_some() && !known.contains(p)).collect();
+            base.installed_packages = Some(now.iter().filter(|p| !p.split(' ').next().is_some_and(|n| news.iter().any(|x| x == n))).cloned().collect());
+            added.push("the installed packages".to_string());
         }
     }
     // Kinds of files that later versions started to track.

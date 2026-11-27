@@ -123,7 +123,7 @@ fn log_operations(sys: &SysRoot, since: SystemTime) -> BTreeMap<String, String> 
 }
 
 /// "/a/b/../c" → "/a/c"
-fn tidy(path: &str) -> String {
+pub(crate) fn tidy(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/').filter(|p| !p.is_empty() && *p != ".") {
         if part == ".." {
@@ -268,6 +268,34 @@ pub struct Applied {
     pub matching: Vec<(String, String)>,
     /// One line per confirmed package operation, for the report notes.
     pub operations: Vec<String>,
+    /// Boot files written again after their package was updated (kept as Info findings).
+    pub rewritten: Vec<String>,
+}
+
+/// A boot file that GRUB or fwupd writes itself: Info when dpkg.log shows that its package was
+/// installed or upgraded after the baseline.
+fn explain_boot_files(sys: &SysRoot, findings: &mut [Finding], created: SystemTime, applied: &mut Applied) {
+    if !findings.iter().any(|f| f.rule == "BASE-EFI-FILE-CHANGED") {
+        return;
+    }
+    let ops = log_operations(sys, created);
+    for f in findings.iter_mut().filter(|f| f.rule == "BASE-EFI-FILE-CHANGED") {
+        let Some(path) = path_of(f) else { continue };
+        let file = crate::procinfo::basename(&path).to_ascii_lowercase();
+        // the packages whose installation writes this file again
+        let writers: &[&str] = if file.starts_with("grub") {
+            &["grub-efi", "grub-common", "grub2-common"]
+        } else if file.starts_with("fwupd") {
+            &["fwupd"]
+        } else {
+            &[]
+        };
+        if let Some((_, how)) = ops.iter().find(|(package, _)| writers.iter().any(|w| package.starts_with(w))) {
+            f.severity = Severity::Info;
+            f.description = format!("Checked: dpkg.log shows an update after the baseline that writes this file again ({how}).");
+            applied.rewritten.push(path);
+        }
+    }
 }
 
 /// Drop the baseline findings that apt explains; annotate the others with what was checked.
@@ -275,6 +303,7 @@ pub fn apply(sys: &SysRoot, findings: &mut Vec<Finding>, baseline_created: &str)
     let mut applied = Applied::default();
     let Ok(created) = chrono::DateTime::parse_from_str(baseline_created, "%Y-%m-%d %H:%M:%S %z") else { return applied };
     let created: SystemTime = created.into();
+    explain_boot_files(sys, findings, created, &mut applied);
     let paths: Vec<String> = findings.iter().filter(|f| CHECKED.contains(&f.rule.as_str())).filter_map(path_of).collect();
     if paths.is_empty() {
         return applied;

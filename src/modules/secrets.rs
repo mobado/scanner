@@ -2,14 +2,13 @@
 //! that others can read, settings in the environment that load code into programs, and tokens
 //! carried by running programs. Secret values are never read into a report.
 
-use super::common::{analyze_command, capped, clip, risky_home_place, shq};
+use super::common::{analyze_command, clip, risky_home_place, shq};
 use super::{Collector, ScanCtx};
 use crate::config::Config;
 use crate::finding::{Finding, Severity};
 use crate::procinfo::ProcInfo;
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
-use walkdir::WalkDir;
 
 // ---------------------------------------------------------------- open password stores
 
@@ -318,26 +317,12 @@ fn private_keys(ctx: &ScanCtx, home: &str) -> Vec<String> {
     out
 }
 
-/// `.env` files of projects in a home folder.
-fn env_files(ctx: &ScanCtx, home: &str) -> Vec<String> {
-    let walk = WalkDir::new(ctx.sys.path(home))
-        .follow_links(false)
-        .max_depth(4)
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !(e.file_type().is_dir() && (e.file_name().to_string_lossy().starts_with('.') || e.file_name() == "node_modules")))
-        .filter_map(|e| e.ok());
-    capped(walk, 30_000, format!("{home} for .env files (files and folders)"))
-        .filter(|e| e.file_type().is_file() && (e.file_name() == ".env" || e.file_name() == ".env.local" || e.file_name() == ".env.production"))
-        .map(|e| ctx.sys.display(e.path()))
-        .collect()
-}
-
 pub(crate) fn check_files(ctx: &ScanCtx, col: &mut Collector, homes: &[String]) {
     let (mut keys, mut tokens, mut loose) = (Vec::new(), Vec::new(), Vec::new());
     for home in homes {
         let mut candidates: Vec<(String, u8)> = private_keys(ctx, home).into_iter().map(|p| (p, 0)).collect();
         candidates.extend(CREDENTIALS.iter().map(|c| (format!("{home}/{c}"), 1)));
-        candidates.extend(env_files(ctx, home).into_iter().map(|p| (p, 2)));
+        candidates.extend(super::homeindex::of(ctx, home).env_files.iter().map(|p| (p.clone(), 2)));
         for (path, kind) in candidates {
             let Ok(meta) = std::fs::symlink_metadata(ctx.sys.path(&path)) else { continue };
             // an .npmrc without a token only holds settings

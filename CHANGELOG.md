@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.16.0
+Fixes:
+* A planted `.deb` could hide by naming a Debian maintainer. A package now only counts as an old
+  Debian package (or old kernel) when apt's records show that apt installed it, and the baseline
+  reports every package no source offers that was not installed in that version when it was made.
+* Python: `.pth` files that only add folders are recorded too; `sitecustomize`/`usercustomize`
+  are looked for in the added folders; a folder in `/tmp`, `/dev/shm` or another user's home is
+  High (`PERS-PYTHON-PATH`).
+* A GRUB (or fwupd) update that writes its boot file again is Info, not Medium.
+* Docker and libvirt rules that only differ in container addresses or interface names no longer
+  count as new firewall rules.
+
+Improvements:
+* Home folders are walked once per scan for Python environments, VS Code tasks, `.env` and proxy
+  auto-config files.
+* VS Code: the user's own `tasks.json` is checked; `task.allowAutomaticTasks: "on"` makes folder
+  tasks High and is reported (`PERS-VSCODE-AUTOTASKS`).
+
 ## 0.15.0
 Fixes:
 * Firewall: a rule that lets an internet address in is flagged also when it names a port or a
