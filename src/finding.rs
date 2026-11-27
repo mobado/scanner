@@ -155,11 +155,11 @@ impl Finding {
 }
 
 /// Commands that only work (or only show everything) as root.
-const ROOT_COMMANDS: [&str; 26] = [
-    "lynis", "chkrootkit", "rkhunter", "sshd ", "visudo", "passwd ", "dmesg", "debsums", "unhide",
+const ROOT_COMMANDS: [&str; 23] = [
+    "lynis", "sshd ", "visudo", "passwd ", "dmesg", "debsums", "unhide",
     "cat /proc/", "ls -l /proc/", "sha256sum /proc/", "cp /proc/", "find /proc/", "ss -tulp", "ss -tunap",
     "crontab -l -u", "cat /var/spool", "cat /root", "ssh-keygen -lf /root", "stat /root",
-    "grep -A5 Warning /var/log/rkhunter.log", "grep suggestion /var/log/lynis-report.dat", "grep -c warning /var/log/lynis",
+    "grep suggestion /var/log/lynis-report.dat", "grep -c warning /var/log/lynis",
     "cat /var/log/lynis", "ls -l /var/spool/cron",
 ];
 

@@ -22,7 +22,7 @@ export buttons).
 | `desktop_session` | Autostart, session and login-screen scripts, session D-Bus services and portals, settings of KDE Plasma, GNOME, XFCE and window managers, programs reading the keyboard, remote desktop programs, Flatpak, Snap and AppImage, Wayland or X11, automatic login and sessions, open X servers, typing tools, menu entries, PipeWire, recording, camera and microphone, portal permissions, programs that open links and files. Findings are labelled `[xdg]`, `[kde]`, `[gnome]` …; skipped on servers without a desktop |
 | `updates` | Pending security updates, other updates, reboot needed, old package lists, missing security source, processor microcode and firmware updates |
 | `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords, pkexec and polkit approvals |
-| external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed). `chkrootkit` and `rkhunter` give false alarms on modern systems, so their findings are a second opinion and never Critical |
+| external tools | `debsums` and `lynis` (if installed) |
 
 Every rule is listed in [docs/CHECKS.md](docs/CHECKS.md). What changed between versions is in
 [CHANGELOG.md](CHANGELOG.md).
@@ -88,11 +88,11 @@ src/
 │   │   ├── apt.rs      software sources (.list and .sources) and apt hooks
 │   │   └── history.rs  suspicious commands in shell histories
 │   └── common.rs       assessment of command lines (base64, /dev/tcp, curl|sh, nc -e …)
-├── external_tools.rs   debsums -c, chkrootkit, rkhunter, lynis (PATH check and timeout)
+├── external_tools.rs   debsums -c and lynis (PATH check and timeout)
 ├── baseline.rs         baseline in JSON and diff (new SUID/SGID files = Critical)
 ├── autobaseline.rs     the automatic baseline: save, complete, take in verified upgrades
 ├── pkgverify.rs        was a changed file changed by apt? (dpkg checksums + dpkg.log)
-├── second_look.rs      checks other tools' warnings (rkhunter, Lynis, chkrootkit) itself
+├── second_look.rs      runs Lynis' failed package check again
 ├── context.rs          Info level, user level, who and which package behind a finding
 ├── report.rs           sorted final report (Critical first), verdict, JSON and readable text
 ├── html.rs             self-contained HTML report
@@ -117,7 +117,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.13.1-1_amd64.deb
+sudo apt install ./scanner_0.14.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -164,7 +164,7 @@ scanner                                       # window (asks for the sudo passwo
 scanner --cli                                 # readable report in the terminal
 scanner --json --output report.json           # JSON to a file
 scanner --modules net_proc,persistence        # only some modules
-scanner --tools debsums,chkrootkit            # external tools too ("all" = all four)
+scanner --tools debsums,lynis                 # external tools too ("all" = both)
 scanner --deep-pid-scan                       # walk the whole PID range for hidden processes
 scanner --watch-wallet 60                     # listen 60 s for programs asking the password wallet
 scanner --min-severity high                   # only high and critical
@@ -268,7 +268,7 @@ The steps below are the manual way, for a machine you want to verify more strict
 
 ```sh
 # 1. Install the program and (optionally) the external tools
-sudo apt install debsums chkrootkit rkhunter lynis
+sudo apt install debsums lynis
 sudo install -m 0755 scanner /usr/local/sbin/scanner
 sudo mkdir -p /etc/scanner /var/lib/scanner /var/log/scanner
 scanner --print-config | sudo tee /etc/scanner/whitelist.toml >/dev/null
@@ -370,5 +370,5 @@ Licensed under the **GNU General Public License v3.0** – see [LICENSE](LICENSE
   so treat saved reports as private (a typed password could be on such a line).
 * A scan is a short moment: the password wallet is only heard while the scanner listens (15 s in
   the full scan), and a program that read a password file and closed it again is not seen.
-* rkhunter and lynis write their own logs in `/var/log` – the scanner itself writes nothing.
+* lynis writes its own log and report in `/var/log` – the scanner itself writes nothing.
 * The window version cannot be linked statically; the static binary is CLI-only.

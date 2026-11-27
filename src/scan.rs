@@ -225,10 +225,8 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
 
     // Warnings the scanner can check itself get a second look.
     if !tools_run.is_empty() {
-        progress("Checking the tools' warnings against dpkg …");
-        crate::second_look::explain_rkhunter(sys, &mut col.findings);
+        progress("Checking the tools' warnings …");
         crate::second_look::explain_apt_check(&mut col.findings, crate::second_look::apt_check);
-        crate::second_look::merge_login_gaps(&mut col.findings);
     }
 
     let mut baseline_compared = None;

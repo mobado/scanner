@@ -373,10 +373,11 @@ fool it, so run `debsums` or scan from trusted media when in doubt.
 | Rule | Usual level | Meaning |
 |------|-------------|---------|
 | `EXT-DEBSUMS-CHANGED` / `-MISSING` | Critical–Low | A package file differs from its `.deb` / is missing |
-| `EXT-CHKROOTKIT-INFECTED` / `-WARN` / `-WTMP` | High–Low | chkrootkit findings, a second opinion rather than proof (a login-record gap is Low, and is folded into `INT-WTMP` when both see it) |
-| `EXT-RKHUNTER-WARN` / `-KNOWN` | High–Low | rkhunter warnings, also a second opinion; known Debian false alarms are Low with a command to silence them. A "file properties have changed" warning is High when the file does not match its package |
-| `EXT-RKHUNTER-UPDATED` | Low | Files rkhunter calls changed that are exactly what their package ships and that apt installed since rkhunter last remembered them (one finding; permission or owner changes are never folded in) |
 | `EXT-LYNIS-WARN` / `-SUGGEST` | Medium/Low | Lynis warnings and hardening suggestions. A failed `apt-get check` (PKGS-7390) is tried again and is Low when it passes |
+
+`chkrootkit` and `rkhunter` are no longer run (since 0.14.0): they mostly raised false alarms
+on Debian 13, and the scanner's own checks cover hidden modules and processes, known rootkit
+module names, changed system files and login record gaps.
 
 ## What it cannot see
 

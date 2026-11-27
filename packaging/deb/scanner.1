@@ -21,7 +21,7 @@ and settings, Python startup files, editor plugins, login and log rotation scrip
 files of no package, local packages, the firewall, boot files on the EFI partition, rights of
 running programs, boot options, AppArmor, failed logins and administrator actions, and pending
 updates.
-It can also run debsums, chkrootkit, rkhunter and lynis.
+It can also run debsums and lynis.
 .PP
 It is strictly read-only: it never changes the system. The only files it writes are the
 reports and baselines you ask for, and the automatic baseline in /var/lib/scanner.
@@ -56,7 +56,7 @@ services, auth_logs, integrity, updates. desktop_session is skipped by itself on
 without a graphical desktop.
 .TP
 .BI \-\-tools " LIST"
-Comma separated: debsums, chkrootkit, rkhunter, lynis, or "all".
+Comma separated: debsums, lynis, or "all".
 .TP
 .B \-\-deep\-pid\-scan
 Walk the whole PID range to find hidden processes (slower).
@@ -116,8 +116,6 @@ Automatic baseline (root only).
 Reports from the nightly scanner\-diff.timer.
 .SH SEE ALSO
 .BR debsums (1),
-.BR chkrootkit (1),
-.BR rkhunter (8),
 .BR lynis (8),
 /usr/share/doc/scanner/README.md
 .SH AUTHOR

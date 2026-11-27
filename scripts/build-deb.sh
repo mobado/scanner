@@ -77,7 +77,7 @@ Maintainer: mobado <mobado@users.noreply.github.com>
 Installed-Size: $SIZE
 Depends: $DEPENDS
 Recommends: sudo, debsums, libgl1, libegl1, libxkbcommon0, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2
-Suggests: chkrootkit, rkhunter, lynis
+Suggests: lynis
 Section: admin
 Priority: optional
 Homepage: https://github.com/mobado/scanner
@@ -85,8 +85,8 @@ Description: read-only intrusion and backdoor scanner for Debian 13
  Looks for signs of intrusion, backdoors and persistence on Debian 13 "Trixie":
  reverse and bind shells, hidden or disguised processes, programs running from
  /tmp or deleted from disk, new SUID/SGID files, suspicious systemd units, cron
- jobs, SSH keys, sshd and PAM settings. It can also run debsums, chkrootkit,
- rkhunter and lynis. Strictly read-only: it never changes the system.
+ jobs, SSH keys, sshd and PAM settings. It can also run debsums and lynis.
+ Strictly read-only: it never changes the system.
  .
  Comes with a window and a command line (JSON and text reports, baselines) and
  a nightly systemd timer that compares the system against a saved baseline.

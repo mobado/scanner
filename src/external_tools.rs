@@ -1,4 +1,4 @@
-//! External Debian tools: debsums, chkrootkit, rkhunter and lynis.
+//! External Debian tools: debsums and lynis.
 //!
 //! Each tool is first looked up in PATH and in /usr/sbin, /sbin etc. If it is missing
 //! a note is logged and the scan continues. The tools run with a timeout
@@ -18,19 +18,15 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum Tool {
     Debsums,
-    Chkrootkit,
-    Rkhunter,
     Lynis,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 4] = [Tool::Debsums, Tool::Chkrootkit, Tool::Rkhunter, Tool::Lynis];
+    pub const ALL: [Tool; 2] = [Tool::Debsums, Tool::Lynis];
 
     pub fn binary(&self) -> &'static str {
         match self {
             Tool::Debsums => "debsums",
-            Tool::Chkrootkit => "chkrootkit",
-            Tool::Rkhunter => "rkhunter",
             Tool::Lynis => "lynis",
         }
     }
@@ -38,8 +34,6 @@ impl Tool {
     pub fn args(&self) -> &'static [&'static str] {
         match self {
             Tool::Debsums => &["-c"],
-            Tool::Chkrootkit => &["-q"],
-            Tool::Rkhunter => &["--check", "--sk", "--nocolors", "--rwo"],
             Tool::Lynis => &["audit", "system", "--quick", "--no-colors"],
         }
     }
@@ -47,8 +41,6 @@ impl Tool {
     pub fn describe(&self) -> &'static str {
         match self {
             Tool::Debsums => "Compares installed files with the package checksums",
-            Tool::Chkrootkit => "Looks for known rootkits",
-            Tool::Rkhunter => "Rootkit and backdoor hunting (writes a log in /var/log)",
             Tool::Lynis => "Security audit of the system (writes a report in /var/log)",
         }
     }
@@ -61,11 +53,15 @@ impl Tool {
 impl std::str::FromStr for Tool {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let name = s.trim().to_ascii_lowercase();
+        if name == "chkrootkit" || name == "rkhunter" {
+            return Err(format!("{name} is no longer run by the scanner (since 0.14.0); use --tools debsums,lynis"));
+        }
         Tool::ALL
             .iter()
-            .find(|t| t.binary().eq_ignore_ascii_case(s.trim()))
+            .find(|t| t.binary() == name)
             .copied()
-            .ok_or_else(|| format!("unknown tool '{s}' (debsums, chkrootkit, rkhunter, lynis)"))
+            .ok_or_else(|| format!("unknown tool '{s}' (debsums, lynis)"))
     }
 }
 
@@ -174,8 +170,6 @@ pub fn run_tool(tool: Tool, cfg: &Config, col: &mut Collector) {
     }
     let findings = match tool {
         Tool::Debsums => parse_debsums(&out.stdout, &out.stderr),
-        Tool::Chkrootkit => parse_chkrootkit(&out.stdout),
-        Tool::Rkhunter => parse_rkhunter(&out.stdout),
         Tool::Lynis => {
             let report = std::fs::read_to_string("/var/log/lynis-report.dat").unwrap_or_default();
             parse_lynis(&out.stdout, &report)
@@ -263,162 +257,6 @@ pub fn parse_debsums(stdout: &str, stderr: &str) -> Vec<Finding> {
         rest.extend(low);
     }
     rest
-}
-
-/// chkrootkit -q only prints deviations.
-pub fn parse_chkrootkit(stdout: &str) -> Vec<Finding> {
-    let module = Tool::Chkrootkit.module();
-    let mut out = Vec::new();
-    let mut other = Vec::new();
-    let mut ignored = 0usize;
-    for line in stdout.lines().map(|l| l.trim_end()).filter(|l| !l.trim().is_empty()) {
-        let lower = line.to_lowercase();
-        // chkrootkit marks files that belong to Debian packages itself; permission errors mean we are not root
-        // ifpromisc: a network card in "sniffer" mode from NetworkManager/wpa_supplicant/dhcp is normal
-        let owners: Vec<&str> = line.split(['(', ',', ')']).filter(|p| p.contains('[')).collect();
-        let benign_sniffer = lower.contains("packet sniffer")
-            && !owners.is_empty()
-            && owners.iter().all(|p| {
-                ["networkmanager", "wpa_supplicant", "dhclient", "dhcpcd", "systemd-networkd", "iwd"]
-                    .iter()
-                    .any(|ok| p.to_lowercase().contains(ok))
-            });
-        if benign_sniffer || line.contains("[From Debian package:") || lower.contains("permission denied") || lower.contains("needs root privileges") {
-            ignored += 1;
-            continue;
-        }
-        if lower.contains("infected") && !lower.contains("not infected") {
-            out.push(
-                Finding::new(Severity::High, &module, "EXT-CHKROOTKIT-INFECTED", format!("chkrootkit: {}", clip(line.trim(), 120)))
-                    .evidence(line.trim().to_string())
-                    .description("chkrootkit reports an infected file or a known rootkit. This is a signal to verify, not proof: its tests give false alarms on modern systems. Compare with debsums and the other findings.")
-                    .verify("chkrootkit -x | less")
-                    .verify("debsums -c"),
-            );
-        } else {
-            other.push(line.trim().to_string());
-        }
-    }
-    // Headings without lines of their own ("... were found:") mean nothing once the lines below are filtered out
-    let mut kept: Vec<String> = Vec::new();
-    for (i, l) in other.iter().enumerate() {
-        let is_header = l.ends_with(':') || l.ends_with("failed):");
-        let next_is_content = other.get(i + 1).map(|n| !(n.ends_with(':'))).unwrap_or(false);
-        if !is_header || next_is_content {
-            kept.push(l.clone());
-        }
-    }
-    // chkwtmp: a gap in the login records is common (crashes, power cuts, the move to wtmpdb) – keep it apart and Low
-    let mut wtmp: Vec<String> = Vec::new();
-    let mut other: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < kept.len() {
-        if kept[i].to_lowercase().contains("chkwtmp") {
-            wtmp.push(kept[i].clone());
-            while i + 1 < kept.len() && kept[i + 1].contains("deletion") {
-                wtmp.push(kept[i + 1].clone());
-                i += 1;
-            }
-        } else {
-            other.push(kept[i].clone());
-        }
-        i += 1;
-    }
-    if wtmp.iter().any(|l| l.contains("deletion")) {
-        out.push(
-            Finding::new(Severity::Low, &module, "EXT-CHKROOTKIT-WTMP", "chkrootkit: a gap in the login records (wtmp)")
-                .evidence(wtmp.join("\n"))
-                .description("chkwtmp found zeroed entries in the login history. That usually comes from a crash, a power cut or a reboot while the file was written (Debian 13 is also moving from wtmp to wtmpdb). It is only worth a closer look if the time matches a moment you were logged in and did not crash anything.")
-                .verify("last -x | head -40")
-                .verify("chkrootkit chkwtmp"),
-        );
-    }
-    if ignored > 0 && other.is_empty() && out.is_empty() {
-        return out;
-    }
-    if !other.is_empty() {
-        out.push(
-            Finding::new(Severity::Medium, &module,"EXT-CHKROOTKIT-WARN", format!("chkrootkit reported {} deviation(s)", other.len()))
-                .evidence(clip(&other.join("\n"), 1500))
-                .description("The lines below are chkrootkit's warnings (suspicious files, hidden directories, promiscuous network card …). A second opinion with many false alarms on modern systems; review every line.")
-                .verify("chkrootkit"),
-        );
-    }
-    out
-}
-
-/// rkhunter warnings that are known and harmless on Debian 13.
-const RKHUNTER_KNOWN_DEBIAN: [(&str, &str); 4] = [
-    ("/etc/.updated", "/etc/.updated is created by systemd-update-done and only holds a timestamp."),
-    ("/usr/bin/lwp-request", "lwp-request is a Perl script from the Debian package libwww-perl; rkhunter thinks it replaced a program."),
-    ("/etc/.resolv.conf.systemd-resolved.bak", "Backup copy that systemd-resolved creates at installation."),
-    ("/dev/shm/PostgreSQL", "Shared memory used by PostgreSQL."),
-];
-
-/// A known false alarm: (why it is harmless, command that silences it).
-fn rkhunter_known(g: &[String], text: &str) -> Option<(String, String)> {
-    if g.first().map(|l| l.starts_with("Suspicious file types found in /dev")).unwrap_or(false) {
-        let paths: Vec<String> = g[1..].iter().map(|l| l.split(": ").next().unwrap_or(l).trim().to_string()).collect();
-        if !paths.is_empty() && paths.iter().all(|p| p.starts_with("/dev/shm/")) {
-            let args: Vec<String> = paths.iter().map(|p| format!("'ALLOWDEVFILE={p}'")).collect();
-            return Some((
-                "These are shared-memory files that desktop programs (audio plug-ins, browsers, Wine …) create in /dev/shm.".into(),
-                format!("printf '%s\\n' {} | sudo tee -a /etc/rkhunter.conf.local", args.join(" ")),
-            ));
-        }
-    }
-    if text.contains("'PermitRootLogin' has not been set") {
-        return Some((
-            "Debian 13's sshd defaults to PermitRootLogin prohibit-password, so root cannot log in with a password; rkhunter only wants the setting written down explicitly.".into(),
-            "echo 'PermitRootLogin prohibit-password' | sudo tee /etc/ssh/sshd_config.d/10-permit-root-login.conf".into(),
-        ));
-    }
-    RKHUNTER_KNOWN_DEBIAN
-        .iter()
-        .find(|(needle, _)| text.contains(needle))
-        .map(|(n, why)| (why.to_string(), rkhunter_silence(n)))
-}
-
-fn rkhunter_silence(needle: &str) -> String {
-    if needle.contains("lwp-request") {
-        format!("echo 'SCRIPTWHITELIST={needle}' | sudo tee -a /etc/rkhunter.conf.local")
-    } else {
-        format!("echo 'ALLOWHIDDENFILE={needle}' | sudo tee -a /etc/rkhunter.conf.local")
-    }
-}
-
-/// rkhunter --rwo prints "Warning: ..." followed by indented continuation lines.
-pub fn parse_rkhunter(stdout: &str) -> Vec<Finding> {
-    let module = Tool::Rkhunter.module();
-    let mut groups: Vec<Vec<String>> = Vec::new();
-    for line in stdout.lines() {
-        let t = line.trim();
-        if t.is_empty() {
-            continue;
-        }
-        if let Some(rest) = t.strip_prefix("Warning:") {
-            groups.push(vec![rest.trim().to_string()]);
-        } else if let Some(g) = groups.last_mut() {
-            g.push(t.to_string());
-        }
-    }
-    groups
-        .into_iter()
-        .map(|g| {
-            let text = g.join("\n");
-            if let Some((why, fix)) = rkhunter_known(&g, &text) {
-                return Finding::new(Severity::Low, &module, "EXT-RKHUNTER-KNOWN", format!("rkhunter (known Debian false alarm): {}", clip(g.first().map(|s| s.as_str()).unwrap_or(""), 100)))
-                    .evidence(clip(&text, 1500))
-                    .description(format!("{why} If you agree, the last command below silences the warning."))
-                    .verify("grep -A5 Warning /var/log/rkhunter.log")
-                    .verify(fix);
-            }
-            Finding::new(Severity::Medium, &module,"EXT-RKHUNTER-WARN", format!("rkhunter: {}", clip(g.first().map(|s| s.as_str()).unwrap_or(""), 120)))
-                .evidence(clip(&text, 1500))
-                .description("rkhunter warns. A second opinion, not proof: many warnings on modern systems are false alarms, and those after package updates go away with 'rkhunter --propupd' – only run it when the system is known to be clean.")
-                .verify("grep -A5 Warning /var/log/rkhunter.log")
-        })
-        .collect()
 }
 
 /// What a Lynis warning id means in plain words.

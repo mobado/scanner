@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.0
+* `chkrootkit` and `rkhunter` are removed: the scanner no longer runs them or suggests them.
+  The full scan runs `debsums` and `lynis`.
+
 ## 0.13.1
 * Fixed a false High alarm: `/var/lib/dpkg/diversions` was only recorded by the file permission
   module, which the window's ordinary scan leaves out. That scan still marked the automatic

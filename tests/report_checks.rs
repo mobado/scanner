@@ -1,15 +1,14 @@
-//! False alarms from a real root report: rkhunter after package upgrades, a failed apt check,
-//! journal leftovers, doubled login gaps, the lock screen's cancelled password box, systemd's
-//! own eBPF filter and AppArmor profiles shipped in complain mode. Made-up files in a temporary
-//! directory; nothing on the real system is read or changed.
+//! False alarms from a real root report: a failed apt check, journal leftovers, the lock
+//! screen's cancelled password box, systemd's own eBPF filter and AppArmor profiles shipped in
+//! complain mode. Made-up files in a temporary directory; nothing on the real system is read or
+//! changed.
 
 use scanner::config::Config;
-use scanner::external_tools::{parse_chkrootkit, parse_lynis, parse_rkhunter};
-use scanner::finding::Finding;
+use scanner::external_tools::parse_lynis;
 use scanner::modules::auth_logs::closed_password_boxes;
 use scanner::modules::integrity::journal_finding;
 use scanner::modules::kernelstate::complain_profiles;
-use scanner::second_look::{explain_apt_check, explain_rkhunter, merge_login_gaps, rkhunter_changed_file};
+use scanner::second_look::explain_apt_check;
 use scanner::{run_scan, ModuleId, ScanOptions, Severity, SysRoot};
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -26,36 +25,6 @@ fn md5(text: &str) -> String {
     Md5::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn warning(path: &str) -> String {
-    format!("Warning: The file properties have changed:\n         File: {path}\n         Current hash: aaa\n         Stored hash : bbb\n         Current inode: 2    Stored inode: 1\n         Current file modification time: 1794910239 (17-Nov-2026 11:10:39)\n         Stored file modification time : 1745058028 (19-Apr-2025 12:20:28)\n")
-}
-
-#[test]
-fn rkhunter_warnings_that_an_upgrade_explains_become_one_low_finding() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
-    for (name, now) in [("passwd", "new passwd"), ("vipw", "new vipw"), ("su", "tampered")] {
-        write(root, &format!("/usr/bin/{name}"), now);
-    }
-    let sums = format!("{}  usr/bin/passwd\n{}  usr/bin/vipw\n{}  usr/bin/su\n", md5("new passwd"), md5("new vipw"), md5("the real su"));
-    write(root, "/var/lib/dpkg/info/shadow.md5sums", &sums);
-    write(root, "/var/lib/dpkg/info/shadow.list", "/usr/bin/passwd\n");
-    write(root, "/var/log/dpkg.log", "2026-11-17 11:12:00 upgrade shadow:amd64 1 2\n");
-    let text = format!("{}{}{}{}", warning("/usr/bin/passwd"), warning("/usr/bin/vipw"), warning("/usr/bin/su"), warning("/usr/local/bin/own"));
-    let mut findings = parse_rkhunter(&text);
-    assert_eq!(findings.len(), 4);
-    explain_rkhunter(&SysRoot::new(root), &mut findings);
-    let explained = findings.iter().find(|f| f.rule == "EXT-RKHUNTER-UPDATED").expect("explained");
-    assert_eq!(explained.severity, Severity::Low);
-    assert!(explained.evidence.contains("/usr/bin/passwd") && explained.evidence.contains("/usr/bin/vipw") && !explained.evidence.contains("/usr/bin/su "));
-    let rest: Vec<(Severity, bool)> = findings.iter().filter(|f| f.rule == "EXT-RKHUNTER-WARN").map(|f| (f.severity, f.evidence.contains("/usr/bin/su\n"))).collect();
-    assert_eq!(rest, vec![(Severity::High, true), (Severity::Medium, false)]);
-
-    // changed permissions are never explained away
-    let changed = "The file properties have changed:\nFile: /usr/bin/passwd\nCurrent permissions: 0777    Stored permissions: 4755\nStored file modification time : 1745058028 (x)";
-    assert_eq!(rkhunter_changed_file(changed), None);
-}
-
 #[test]
 fn a_failed_apt_check_is_tried_again() {
     let report = "warning[]=PKGS-7390|apt-get check returned a non successful exit code.|-|-|\n";
@@ -69,19 +38,10 @@ fn a_failed_apt_check_is_tried_again() {
 }
 
 #[test]
-fn journal_leftovers_and_doubled_login_gaps() {
+fn journal_leftovers_are_low() {
     let leftover = "FAIL: /var/log/journal/ec94/system@00065c-1d50.journal~ (Bad message)";
     assert_eq!(journal_finding(&[leftover]).severity, Severity::Low);
     assert_eq!(journal_finding(&[leftover, "FAIL: /var/log/journal/ec94/system.journal (Bad message)"]).severity, Severity::Medium);
-
-    let mut findings: Vec<Finding> = parse_chkrootkit("chkwtmp: output:\n1 deletion(s) between Fri Nov  6 08:53:56 2026 and Fri Nov  6 08:55:52 2026\n");
-    // alone, the finding stays
-    merge_login_gaps(&mut findings);
-    assert_eq!(findings.len(), 1);
-    findings.push(Finding::new(Severity::Low, "integrity", "INT-WTMP", "Damaged login records in /var/log/wtmp").evidence("/var/log/wtmp: 204288 bytes, 1 empty record(s)"));
-    merge_login_gaps(&mut findings);
-    assert_eq!(findings.len(), 1);
-    assert!(findings[0].rule == "INT-WTMP" && findings[0].evidence.contains("Nov  6 08:53:56"));
 }
 
 #[test]

@@ -3,7 +3,7 @@
 
 use scanner::baseline::{self, Baseline};
 use scanner::config::{glob_match, Config};
-use scanner::external_tools::{parse_chkrootkit, parse_debsums, parse_lynis, parse_rkhunter};
+use scanner::external_tools::{parse_debsums, parse_lynis};
 use scanner::modules::common::analyze_command;
 use scanner::modules::net_proc::{encode_hex_addr, parse_hex_addr, parse_proc_net, parse_sched_debug, parse_ss_listeners, Proto};
 use scanner::modules::persistence::{parse_authorized_key, parse_cron_line, parse_pam_line, parse_unit};
@@ -289,22 +289,17 @@ fn debsums_and_friends_parse() {
     assert!(f.iter().any(|x| x.rule == "EXT-DEBSUMS-CHANGED" && x.severity == Severity::Critical));
     assert!(f.iter().any(|x| x.rule == "EXT-DEBSUMS-CHANGED" && x.severity == Severity::Low));
     assert!(f.iter().any(|x| x.rule == "EXT-DEBSUMS-MISSING"));
-    // a second opinion: serious, but never on its own proof of a break-in
-    assert_eq!(parse_chkrootkit("Checking `ls'... INFECTED\n")[0].severity, Severity::High);
-    assert_eq!(parse_rkhunter("Warning: The file properties have changed:\n         File: /usr/bin/ls\n").len(), 1);
     assert_eq!(parse_lynis("", "warning[]=SSH-7408|Root login|\nsuggestion[]=X|y|\n").len(), 2);
 }
 
 #[test]
-fn known_debian_false_alarms_are_low() {
-    // Lines from a real root scan on Debian 13
-    let rk = parse_rkhunter("Warning: Hidden file found: /etc/.updated: ASCII text\nWarning: The command '/usr/bin/lwp-request' has been replaced by a script: /usr/bin/lwp-request: Perl script text executable\n");
-    assert_eq!(rk.len(), 2);
-    assert!(rk.iter().all(|f| f.severity == Severity::Low && f.rule == "EXT-RKHUNTER-KNOWN"), "{rk:?}");
-    let ck = parse_chkrootkit("WARNING: Output from ifpromisc:\nwlp2s0: PACKET SNIFFER(/usr/sbin/NetworkManager[1044], /usr/sbin/wpa_supplicant[1049])\nWARNING: output from chkwtmp:\n1 deletion(s) between Fri Nov  6 08:53:56 2026 and Fri Nov  6 08:55:52 2026\n");
-    assert_eq!(ck.len(), 1);
-    assert!(!ck[0].evidence.contains("SNIFFER"), "{}", ck[0].evidence);
-    assert!(ck[0].evidence.contains("chkwtmp"));
+fn removed_tools_say_so() {
+    use scanner::external_tools::Tool;
+    assert_eq!(Tool::ALL.map(|t| t.binary()), ["debsums", "lynis"]);
+    for name in ["chkrootkit", "RKHunter"] {
+        assert!(name.parse::<Tool>().expect_err("removed").contains("no longer run"));
+    }
+    assert_eq!("Lynis".parse::<Tool>(), Ok(Tool::Lynis));
 }
 
 #[test]
@@ -388,7 +383,7 @@ fn commands_that_need_root_get_sudo() {
     assert_eq!(sudoize("ls -l /proc/12/exe /proc/12/cwd"), "sudo ls -l /proc/12/exe /proc/12/cwd");
     assert_eq!(sudoize("ss -tulpn | grep ':111 '"), "sudo ss -tulpn | grep ':111 '");
     assert_eq!(sudoize("cat /sys/module/x; rpcinfo -p"), "cat /sys/module/x; rpcinfo -p");
-    assert_eq!(sudoize("cat /sys/module/x; chkrootkit chkwtmp"), "cat /sys/module/x; sudo chkrootkit chkwtmp");
+    assert_eq!(sudoize("cat /sys/module/x; debsums -c"), "cat /sys/module/x; sudo debsums -c");
     assert_eq!(sudoize("echo x | sudo tee /etc/f"), "echo x | sudo tee /etc/f", "already sudo");
     assert_eq!(sudoize("dpkg -S /usr/bin/ls"), "dpkg -S /usr/bin/ls");
 }
@@ -398,25 +393,6 @@ fn lynis_warnings_explain_and_use_sudo() {
     let f = parse_lynis("", "warning[]=PKGS-7392|Found one or more vulnerable packages.|\n");
     assert_eq!(f[0].verify[0], "sudo lynis show details PKGS-7392");
     assert!(f[0].description.contains("updates"), "{}", f[0].description);
-}
-
-#[test]
-fn rkhunter_dev_shm_and_permitrootlogin_are_known() {
-    let out = "Warning: Suspicious file types found in /dev:\n         /dev/shm/lsp-catalog-malte.shm: data\n         /dev/shm/lsp-catalog-malte.lock: data\nWarning: The SSH configuration option 'PermitRootLogin' has not been set.\n         The default value may be 'yes', to allow root access.\nWarning: Something really odd in /dev/shm/x\n";
-    let f = parse_rkhunter(out);
-    assert_eq!(f.len(), 3);
-    assert_eq!(f[0].rule, "EXT-RKHUNTER-KNOWN");
-    assert!(f[0].verify.last().expect("fix").contains("ALLOWDEVFILE=/dev/shm/lsp-catalog-malte.shm"), "{:?}", f[0].verify);
-    assert_eq!(f[1].rule, "EXT-RKHUNTER-KNOWN");
-    assert_eq!(f[2].rule, "EXT-RKHUNTER-WARN");
-}
-
-#[test]
-fn chkrootkit_wtmp_gap_is_low() {
-    let f = parse_chkrootkit("WARNING: output from chkwtmp:\n1 deletion(s) between Fri Nov  6 08:53:56 2026 and Fri Nov  6 08:55:52 2026\n");
-    assert_eq!(f.len(), 1);
-    assert_eq!(f[0].rule, "EXT-CHKROOTKIT-WTMP");
-    assert_eq!(f[0].severity, Severity::Low);
 }
 
 #[test]

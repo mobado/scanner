@@ -58,7 +58,7 @@ struct Cli {
     #[arg(long, value_delimiter = ',', value_name = "MODULES")]
     modules: Option<Vec<String>>,
 
-    /// External tools to run, comma separated (debsums,chkrootkit,rkhunter,lynis) or "all"
+    /// External tools to run, comma separated (debsums,lynis) or "all"
     #[arg(long, value_delimiter = ',', value_name = "TOOLS")]
     tools: Option<Vec<String>>,
 
