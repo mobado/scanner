@@ -53,13 +53,13 @@ pub fn graphical_signs(ctx: &ScanCtx) -> Vec<String> {
 
 /// Is this a file that the desktop_session module records for the baseline?
 pub fn is_desktop_path(path: &str) -> bool {
-    const PARTS: [&str; 34] = [
+    const PARTS: [&str; 35] = [
         "/flatpak/overrides/",
         "/autostart/", "/autostart-scripts/", "/plasma-workspace/", "/etc/X11/", "/etc/gdm3/", "/etc/sddm", "/etc/lightdm/",
         "/dbus-1/", "/xdg-desktop-portal/", "/.config/sway/", "/.config/swayidle/", "/.config/i3/", "/.i3/", "openbox/",
         "lxsession/", "/.config/hypr/", "/.config/labwc/", "/.config/wayfire.ini", "/.fluxbox/", "/.xscreensaver",
         "/etc/sway/", "/kwin/", "/kglobalaccel/", "/.config/xfce4/", "/gnome-session/", "/etc/dconf/", "/.xprofile",
-        "/.xinitrc", "/.xsession", "/pipewire/", "/wireplumber/", "/.local/share/applications/", "/systemd/linger/",
+        "/.xinitrc", "/.xsession", "/pipewire/", "/wireplumber/", "/.local/share/applications/", "/systemd/linger/", "mimeapps.list",
     ];
     PARTS.iter().any(|p| path.contains(p))
 }
@@ -118,6 +118,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
         session::check_session(ctx, col, &homes);
         media::check_media(ctx, col, &homes);
         xdg::check_user_launchers(ctx, col, &homes);
+        xdg::check_mime_handlers(ctx, col, &homes);
         input::note_sessions(ctx, col);
     }
     col.inventory.desktop = Some(signs);

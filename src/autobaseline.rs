@@ -154,6 +154,18 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
             base.ssh_keys = report.inventory.ssh_keys.clone();
             added.push("the SSH keys".to_string());
         }
+        if base.editor_plugins.is_none() && report.inventory.editor_plugins.is_some() {
+            base.editor_plugins = report.inventory.editor_plugins.clone();
+            added.push("the editor extensions".to_string());
+        }
+        if base.local_packages.is_none() && report.inventory.local_packages.is_some() {
+            base.local_packages = report.inventory.local_packages.clone();
+            added.push("the packages from outside the sources".to_string());
+        }
+        if let Some(state) = report.inventory.boot.get("firewall").filter(|_| !base.boot.is_empty() && !base.boot.contains_key("firewall")) {
+            base.boot.insert("firewall".to_string(), state.clone());
+            added.push("the firewall state".to_string());
+        }
         if base.addons.is_none() && report.inventory.addons.is_some() {
             base.addons = report.inventory.addons.clone();
             added.push("the browser add-ons".to_string());

@@ -199,6 +199,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     super::sandboxes::check_io_uring(ctx, col);
     super::sandboxes::check_namespaces(ctx, col);
     super::persistence::keys::check_loaded(ctx, col);
+    super::procrights::check(ctx, col);
     super::wallet::check_owners(ctx, col);
     super::wallet::watch(ctx, col);
     for (dir, users) in library_paths {

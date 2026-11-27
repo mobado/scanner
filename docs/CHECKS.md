@@ -59,6 +59,8 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-DNS-HANDED` | Low | DNS servers handed out by the network or VPN that are not well known |
 | `NET-DNS-LEAK` | Low | Traffic goes through a VPN but a DNS server sits on the local network |
 | `NET-PROMISC` | Medium | A network card in promiscuous (sniffing) mode (`IFF_PROMISC`) |
+| `NET-NO-FIREWALL` | Low/Info | Nothing refuses incoming connections: no `drop`/`reject` in the loaded nftables rules (root), or ufw, nftables and firewalld all off (Info without root). Lists the ports open to every network |
+| `NET-FIREWALL-ALLOW` | Medium | A rule accepts everything from an address on the internet (root) |
 | `NET-LOCAL-EXPOSED` | High/Medium | A service meant for this computer listens to the network: debuggers (High), databases, AI model and agent (MCP) servers, development servers, sync and torrent control pages |
 | `NET-LLMNR` | Info | Names are looked up by asking the local network (LLMNR, or mDNS by systemd-resolved) |
 | `NET-ROUTE-TABLE` | Low | Routes in separate tables, which the ordinary route list does not show (Tailscale's and wg-quick's are only noted) |
@@ -107,6 +109,7 @@ every network, to one address, or only to this computer.
 | `INT-WTMP` | Medium/Low | Damaged or blanked login records |
 | `INT-TIME-BACKWARDS` | Medium | Log time jumps back more than an hour; lists logins and administrator actions within 10 minutes of the jump |
 | `INT-BOOT-OPTIONS` | High–Low | Kernel options (running, `/etc/default/grub`, `grub.cfg`) such as `init=`, `apparmor=0`, `nokaslr`, `mitigations=off` |
+| `INT-EFI-FILE` | High–Info | shim, GRUB, MokManager, fallback and fwupd files on the EFI partition compared byte for byte with the copies the packages installed. High when a newer file differs, Medium when it is older than the package (run `grub-install`), Low for the fallback `EFI/BOOT` |
 | `INT-GRUB-SCRIPT` | Critical–Medium | An executable boot menu script that no package installed |
 | `INT-KERNEL-FILE` | Critical/Low | `vmlinuz`/`System.map` differs from its package, or a kernel from no package |
 | `INT-DISK-ERRORS` | Low | ext4 error counters and disk I/O errors in the kernel log, which can look like tampering |
@@ -135,6 +138,8 @@ every network, to one address, or only to this computer.
 | `PROC-ENV-INJECT` | High–Low | A running program has a variable that loads code: `NODE_OPTIONS=--require`, `PYTHONSTARTUP`, `BASH_ENV`, `LD_AUDIT`, `PERL5OPT`, `RUBYOPT`, `-javaagent`, library paths in temporary folders … |
 | `PROC-SSH-SOCKET` | Medium | `SSH_AUTH_SOCK` points somewhere key agents do not normally put their socket |
 | `PROC-ENV-SECRETS` | Medium/Low | Programs carry API keys, tokens or passwords in their environment (**names only**, values are never reported); Medium when a browser, viewer or temporary program has one |
+| `PROC-CAPABILITIES` | High–Low | A running program that is not root holds root-like capabilities (`CapEff`/`CapAmb`: sys_admin, sys_ptrace, sys_module, dac_override, net_raw …). Known services, set-uid programs and sandboxes with a user namespace of their own are skipped; shells and programs from home or temporary folders are High |
+| `PROC-ENV-PROXY` | Medium/Low | Running programs started with `http_proxy`/`https_proxy`/`all_proxy` (Low for a proxy on this computer; passwords are hidden) |
 | `PROC-SECRET-SERVICE` | High/Medium | Another program than the usual one answers as the password wallet (`org.freedesktop.secrets`, KWallet) or as the desktop portal on the session bus |
 | `PROC-KEY-LIBRARY` | High | SSH, GnuPG, sudo, OpenVPN or a wallet has loaded a library from a temporary or home folder |
 | `PROC-SECRET-CALL` | Critical–Low | A program asked the password wallet (Secret Service, GNOME Keyring, KWallet) for secrets while the scanner listened: full scan (`wallet_watch_secs` = 15) or `--watch-wallet SECS`. Medium for scripts and command line tools, High/Critical from odd folders; installed programs are only named in the notes. Passwords never pass through the scanner (`dbus-monitor --profile` shows who asked for what) |
@@ -207,6 +212,20 @@ every network, to one address, or only to this computer.
 | `PERS-APT-THIRDPARTY` | Low | A software source whose host is not in `trusted_apt_hosts` (`*.debian.org`) |
 | `PERS-APT-HOOK` | Critical/High | apt runs a suspicious command (`apt.conf.d` hooks) |
 | `PERS-HISTORY` | High–Low | Suspicious commands in a shell history (reverse shells, history switched off, logs deleted, download-and-run …); only those lines are shown |
+| `PERS-PYTHON-STARTUP` | High–Low | A `.pth` file with `import` lines, or `sitecustomize.py`/`usercustomize.py`, from no package or changed (system folders, `/usr/local`, `~/.local`, virtual environments). High when it runs text as code, starts programs or uses the network; ordinary lines from setuptools, editable installs and virtualenv are skipped |
+| `PERS-MOTD` | Critical–Medium | A script in `/etc/update-motd.d` from no package or changed; it runs as root at every login |
+| `PERS-LOGROTATE` | Critical–Low | A `postrotate`/`prerotate` script in a logrotate file from no package, changed, or with a suspicious command |
+| `PERS-ENV-PROXY` | Medium/Low | A proxy set in environment files, `curlrc`, `wgetrc` or git settings (desktop, browser, apt and pip proxies have their own rules) |
+| `PERS-PAC-FILE` | Low | Proxy auto-config files (`*.pac`, `wpad.dat`) in `/etc` or home folders |
+| `PERS-SSH-RC` | Critical–Medium | `/etc/ssh/sshrc` or a user's `~/.ssh/rc` runs at every SSH login |
+| `PERS-SYSTEMD-LOCAL` (triggers) | Medium/Low | Local `.path` and `.socket` units show what they wait for; Medium when enabled path triggers or sockets open to the network |
+| `PERS-TRIGGER-UNIT` | Medium/Low | A path or socket unit created on the fly (`systemd-run`) |
+| `PERS-UNOWNED-LIB` | High/Medium | Programs and libraries in `/usr/lib` that no package lists or ships (copies and links of packaged files are skipped; Python packages and kernel modules have other checks). High among PAM and systemd files or with hidden names |
+| `PERS-UNOWNED-SYSTEM` | Medium/Low | Other files of no package in `/etc/systemd` (mount units, targets, scripts) |
+| `PERS-LOCAL-PACKAGE` | Low | Installed packages that no software source offers (a `.deb` from a file, or a removed source); old Debian kernels are only noted |
+| `PERS-PKG-NEWER` | Medium/Low | A version newer than anything the sources offer (Medium for central system packages) |
+| `PERS-EDITOR-SCRIPT` | High/Medium | A Vim or Neovim script that runs a command typical of a break-in |
+| `PERS-EDITOR-EXTENSION` | Medium/Low | VS Code, VSCodium or Cursor extensions installed from a file, loaded from elsewhere, or in a folder the editor does not list |
 | `PERS-KERNEL-HOOK` | Critical–Medium | A script in `/etc/kernel/*.d` or `initramfs/post-update.d` that no package installed; it runs as root at every kernel installation |
 | `PERS-UKI` | Info | Unified kernel images on the EFI partition (recorded, so the baseline notices a change) |
 | `PERS-QUADLET` | Critical–Info | A Podman Quadlet starts a container; Medium with host folders, host network or full privileges, higher with a suspicious command |
@@ -255,6 +274,7 @@ made then reports `BASE-DESKTOP-NEW` (High) when a desktop appears.
 | `DESK-APPIMAGE` | Low | AppImage programs in home folders (nothing verifies or updates them) |
 | `PERS-GNOME-EXTENSION` | Low | Own GNOME Shell extensions that are switched on (read from the dconf database) |
 | `PERS-X11-OPEN` | Medium | `xhost +` opens the X11 display to others |
+| `PERS-MIME-HANDLER` | High–Info | `mimeapps.list` sends links or files to a menu entry of one's own (Medium for web, mail, folders, text and PDF; Info for app sign-in links) or to one with a suspicious command |
 | `PERS-LAUNCHER` | Critical–Medium | A menu entry in a home folder with a suspicious command, one that starts something from a hidden, cache or download folder, or one that replaces an installed program's entry |
 | `DESK-AUTOLOGIN` | Medium | SDDM, GDM, LightDM or greetd logs a user in by itself |
 | `DESK-LINGER` | Low | Services of a user run without a login (lingering) |
@@ -321,6 +341,9 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-SSH-KEY-NEW` | **Critical** | A new key in an `authorized_keys` file |
 | `BASE-BLUETOOTH-NEW` | High/Medium | A new paired Bluetooth device (High for a keyboard) |
 | `BASE-ADDON-NEW` | Medium | A browser add-on that was not switched on before |
+| `BASE-EDITOR-NEW` | Low | A new editor extension |
+| `BASE-LOCAL-PACKAGE` | Medium | A new package from outside the software sources |
+| `BASE-FIREWALL-OFF` | High | A firewall that was on is off |
 | `BASE-DEVICE-NEW` | Medium | A USB keyboard or Thunderbolt device that was not connected before |
 | `BASE-APPARMOR-OFF` | High | AppArmor or SELinux stopped protecting |
 | `BASE-DESKTOP-NEW` | High/Medium | A graphical desktop appeared on a machine that had none; a virtual or remote screen (Xvnc, x11vnc, Xvfb) started running |

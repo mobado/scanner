@@ -143,9 +143,11 @@ pub fn check_sshd_config(ctx: &ScanCtx, col: &mut Collector) -> Vec<String> {
     let rc = "/etc/ssh/sshrc";
     if ctx.sys.exists(rc) {
         record(ctx, col, rc);
+        let text = ctx.sys.read_string(rc).unwrap_or_default();
+        let (issues, _) = super::hooks::serious_lines(ctx, &text);
         col.push(
-            Finding::new(Severity::Medium, MODULE, "PERS-SSH-RC", format!("{rc} exists (runs at every SSH login)"))
-                .evidence(clip(&ctx.sys.read_string(rc).unwrap_or_default(), 600))
+            Finding::new(crate::modules::common::max_severity(&issues).unwrap_or(Severity::Medium).max(Severity::Medium), MODULE, "PERS-SSH-RC", format!("{rc} exists (runs at every SSH login)"))
+                .evidence(clip(&text, 600))
                 .description("sshrc runs for every user at login and is rarely used on Debian.")
                 .verify(format!("cat {rc}")),
         );

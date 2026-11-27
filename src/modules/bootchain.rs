@@ -175,7 +175,101 @@ fn check_disk_errors(ctx: &ScanCtx, col: &mut Collector) {
     );
 }
 
+// ---------------------------------------------------------------- shim and GRUB on the EFI partition
+
+/// The package files that a boot file on the EFI partition may be a copy of.
+fn efi_originals(name: &str) -> Vec<String> {
+    // "shimx64.efi" → shim, x64
+    let Some(stem) = name.strip_suffix(".efi") else { return Vec::new() };
+    let Some((program, arch)) = ["x64", "aa64", "ia32"].iter().find_map(|a| stem.strip_suffix(a).map(|p| (p, *a))) else { return Vec::new() };
+    let platform = match arch {
+        "aa64" => "arm64-efi",
+        "ia32" => "i386-efi",
+        _ => "x86_64-efi",
+    };
+    let shim = |n: &str| vec![format!("/usr/lib/shim/{n}{arch}.efi.signed"), format!("/usr/lib/shim/{n}{arch}.efi")];
+    let grub = |n: &str| vec![format!("/usr/lib/grub/{platform}-signed/{n}{arch}.efi.signed"), format!("/usr/lib/grub/{platform}/monolithic/{n}{arch}.efi")];
+    match program {
+        "shim" | "mm" | "fb" => shim(program),
+        "grub" => [grub("grub"), grub("gcd"), grub("grubnet")].concat(),
+        "fwupd" => vec![format!("/usr/lib/fwupd/efi/fwupd{arch}.efi.signed"), format!("/usr/lib/fwupd/efi/fwupd{arch}.efi")],
+        // the name the firmware starts when no entry says otherwise
+        "boot" => [shim("shim"), grub("grub"), shim("fb")].concat(),
+        _ => Vec::new(),
+    }
+}
+
+/// Compare Debian's boot files on the EFI partition with the copies the packages installed.
+fn check_efi_files(ctx: &ScanCtx, col: &mut Collector) {
+    let Some(esp) = ["/boot/efi/EFI", "/efi/EFI", "/boot/EFI"].into_iter().find(|d| !ctx.sys.dir_names(d).is_empty()) else {
+        if ctx.sys.exists("/sys/firmware/efi") && !ctx.privileged {
+            col.note("integrity: the EFI partition can only be read as root");
+        }
+        return;
+    };
+    let mut files = Vec::new();
+    for vendor in ctx.sys.dir_names(esp).into_iter().filter(|v| v.eq_ignore_ascii_case("debian") || v.eq_ignore_ascii_case("boot")) {
+        for name in ctx.sys.dir_names(format!("{esp}/{vendor}")) {
+            if name.to_ascii_lowercase().ends_with(".efi") {
+                files.push((vendor.eq_ignore_ascii_case("boot"), name.to_ascii_lowercase(), format!("{esp}/{vendor}/{name}")));
+            }
+        }
+    }
+    let (mut changed, mut older, mut fallback, mut unknown) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (removable, name, path) in files {
+        let Ok(data) = ctx.sys.read_bytes(&path) else { continue };
+        let originals: Vec<String> = efi_originals(&name).into_iter().filter(|o| ctx.sys.exists(o)).collect();
+        // Windows keeps its own loader under the standard name too
+        if originals.is_empty() {
+            if !removable {
+                unknown.push(format!("{path}: no package on this system has a copy to compare with"));
+            }
+            continue;
+        }
+        if originals.iter().any(|o| ctx.sys.read_bytes(o).map(|d| d == data).unwrap_or(false)) {
+            continue;
+        }
+        let written = |p: &str| std::fs::metadata(ctx.sys.path(p)).ok().and_then(|m| m.modified().ok());
+        // a file from before the package's newest copy was simply not written again
+        let newest = originals.iter().filter_map(|o| written(o)).max();
+        let line = format!("{path} differs from {}", originals[0]);
+        if removable {
+            fallback.push(line);
+        } else if written(&path).zip(newest).is_some_and(|(esp, package)| esp < package) {
+            older.push(line);
+        } else {
+            changed.push(line);
+        }
+    }
+    // the originals themselves must be what their packages ship
+    let originals: Vec<String> = ["shimx64", "mmx64", "fbx64"].iter().map(|n| format!("/usr/lib/shim/{n}.efi.signed")).chain(["/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed".to_string()]).filter(|p| ctx.sys.exists(p)).collect();
+    for (path, verdict) in verify_paths(ctx.sys, &originals, SystemTime::UNIX_EPOCH) {
+        if let Verdict::Differs { package } = verdict {
+            changed.push(format!("{path} differs from what package {package} ships"));
+        }
+    }
+    for (severity, mut lines, title, text) in [
+        (Severity::High, changed, "A boot file does not match its package", "These start before the operating system. A changed one can take over everything. Compare, then restore with: sudo apt install --reinstall shim-signed grub-efi-amd64-signed && sudo grub-install."),
+        (Severity::Medium, older, "A boot file is older than the installed package", "The package was updated but the file on the EFI partition was not written again; sudo grub-install does that."),
+        (Severity::Low, fallback, "The fallback boot file differs from the installed packages", "EFI/BOOT is started when no other entry works. It is often an old copy from the installation; grub-install --force-extra-removable refreshes it."),
+        (Severity::Info, unknown, "Boot files without a package copy to compare with", "Firmware updaters and other tools put their own files here."),
+    ] {
+        if lines.is_empty() {
+            continue;
+        }
+        lines.sort();
+        col.push(
+            Finding::new(severity, MODULE, "INT-EFI-FILE", title)
+                .evidence(lines.join("\n"))
+                .description(text)
+                .verify(format!("sha256sum {esp}/debian/*.efi /usr/lib/shim/*.signed /usr/lib/grub/*-signed/*.signed"))
+                .verify(format!("ls -l --time-style=full-iso {esp}/debian {esp}/BOOT")),
+        );
+    }
+}
+
 pub(crate) fn run(ctx: &ScanCtx, col: &mut Collector) {
+    check_efi_files(ctx, col);
     check_boot_options(ctx, col);
     check_grub_scripts(ctx, col);
     check_kernel_files(ctx, col);

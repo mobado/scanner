@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.0
+* Python code that runs at every start: `.pth` files, `sitecustomize.py`, `usercustomize.py`,
+  also in virtual environments.
+* Packages no software source offers, and versions newer than the sources.
+* `/etc/update-motd.d` and logrotate scripts; `.path` and `.socket` triggers, also ones created
+  on the fly; stronger check of `/etc/ssh/sshrc`.
+* Proxy variables, curl, wget and git proxies, PAC files.
+* Programs of no package in `/usr/lib` and other files of no package in `/etc/systemd`.
+* MIME and link handlers; Vim, Neovim and VS Code-family plugins.
+* Firewall: whether anything refuses incoming connections, and rules that let single internet
+  addresses in.
+* shim and GRUB on the EFI partition compared with their packages.
+* Root-like capabilities of running programs.
+* Baseline: new editor extensions, new local packages, firewall switched off.
+
 ## 0.12.1
 * Fixed false alarms after upgrading from an older version: browser and mail key lists
   (`pkcs11.txt`) were reported as new High changes, and unchanged package files (kernel hooks,

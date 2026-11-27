@@ -5,7 +5,7 @@
 use super::{parse_unit, record, EXEC_KEYS, MODULE};
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{analyze_command, analyze_user_command, clip, max_severity, reasons, shq, CmdIssue};
-use crate::modules::secrets::{hide_secrets, judge_variable};
+use crate::modules::secrets::{hide_secrets, is_proxy_variable, judge_proxy, judge_variable};
 use crate::modules::{Collector, ScanCtx};
 use crate::pkgverify::owned_paths;
 use std::collections::{BTreeSet, HashSet};
@@ -29,7 +29,7 @@ fn files_below(ctx: &ScanCtx, dir: &str, depth: usize) -> Vec<String> {
 }
 
 /// Problems of at least High on the non-comment lines of a file: (problems, lines).
-fn serious_lines(ctx: &ScanCtx, text: &str) -> (Vec<CmdIssue>, Vec<String>) {
+pub(super) fn serious_lines(ctx: &ScanCtx, text: &str) -> (Vec<CmdIssue>, Vec<String>) {
     let mut issues: Vec<CmdIssue> = Vec::new();
     let mut lines = Vec::new();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
@@ -157,10 +157,40 @@ fn check_dropins(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, has_dpkg: bo
 
 /// Services created while the system runs (`systemd-run`), which leave no unit file behind
 /// after a restart. Desktops start apps this way too, so only suspicious ones are reported.
+/// What a path or socket unit waits for, and what it starts.
+pub fn trigger_lines(text: &str) -> Vec<String> {
+    parse_unit(text)
+        .into_iter()
+        .filter(|(section, key, _)| (section == "Path" || section == "Socket") && (key == "Unit" || key == "Service" || key == "Accept" || key.starts_with("Listen") || key.starts_with("Path") || key == "DirectoryNotEmpty"))
+        .map(|(_, key, value)| format!("{key}={value}"))
+        .collect()
+}
+
+/// Does a socket unit wait for connections from the network? A bare port number, or an
+/// address other than this computer's own.
+pub fn listens_to_network(lines: &[String]) -> bool {
+    lines
+        .iter()
+        .filter_map(|l| l.strip_prefix("ListenStream=").or_else(|| l.strip_prefix("ListenDatagram=")))
+        .any(|v| !(v.starts_with('/') || v.starts_with('@') || v.starts_with('%') || v.starts_with("127.") || v.starts_with("[::1]") || v.starts_with("vsock:")))
+}
+
 fn check_transient(ctx: &ScanCtx, col: &mut Collector) {
     let mut dirs = vec![("/run/systemd/transient".to_string(), false)];
     dirs.extend(ctx.sys.dir_names("/run/user").into_iter().map(|u| (format!("/run/user/{u}/systemd/transient"), true)));
     for (dir, own) in dirs {
+        // "systemd-run --path-property=…" or "--socket-property=…" make a trigger on the fly
+        for path in files_below(ctx, &dir, 1).into_iter().filter(|p| p.ends_with(".path") || p.ends_with(".socket")) {
+            let Ok(text) = ctx.sys.read_string(&path) else { continue };
+            col.push(simple(
+                if own { Severity::Low } else { Severity::Medium },
+                "PERS-TRIGGER-UNIT",
+                format!("A trigger created on the fly: {path}"),
+                &path,
+                format!("{path}\n{}", clip(&trigger_lines(&text).join("\n"), 500)),
+                "A path or socket unit that exists only while the system runs starts a service when a file changes or someone connects. Check that you made it.".into(),
+            ));
+        }
         for path in files_below(ctx, &dir, 1).into_iter().filter(|p| p.ends_with(".service")) {
             let Ok(text) = ctx.sys.read_string(&path) else { continue };
             let mut issues: Vec<CmdIssue> = Vec::new();
@@ -220,13 +250,27 @@ fn check_environment_files(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
         let Ok(text) = ctx.sys.read_string(&path) else { continue };
         let mut worst = None;
         let mut lines = Vec::new();
+        let mut proxies = Vec::new();
         for line in text.lines().filter(|l| !l.trim_start().starts_with('#')) {
             let Some((name, value)) = assignment(line) else { continue };
+            if is_proxy_variable(name) && !value.is_empty() {
+                proxies.push((judge_proxy(value), clip(&hide_secrets(line.trim()), 220)));
+            }
             // a line that adds to what is already there ("$PYTHONPATH:/x") still adds the rest
             if let Some((severity, why)) = judge_variable(ctx.cfg, name, value) {
                 worst = worst.max(Some(severity));
                 lines.push(format!("{}  ← {}", clip(&hide_secrets(line.trim()), 220), hide_secrets(&why)));
             }
+        }
+        if let Some(severity) = proxies.iter().map(|p| p.0).max() {
+            col.push(simple(
+                severity,
+                "PERS-ENV-PROXY",
+                format!("Environment setting sends traffic through a proxy: {path}"),
+                &path,
+                format!("{path}\n{}", clip(&proxies.into_iter().map(|p| p.1).collect::<Vec<_>>().join("\n"), 500)),
+                "Programs that start with this environment send their web traffic through the named server, which can watch or change it. Company networks and debugging tools use proxies; check that you set it.".into(),
+            ));
         }
         let Some(severity) = worst else { continue };
         col.push(simple(

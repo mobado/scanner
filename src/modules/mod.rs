@@ -10,6 +10,8 @@ pub mod fs_perms;
 pub mod integrity;
 pub mod kernel;
 pub mod kernelstate;
+pub mod firewall;
+pub mod procrights;
 pub mod bootchain;
 pub mod netlocal;
 pub mod debianfs;
@@ -74,6 +76,12 @@ pub struct Inventory {
     /// Browser add-ons that are switched on ("profile: id name"); `None` when not read.
     #[serde(default)]
     pub addons: Option<Vec<String>>,
+    /// Editor extensions ("folder: id"); `None` when persistence did not run.
+    #[serde(default)]
+    pub editor_plugins: Option<Vec<String>>,
+    /// Names of packages no software source offers; `None` when they could not be compared.
+    #[serde(default)]
+    pub local_packages: Option<Vec<String>>,
     /// USB keyboards and Thunderbolt devices; `None` when the machine's buses were not read.
     #[serde(default)]
     pub peripherals: Option<Vec<String>>,

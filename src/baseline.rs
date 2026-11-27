@@ -52,6 +52,10 @@ pub struct Baseline {
     pub peripherals: Option<Vec<String>>,
     #[serde(default)]
     pub addons: Option<Vec<String>>,
+    #[serde(default)]
+    pub editor_plugins: Option<Vec<String>>,
+    #[serde(default)]
+    pub local_packages: Option<Vec<String>>,
 }
 
 /// The parts of a recorded key that identify it: the file and the fingerprint.
@@ -87,6 +91,37 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
             );
         }
     }
+    if let (true, Some(old), Some(new)) = (both("persistence"), &base.editor_plugins, &inv.editor_plugins) {
+        for plugin in new.iter().filter(|p| !old.contains(p)) {
+            out.push(
+                Finding::new(Severity::Low, MODULE, "BASE-EDITOR-NEW", format!("New editor extension since the baseline: {}", crate::modules::common::clip(plugin.rsplit(": ").next().unwrap_or(plugin), 80)))
+                    .evidence(format!("{plugin}\n(compared with {src})"))
+                    .description("An extension can read your files and run programs. Check that you installed this one.")
+                    .verify("Open the editor's extension view and look for it"),
+            );
+        }
+    }
+    if let (true, Some(old), Some(new)) = (both("persistence"), &base.local_packages, &inv.local_packages) {
+        for package in new.iter().filter(|p| !old.contains(p)) {
+            out.push(
+                Finding::new(Severity::Medium, MODULE, "BASE-LOCAL-PACKAGE", format!("New package from outside the software sources since the baseline: {package}"))
+                    .evidence(format!("{package}\n(compared with {src})"))
+                    .description("A .deb from a file runs its install scripts as root, and apt never checks or updates it. Check that you installed it.")
+                    .verify(format!("apt-cache policy {}", shq(package)))
+                    .verify(format!("grep ' install {}:' /var/log/dpkg.log", package)),
+            );
+        }
+    }
+    // "off" is only recorded when it is certain (as root)
+    if both("net_proc") && base.boot.get("firewall").map(String::as_str) == Some("on") && inv.boot.get("firewall").map(String::as_str) == Some("off") {
+        out.push(
+            Finding::new(Severity::High, MODULE, "BASE-FIREWALL-OFF", "The firewall has been switched off since the baseline")
+                .evidence(format!("firewall: on → off\n(compared with {src})"))
+                .description("Incoming connections that were refused before are now let through. Switch it on again if you did not switch it off.")
+                .verify("nft list ruleset")
+                .verify("ufw status verbose"),
+        );
+    }
     if let (true, Some(old), Some(new)) = (both("kernel"), &base.peripherals, &inv.peripherals) {
         for device in new.iter().filter(|d| !old.contains(d)) {
             out.push(
@@ -117,6 +152,13 @@ pub fn newly_tracked(path: &str) -> bool {
         // folders and files that live under different parents
         || ["/pkcs11/modules/", "/p11-kit/modules/", "/pipewire/", "/wireplumber/", "/systemd/linger/", "/EFI/Linux/", "/containers/systemd/", "/kwin/effects/"].iter().any(|p| path.contains(p))
         || path.ends_with("/pkcs11.txt")
+        // watched since 0.13: Python startup files, editors, handlers, login and rotation
+        // scripts, firewall and proxy settings
+        || [".pth", "customize.py", "/.vimrc", "/.gvimrc", "/.exrc", "mimeapps.list", "/.curlrc", "/.wgetrc", "/etc/curlrc", "/etc/wgetrc", ".pac", "/wpad.dat", "/etc/vim/vimrc.local"].iter().any(|e| path.ends_with(e))
+        || ["/.vim/", "/.config/nvim/", "/etc/xdg/nvim/"].iter().any(|p| path.contains(p))
+        || ["/etc/update-motd.d/", "/etc/logrotate", "/etc/ufw/", "/etc/firewalld/"].iter().any(|p| path.starts_with(p))
+        // other files in systemd's folders; units and drop-ins were watched before
+        || path.starts_with("/etc/systemd/") && ![".service", ".timer", ".socket", ".path", ".conf"].iter().any(|e| path.ends_with(e))
         // window manager files that live in /etc
         ||["/etc/xdg/openbox/", "/etc/xdg/lxsession/", "/etc/sway/", "/usr/local/share/autostart/"].iter().any(|p| path.starts_with(p))
         || path.contains("-generators/")
@@ -241,6 +283,8 @@ impl Baseline {
             bluetooth: r.inventory.bluetooth.clone(),
             peripherals: r.inventory.peripherals.clone(),
             addons: r.inventory.addons.clone(),
+            editor_plugins: r.inventory.editor_plugins.clone(),
+            local_packages: r.inventory.local_packages.clone(),
         }
     }
 
@@ -397,6 +441,9 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
         if is_desktop_path(path) && own {
             f.severity = Severity::Medium;
             f.description = "A file that starts things in a desktop session is new or changed. Adding an autostart entry or changing a desktop setting does this; check that it was you.".into();
+        } else if own && (path.ends_with("mimeapps.list") || path.ends_with("/.vimrc") || path.contains("/.vim/") || path.contains("/.config/nvim/")) {
+            f.severity = Severity::Medium;
+            f.description = "Your editor's settings or the list of programs that open your files is new or changed. Using the editor or choosing a default program does this; check that it was you.".into();
         } else if path.ends_with("/pkcs11.txt") && own {
             // browsers and mail programs write these themselves; PERS-KEY-MODULE judges the libraries
             f.severity = Severity::Medium;

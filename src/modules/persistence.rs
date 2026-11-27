@@ -10,7 +10,11 @@
 //! a baseline can show what changed.
 
 pub mod apt;
+pub mod editors;
 pub mod extra;
+pub mod packages;
+pub mod python;
+pub mod startup;
 pub mod history;
 pub mod hooks;
 pub mod keys;
@@ -70,6 +74,10 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     apt::check_apt(ctx, col);
     hooks::check_hooks(ctx, col, &homes);
     keys::check_keys(ctx, col, &homes);
+    python::check_python(ctx, col, &homes);
+    startup::check_startup(ctx, col, &homes);
+    editors::check_editors(ctx, col, &homes);
+    packages::check_packages(ctx, col);
     history::check_histories(ctx, col, &homes);
     system::check_duplicate_ids(ctx, col, &accounts);
     col.inventory.accounts = extra::collect_accounts(ctx, &accounts);
@@ -325,7 +333,9 @@ fn check_systemd(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, Stri
                 None => "",
             }
         );
-        let body: Vec<String> = exec.iter().chain(envs.iter()).chain(timer_info.iter()).cloned().collect();
+        // what a path or socket unit waits for
+        let triggers = if u.name.ends_with(".path") || u.name.ends_with(".socket") { hooks::trigger_lines(&text) } else { Vec::new() };
+        let body: Vec<String> = exec.iter().chain(envs.iter()).chain(timer_info.iter()).chain(triggers.iter()).cloned().collect();
         let evidence = format!(
             "{}{} ({}, {state})\n{}",
             u.abs,
@@ -333,7 +343,12 @@ fn check_systemd(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, Stri
             u.scope,
             clip(&body.join("\n"), 800)
         );
-        let kind = if u.name.ends_with(".timer") { "timer" } else { "unit" };
+        let kind = match u.name.rsplit('.').next() {
+            Some("timer") => "timer",
+            Some("path") => "path trigger",
+            Some("socket") => "socket",
+            _ => "unit",
+        };
 
         if let Some(mut f) = issue_finding(
             "PERS-SYSTEMD-EXEC",
@@ -351,7 +366,8 @@ fn check_systemd(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, Stri
                     .verify(format!("dpkg -S {}", shq(&read_from))),
             );
         } else if real_local && u.scope == "system" && !ctx.cfg.allowed_systemd_units.contains(&u.name) {
-            let sev = if is_enabled && kind == "timer" { Severity::Medium } else { Severity::Low };
+            // timers and file triggers run things later; a socket lets the network start them
+            let sev = if is_enabled && (kind == "timer" || kind == "path trigger" || kind == "socket" && hooks::listens_to_network(&triggers)) { Severity::Medium } else { Severity::Low };
             col.push(
                 Finding::new(sev, MODULE, "PERS-SYSTEMD-LOCAL", format!("Locally created systemd {kind}: {}", u.name))
                     .evidence(evidence.clone())

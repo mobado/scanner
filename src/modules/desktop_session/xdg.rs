@@ -290,6 +290,76 @@ pub(super) fn check_user_launchers(ctx: &ScanCtx, col: &mut Collector, homes: &[
     }
 }
 
+/// Kinds of files and links where a planted handler would see or run the most.
+const SENSITIVE_TYPES: [&str; 12] = [
+    "x-scheme-handler/http", "x-scheme-handler/https", "x-scheme-handler/mailto", "x-scheme-handler/file", "x-scheme-handler/ssh",
+    "x-scheme-handler/ftp", "x-scheme-handler/terminal", "text/html", "application/pdf", "inode/directory", "text/plain",
+    "application/x-shellscript",
+];
+
+/// (type, desktop file) pairs of the defaults and added associations in a `mimeapps.list`.
+pub fn mime_handlers(text: &str) -> Vec<(String, String)> {
+    let mut wanted = false;
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            wanted = line == "[Default Applications]" || line == "[Added Associations]";
+        } else if let Some((kind, apps)) = line.split_once('=').filter(|_| wanted) {
+            out.extend(apps.split(';').map(str::trim).filter(|a| !a.is_empty()).map(|a| (kind.trim().to_string(), a.to_string())));
+        }
+    }
+    out
+}
+
+/// Which programs open links and files: entries of one's own that take over common types, and
+/// handlers with suspicious commands.
+pub(super) fn check_mime_handlers(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)]) {
+    let mut lists: Vec<(String, String)> = ["/etc/xdg/mimeapps.list", "/usr/local/share/applications/mimeapps.list"].iter().map(|p| (p.to_string(), String::new())).collect();
+    for (_, _, home) in homes {
+        let config = format!("{home}/.config");
+        // "kde-mimeapps.list" and the like rule for one desktop
+        let names = ctx.sys.dir_names(&config).into_iter().filter(|n| n.ends_with("mimeapps.list"));
+        lists.extend(names.map(|n| (format!("{config}/{n}"), home.clone())));
+        lists.push((format!("{home}/.local/share/applications/mimeapps.list"), home.clone()));
+    }
+    for (list, home) in lists {
+        let Ok(text) = ctx.sys.read_string(&list) else { continue };
+        record(ctx, col, &list);
+        let mut found: Vec<(Severity, String)> = Vec::new();
+        for (kind, app) in mime_handlers(&text) {
+            if app.contains('/') {
+                continue;
+            }
+            // the first folder that has the file decides, a user's own before the system's
+            let mut places = vec![("/usr/local/share/applications".to_string(), true), ("/usr/share/applications".to_string(), false)];
+            if !home.is_empty() {
+                places.insert(0, (format!("{home}/.local/share/applications"), true));
+            }
+            let Some((path, own)) = places.into_iter().map(|(d, own)| (format!("{d}/{app}"), own)).find(|(p, _)| ctx.sys.exists(p)) else { continue };
+            let Some(exec) = ctx.sys.read_string(&path).ok().and_then(|t| desktop_entry(&t).0) else { continue };
+            let issues: Vec<CmdIssue> = analyze_user_command(&exec, ctx.cfg).into_iter().filter(|i| i.severity >= Severity::High).collect();
+            let line = format!("{kind} → {path}\n  Exec={}", clip(&exec, 200));
+            if let Some(severity) = max_severity(&issues) {
+                found.push((severity, format!("{line}  ← {}", reasons(&issues))));
+            } else if own {
+                let sensitive = SENSITIVE_TYPES.contains(&kind.as_str());
+                found.push((if sensitive { Severity::Medium } else { Severity::Info }, line));
+            }
+        }
+        let Some(severity) = found.iter().map(|f| f.0).max() else { continue };
+        found.sort_by(|a, b| b.0.cmp(&a.0));
+        found.dedup();
+        let lines: Vec<String> = found.into_iter().map(|f| f.1).collect();
+        col.push(
+            Finding::new(severity, MODULE, "PERS-MIME-HANDLER", format!("Own programs open some links or files: {list}"))
+                .evidence(format!("{list}\n{}", clip(&lines.join("\n"), 900)))
+                .description("Clicking a link or opening a file of these types starts a program from your own menu entries, not an installed one. Installers add such handlers for sign-in links; a planted one sees every link you open.")
+                .verify(format!("cat {}", shq(&list)))
+                .verify("xdg-mime query default x-scheme-handler/https"),
+        );
+    }
+}
+
 pub(super) fn check_xdg(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)]) {
     let has_dpkg = !ctx.sys.dir_names("/var/lib/dpkg/info").is_empty();
     check_autostart(ctx, col, homes, has_dpkg);

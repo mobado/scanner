@@ -150,6 +150,23 @@ pub fn hide_secrets(value: &str) -> String {
     words.collect::<Vec<_>>().join(" ")
 }
 
+/// "http_proxy", "HTTPS_PROXY", "all_proxy" …
+pub fn is_proxy_variable(name: &str) -> bool {
+    ["http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "auto_proxy"].contains(&name.to_ascii_lowercase().as_str())
+}
+
+/// A proxy on this computer is usually a tool of one's own; one elsewhere sees the traffic.
+pub fn judge_proxy(value: &str) -> Severity {
+    let rest = value.split_once("://").map(|(_, r)| r).unwrap_or(value);
+    let host = rest.rsplit('@').next().unwrap_or(rest).split('/').next().unwrap_or("");
+    let local = host.starts_with("127.") || host.starts_with("localhost") || host.starts_with("[::1]") || host.starts_with("unix:");
+    if local {
+        Severity::Low
+    } else {
+        Severity::Medium
+    }
+}
+
 /// Is an SSH agent socket somewhere agents normally put it?
 pub fn usual_agent_socket(path: &str) -> bool {
     let name = crate::procinfo::basename(path);
@@ -179,6 +196,8 @@ fn check_environments(ctx: &ScanCtx, col: &mut Collector) {
     let mut sockets: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // secret name → processes (names only, never values)
     let mut secrets: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // proxy setting (passwords hidden) → (severity, processes)
+    let mut proxies: BTreeMap<String, (Severity, BTreeSet<String>)> = BTreeMap::new();
     let mut misplaced = false;
     // the scanner only inherited these from whoever started it
     let own = crate::procinfo::own_exe(ctx.sys);
@@ -188,7 +207,10 @@ fn check_environments(ctx: &ScanCtx, col: &mut Collector) {
         for entry in env.split(|b| *b == 0) {
             let entry = String::from_utf8_lossy(entry);
             let Some((name, value)) = entry.split_once('=') else { continue };
-            if let Some((severity, why)) = judge_variable(ctx.cfg, name, value) {
+            if is_proxy_variable(name) && !value.is_empty() {
+                let shown = format!("{}={}", name.to_ascii_lowercase(), clip(&hide_secrets(value), 200));
+                proxies.entry(shown).or_insert((judge_proxy(value), BTreeSet::new())).1.insert(p.display_name());
+            } else if let Some((severity, why)) = judge_variable(ctx.cfg, name, value) {
                 injected.entry((name.to_string(), clip(&hide_secrets(value), 200))).or_insert((severity, hide_secrets(&why), Vec::new())).2.push(who(p));
             } else if name == "SSH_AUTH_SOCK" && !value.is_empty() && !usual_agent_socket(value) {
                 sockets.entry(value.to_string()).or_default().push(who(p));
@@ -213,6 +235,15 @@ fn check_environments(ctx: &ScanCtx, col: &mut Collector) {
                 .evidence(format!("SSH_AUTH_SOCK={socket}\n{}", list(&users)))
                 .description("Programs hand their SSH signing requests to whatever listens on this socket. A planted agent can record or misuse them. Password managers with their own agent also look like this.")
                 .verify(format!("ls -l {}", shq(&socket))),
+        );
+    }
+    if let Some(severity) = proxies.values().map(|p| p.0).max() {
+        let lines: Vec<String> = proxies.iter().map(|(setting, (_, who))| format!("{setting}: {}", clip(&who.iter().cloned().collect::<Vec<_>>().join(", "), 200))).collect();
+        col.push(
+            Finding::new(severity, super::proc_audit::MODULE, "PROC-ENV-PROXY", "Running programs send traffic through a proxy")
+                .evidence(clip(&lines.join("\n"), 900))
+                .description("These programs started with a proxy setting, so their web traffic goes through that server. Company networks, VPN tools and debuggers do this; malware does it to read traffic.")
+                .verify("env | grep -i _proxy; grep -ri _proxy /etc/environment /etc/environment.d ~/.config/environment.d 2>/dev/null"),
         );
     }
     if !secrets.is_empty() {

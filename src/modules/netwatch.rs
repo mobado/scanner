@@ -43,6 +43,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     check_packet_sockets(ctx, col);
     check_name_broadcasts(col);
     check_route_tables(ctx, col);
+    super::firewall::run(ctx, col);
 }
 
 /// LLMNR (port 5355) and multicast DNS answered by systemd-resolved: names are asked on the

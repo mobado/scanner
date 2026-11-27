@@ -12,14 +12,14 @@ export buttons).
 
 | Module | Looks for |
 |--------|-----------|
-| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), unusual outgoing connections, direct DNS, resolvers and `/etc/hosts`, ARP/routing anomalies, sniffing (promiscuous cards and raw packet sockets), port forwarding, undeclared tunnels, tunnel tools and reverse SSH, hidden processes, disguised process names, Bluetooth, shared folders, DNS settings and VPN leaks, local-only services open to the network, LLMNR, separate routing tables |
+| `net_proc` | Reverse/bind shells, unknown listening ports (mapped to PID, UID and command line), unusual outgoing connections, direct DNS, resolvers and `/etc/hosts`, ARP/routing anomalies, sniffing (promiscuous cards and raw packet sockets), port forwarding, undeclared tunnels, tunnel tools and reverse SSH, hidden processes, disguised process names, Bluetooth, shared folders, DNS settings and VPN leaks, local-only services open to the network, LLMNR, separate routing tables, whether a firewall refuses incoming connections |
 | `kernel` | Hidden, rootkit or out-of-tree modules, dangerous kernel settings (`core_pattern`, `modprobe`), modprobe commands, eBPF programs, taint marks, Secure Boot, lockdown and UEFI boot entries, AppArmor and SELinux, USB devices that are both keyboard and drive, Thunderbolt devices |
 | `services` | Web shells in web folders, container socket and Docker API exposure, privileged containers, rootless sockets and the Podman API |
-| `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps, kernel start options, GRUB scripts, the kernel file against its package, disk errors |
-| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files, shells and download tools started by browsers or document viewers, other programs holding saved passwords, cookies or wallets open, environment variables that load code, who asks the password wallet (listens briefly), SSH agent sockets, tokens in environments, io_uring and unexplained namespaces, libraries loaded into key programs, who answers as the wallet and desktop portal |
+| `integrity` | Cleared or silenced logs, damaged login records, journal verification, clock and time jumps, kernel start options, GRUB scripts, the kernel file against its package, disk errors, shim and GRUB on the EFI partition |
+| `proc_audit` | Programs running from `/tmp`, `/dev/shm`, deleted from disk or from memory, `LD_PRELOAD`, `LD_LIBRARY_PATH`, long-running high CPU use (miners), traced processes, mounts that hide or replace files, shells and download tools started by browsers or document viewers, other programs holding saved passwords, cookies or wallets open, environment variables that load code, who asks the password wallet (listens briefly), SSH agent sockets, tokens in environments, io_uring and unexplained namespaces, libraries loaded into key programs, who answers as the wallet and desktop portal, root-like capabilities, proxy variables |
 | `fs_perms` | SUID/SGID files, file capabilities, locked (immutable) files, programs in temporary folders, replaced system programs and PAM modules, dangerous permissions, downloads and hidden programs in home folders, browser add-ons, settings and helper programs (native messaging), private keys, logins and `.env` files that others can read, rewritten programs and backdated files, the merged /usr links and diversions |
-| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, network and sleep scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, environment files that load code, the boot image (initramfs), kernel hooks and unified kernel images, Podman Quadlets, GnuPG helpers and PKCS#11 libraries, apt settings and signing keys |
-| `desktop_session` | Autostart, session and login-screen scripts, session D-Bus services and portals, settings of KDE Plasma, GNOME, XFCE and window managers, programs reading the keyboard, remote desktop programs, Flatpak, Snap and AppImage, Wayland or X11, automatic login and sessions, open X servers, typing tools, menu entries, PipeWire, recording, camera and microphone, portal permissions. Findings are labelled `[xdg]`, `[kde]`, `[gnome]` …; skipped on servers without a desktop |
+| `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, network and sleep scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, environment files that load code, the boot image (initramfs), kernel hooks and unified kernel images, Podman Quadlets, GnuPG helpers and PKCS#11 libraries, apt settings and signing keys, Python startup files, login and rotation scripts, proxies, files of no package in system folders, local packages, editor plugins |
+| `desktop_session` | Autostart, session and login-screen scripts, session D-Bus services and portals, settings of KDE Plasma, GNOME, XFCE and window managers, programs reading the keyboard, remote desktop programs, Flatpak, Snap and AppImage, Wayland or X11, automatic login and sessions, open X servers, typing tools, menu entries, PipeWire, recording, camera and microphone, portal permissions, programs that open links and files. Findings are labelled `[xdg]`, `[kde]`, `[gnome]` …; skipped on servers without a desktop |
 | `updates` | Pending security updates, other updates, reboot needed, old package lists, missing security source, processor microcode and firmware updates |
 | `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords, pkexec and polkit approvals |
 | external tools | `debsums`, `chkrootkit`, `rkhunter`, `lynis` (if installed). `chkrootkit` and `rkhunter` give false alarms on modern systems, so their findings are a second opinion and never Critical |
@@ -66,6 +66,8 @@ src/
 │   ├── hardware.rs     USB keyboard-and-drive devices, Thunderbolt
 │   ├── bootchain.rs    kernel start options, GRUB scripts, kernel file, disk errors
 │   ├── debianfs.rs     merged /usr links, diversions
+│   ├── firewall.rs     whether incoming connections are refused, odd allow rules
+│   ├── procrights.rs   root-like capabilities of running programs
 │   ├── desktop_session/    the desktop module (labels, server detection)
 │   │   ├── xdg.rs      autostart, session and login-screen scripts
 │   │   ├── environments.rs  D-Bus services, portals, KDE, GNOME, XFCE and window managers
@@ -75,6 +77,10 @@ src/
 │   │   └── media.rs    PipeWire, recording, camera and microphone, portal permissions
 │   ├── persistence.rs  systemd units and timers, cron, at, rc.local, ld.so.preload
 │   │   ├── keys.rs     GnuPG programs, PKCS#11 libraries
+│   │   ├── python.rs   .pth, sitecustomize, usercustomize
+│   │   ├── startup.rs  login and rotation scripts, proxies, files of no package
+│   │   ├── editors.rs  Vim, Neovim and VS Code plugins
+│   │   ├── packages.rs packages no software source offers
 │   │   ├── ssh.rs      sshd_config (with Include) and authorized_keys
 │   │   ├── system.rs   PAM, shell files, UID 0, shared IDs, sudo NOPASSWD
 │   │   ├── rules.rs    network and sleep scripts, polkit rules
@@ -111,7 +117,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.12.1-1_amd64.deb
+sudo apt install ./scanner_0.13.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
