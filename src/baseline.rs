@@ -9,7 +9,7 @@ use crate::modules::desktop_session::is_desktop_path;
 use crate::modules::firewall::comparable_rule;
 use crate::modules::fs_perms::SuidEntry;
 use crate::modules::persistence::extra::{is_login_shell, AccountEntry};
-use crate::modules::persistence::packages::RETIRED;
+use crate::modules::persistence::packages::{sums_differ, RETIRED};
 use crate::modules::Inventory;
 use crate::report::Report;
 use serde::{Deserialize, Serialize};
@@ -134,6 +134,7 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
     }
     if both("persistence") {
         compare_package_sums(base, inv, src, out);
+        compare_package_versions(base, inv, src, out);
     }
     // "off" is only recorded when it is certain (as root)
     if both("net_proc") && base.boot.get("firewall").map(String::as_str) == Some("on") && inv.boot.get("firewall").map(String::as_str) == Some("off") {
@@ -223,7 +224,7 @@ fn compare_package_sums(base: &Baseline, inv: &Inventory, src: &str, out: &mut V
     let local: BTreeSet<&str> = inv.local_packages.iter().flatten().map(|p| p.strip_suffix(RETIRED).unwrap_or(p)).collect();
     for (key, sum) in new {
         let package = key.split(':').next().unwrap_or(key);
-        let Some(before) = old.get(key).filter(|b| *b != sum && same.contains(package)) else { continue };
+        let Some(before) = old.get(key).filter(|b| sums_differ(b, sum) && same.contains(package)) else { continue };
         let severity = if local.contains(package) { Severity::High } else { Severity::Medium };
         out.push(
             Finding::new(severity, MODULE, "BASE-PACKAGE-REPLACED", format!("A package changed without a new version since the baseline: {package}"))
@@ -232,6 +233,58 @@ fn compare_package_sums(base: &Baseline, inv: &Inventory, src: &str, out: &mut V
                 .verify(format!("dpkg -V {}", shq(package)))
                 .verify(format!("grep -E ' (install|upgrade) {}:' /var/log/dpkg.log", package))
                 .verify(format!("sudo apt install --reinstall {}   # restores the source's build, if a source offers it", shq(package))),
+        );
+    }
+}
+
+/// The rule for packages that are not installed as the baseline recorded them. Comparing makes
+/// one finding per package; those that apt explains are then dropped (see `pkgverify`).
+pub const PACKAGE_CHANGED: &str = "BASE-PACKAGE-CHANGED";
+
+/// How the evidence of such a finding says whether a source carries the package.
+pub const FROM_A_SOURCE: &str = "a source offers this package: yes";
+
+/// Packages installed in another version than the baseline knows, newly installed, or with a
+/// new architecture.
+fn compare_package_versions(base: &Baseline, inv: &Inventory, src: &str, out: &mut Vec<Finding>) {
+    let (Some(then), Some(now)) = (&base.installed_packages, &inv.installed_packages) else { return };
+    let by_name = |list: &[String]| {
+        let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (name, version) in list.iter().filter_map(|p| p.split_once(' ')) {
+            found.entry(name.to_string()).or_default().insert(version.to_string());
+        }
+        found
+    };
+    let (then, now) = (by_name(then), by_name(now));
+    let bare = |p: &str| p.strip_suffix(RETIRED).unwrap_or(p).to_string();
+    let local: BTreeSet<String> = inv.local_packages.iter().flatten().map(|p| bare(p)).collect();
+    let known: Option<BTreeSet<String>> = base.local_packages.as_ref().map(|l| l.iter().map(|p| bare(p)).collect());
+    let mut added: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    if let (Some(old), Some(new)) = (&base.package_sums, &inv.package_sums) {
+        for key in new.keys().filter(|k| !old.contains_key(*k)) {
+            added.entry(key.split(':').next().unwrap_or(key)).or_default().push(key);
+        }
+    }
+    for (name, versions) in &now {
+        let before = then.get(name);
+        let new_keys = added.get(name.as_str());
+        if before == Some(versions) && new_keys.is_none() {
+            continue;
+        }
+        // a new package no source offers has its own finding (BASE-LOCAL-PACKAGE)
+        if local.contains(name) && known.as_ref().is_some_and(|k| !k.contains(name)) {
+            continue;
+        }
+        let list = |v: &BTreeSet<String>| v.iter().cloned().collect::<Vec<_>>().join(", ");
+        let was = before.map(list).unwrap_or_else(|| "not installed".into());
+        let arch = new_keys.filter(|_| before == Some(versions)).map(|k| format!(" (new files: {})", k.join(", "))).unwrap_or_default();
+        let source = if local.contains(name) { "a source offers this package: no" } else { FROM_A_SOURCE };
+        out.push(
+            Finding::new(Severity::Medium, MODULE, PACKAGE_CHANGED, format!("Package changed since the baseline: {name}"))
+                .evidence(format!("{name}\nbefore: {was}  now: {}{arch}\n{source}\n(compared with {src})", list(versions)))
+                .description("The installed package is not the one the baseline recorded.")
+                .verify(format!("apt-cache policy {}", shq(name)))
+                .verify(format!("grep -E ' (install|upgrade) {name}:' /var/log/dpkg.log")),
         );
     }
 }

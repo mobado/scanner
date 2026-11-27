@@ -23,16 +23,16 @@ pub struct HomeIndex {
     pub pac_files: Vec<String>,
 }
 
-/// Folders none of the checks look in, wherever they are: caches, downloaded libraries, games
-/// and containers.
-const SKIPPED: [&str; 20] = [
-    "node_modules", ".git", ".cache", "Trash", "Steam", ".var", "flatpak", "containers", ".rustup", ".npm", ".gradle", ".m2",
-    ".nuget", ".ivy2", ".pub-cache", ".yarn", ".pnpm-store", ".bun", ".sbt", ".stack",
-];
-/// Package caches at a known place below a home folder, often with hundreds of thousands of files.
-const CACHES: [&str; 14] = [
-    ".cargo/registry", ".cargo/git", ".conda/pkgs", "miniconda3/pkgs", "anaconda3/pkgs", "miniforge3/pkgs", "mambaforge/pkgs",
-    "go/pkg/mod", ".vscode/extensions", ".local/share/pnpm", ".julia/packages", ".julia/artifacts", ".cabal/packages", ".opam",
+/// Folders none of the checks look in, wherever they are: they are always what their name says.
+const SKIPPED: [&str; 2] = ["node_modules", ".git"];
+/// Caches, package stores, games and containers at their usual place below a home folder, often
+/// with hundreds of thousands of files. A folder of the same name elsewhere is searched.
+const CACHES: [&str; 35] = [
+    ".cache", ".var", ".local/share/Trash", ".local/share/Steam", ".steam", "snap/steam", ".local/share/flatpak",
+    ".local/share/containers", ".rustup", ".cargo/registry", ".cargo/git", ".npm", ".yarn", ".pnpm-store", ".local/share/pnpm",
+    ".bun", ".gradle", ".m2", ".ivy2", ".sbt", ".stack", ".nuget", ".pub-cache", ".conda/pkgs", "miniconda3/pkgs",
+    "anaconda3/pkgs", "miniforge3/pkgs", "mambaforge/pkgs", "go/pkg/mod", ".vscode/extensions", ".julia/packages",
+    ".julia/artifacts", ".cabal/packages", ".opam", ".android",
 ];
 /// Hidden folders that hold Python environments or proxy files. Each is searched on its own, so
 /// that nothing else in a big home can push it past the limit.

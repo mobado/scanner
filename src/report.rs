@@ -63,6 +63,9 @@ pub struct Report {
     /// Files that changed since the baseline but were verified as apt upgrades.
     #[serde(default)]
     pub upgraded_files: Vec<String>,
+    /// Packages whose present version was verified as installed by apt from a source.
+    #[serde(default)]
+    pub updated_packages: Vec<String>,
     pub summary: Summary,
     pub findings: Vec<Finding>,
     /// What was skipped or could not be read.

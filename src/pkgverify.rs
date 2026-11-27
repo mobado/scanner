@@ -11,7 +11,9 @@
 //! Only a file that passes all three is accepted as "changed by an upgrade". Everything else is
 //! still reported, with the reason.
 
+use crate::baseline::{FROM_A_SOURCE, PACKAGE_CHANGED};
 use crate::finding::{Finding, Severity};
+use crate::modules::persistence::packages::explained_by_apt;
 use crate::sys::SysRoot;
 use chrono::TimeZone;
 use md5::{Digest, Md5};
@@ -270,6 +272,53 @@ pub struct Applied {
     pub operations: Vec<String>,
     /// Boot files written again after their package was updated (kept as Info findings).
     pub rewritten: Vec<String>,
+    /// Packages whose present version apt installed from a source after the baseline.
+    pub packages: Vec<String>,
+}
+
+/// Drop the package changes that apt's history explains and gather the others in one finding.
+fn explain_packages(sys: &SysRoot, findings: &mut Vec<Finding>, created: SystemTime, applied: &mut Applied) {
+    let (changed, mut kept): (Vec<Finding>, Vec<Finding>) = findings.drain(..).partition(|f| f.rule == PACKAGE_CHANGED);
+    // evidence: the name, "before: x  now: y", whether a source offers it
+    let parts = |f: &Finding| {
+        let mut lines = f.evidence.lines();
+        let name = lines.next().unwrap_or("").to_string();
+        let change = lines.next().unwrap_or("").to_string();
+        let offered = lines.next() == Some(FROM_A_SOURCE);
+        (name, change, offered)
+    };
+    let versions = |change: &str| {
+        let now = change.split_once("now: ").map(|(_, v)| v.split(" (new files").next().unwrap_or(v)).unwrap_or("");
+        now.split(", ").map(String::from).collect::<Vec<_>>()
+    };
+    let wanted: Vec<(String, String)> = changed.iter().map(parts).filter(|p| p.2).flat_map(|(name, change, _)| versions(&change).into_iter().map(move |v| (name.clone(), v))).collect();
+    let explained = explained_by_apt(sys, created, &wanted);
+    let mut open = Vec::new();
+    for finding in &changed {
+        let (name, change, offered) = parts(finding);
+        if offered && explained.contains(&name) {
+            applied.packages.push(name);
+        } else {
+            open.push(format!("{name}: {change}{}", if offered { "" } else { "  (no source offers it)" }));
+        }
+    }
+    if let Some(first) = changed.iter().map(parts).find(|p| !applied.packages.contains(&p.0)) {
+        let more = open.len().saturating_sub(40);
+        open.truncate(40);
+        if more > 0 {
+            open.push(format!("… and {more} more"));
+        }
+        let count = changed.len() - applied.packages.len();
+        kept.push(
+            Finding::new(Severity::Medium, crate::baseline::MODULE, PACKAGE_CHANGED, format!("{count} package(s) changed since the baseline without apt installing them from a source"))
+                .evidence(open.join("\n"))
+                .description("apt's history does not show that apt installed these versions from a software source after the baseline, or dpkg's files for them were written again afterwards. Installing a .deb file or using dpkg does this, so does very old history that has been removed. Check each one; when they are yours, save a new baseline.")
+                .verify(format!("apt-cache policy {}", crate::modules::common::shq(&first.0)))
+                .verify(format!("grep -B4 -A2 '{}:' /var/log/apt/history.log", first.0))
+                .verify(format!("dpkg -V {}", crate::modules::common::shq(&first.0))),
+        );
+    }
+    *findings = kept;
 }
 
 /// A boot file that GRUB or fwupd writes itself: Info when dpkg.log shows that its package was
@@ -304,6 +353,7 @@ pub fn apply(sys: &SysRoot, findings: &mut Vec<Finding>, baseline_created: &str)
     let Ok(created) = chrono::DateTime::parse_from_str(baseline_created, "%Y-%m-%d %H:%M:%S %z") else { return applied };
     let created: SystemTime = created.into();
     explain_boot_files(sys, findings, created, &mut applied);
+    explain_packages(sys, findings, created, &mut applied);
     let paths: Vec<String> = findings.iter().filter(|f| CHECKED.contains(&f.rule.as_str())).filter_map(path_of).collect();
     if paths.is_empty() {
         return applied;

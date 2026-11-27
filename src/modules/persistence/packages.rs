@@ -5,12 +5,16 @@ use super::MODULE;
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{clip, shq};
 use crate::modules::{Collector, ScanCtx};
+use crate::sys::SysRoot;
+use chrono::TimeZone;
 use std::cmp::Ordering;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime};
 
 /// apt's own tool for reading files in any format apt can store them in.
 const APT_HELPER: &str = "/usr/lib/apt/apt-helper";
@@ -211,14 +215,56 @@ impl AptRecords {
         self.automatic.extend(text.lines().filter_map(|l| l.strip_prefix("Package: ")).map(|n| n.trim().to_string()));
     }
 
-    /// Read `/var/log/apt/history.log`. Commands that name a `.deb` file don't count: apt
-    /// installed that file because someone handed it over, not because a source offered it.
+    /// Read `/var/log/apt/history.log`.
     pub fn read_history(&mut self, text: &str) {
-        for block in text.split("\n\n") {
-            let from_file = block.lines().filter_map(|l| l.strip_prefix("Commandline: ")).any(|c| c.split_whitespace().any(|w| w.trim_matches(['"', '\'']).ends_with(".deb")));
+        self.history.extend(history_runs(text).into_iter().flat_map(|r| r.installed));
+    }
+
+    /// Read `/var/log/installer/status`: what the Debian installer had installed.
+    pub fn read_installer(&mut self, status: &str) {
+        self.history.extend(installed_packages(status).into_iter().map(|p| (p.name, p.version)));
+    }
+
+    /// Read aptitude's own log.
+    pub fn read_aptitude(&mut self, text: &str) {
+        self.history.extend(aptitude_runs(text).into_iter().flat_map(|r| r.installed));
+    }
+
+    pub fn installed_by_apt(&self, p: &Installed) -> bool {
+        self.automatic.contains(&p.name) || self.history.contains(&(p.name.clone(), p.version.clone()))
+    }
+}
+
+/// One run of apt or aptitude.
+#[derive(Debug, Clone, Default)]
+pub struct Run {
+    /// When it began and ended (aptitude states only the beginning).
+    pub began: Option<SystemTime>,
+    pub ended: Option<SystemTime>,
+    /// (name, version) of what it installed or upgraded from the sources.
+    pub installed: Vec<(String, String)>,
+}
+
+fn local_time(text: &str) -> Option<SystemTime> {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let naive = chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S").ok()?;
+    chrono::Local.from_local_datetime(&naive).latest().map(SystemTime::from)
+}
+
+/// The runs in `/var/log/apt/history.log`. Commands that were handed a `.deb` file don't count:
+/// apt installed that file because someone gave it, not because a source offered it.
+pub fn history_runs(text: &str) -> Vec<Run> {
+    text.split("\n\n")
+        .filter_map(|block| {
+            let from_file = block.lines().filter_map(|l| l.strip_prefix("Commandline: ")).any(|c| {
+                // the software centre says "install-files" instead of naming the file
+                c.contains("install-files") || c.split_whitespace().any(|w| w.trim_matches(['"', '\'']).ends_with(".deb"))
+            });
             if from_file {
-                continue;
+                return None;
             }
+            let time = |key: &str| block.lines().find_map(|l| l.strip_prefix(key)).and_then(local_time);
+            let mut run = Run { began: time("Start-Date: "), ended: time("End-Date: "), installed: Vec::new() };
             for line in block.lines() {
                 // "Upgrade: name:amd64 (old, new), …" names the new version second
                 let Some((list, second)) = ["Install: ", "Reinstall: "].iter().find_map(|k| line.strip_prefix(k).map(|l| (l, false))).or_else(|| ["Upgrade: ", "Downgrade: "].iter().find_map(|k| line.strip_prefix(k).map(|l| (l, true)))) else { continue };
@@ -228,57 +274,130 @@ impl AptRecords {
                     let mut versions = versions.trim_end_matches(')').split(", ");
                     let first = versions.next();
                     let Some(version) = (if second { versions.next() } else { first }) else { continue };
-                    self.history.insert((name.to_string(), version.to_string()));
+                    run.installed.push((name.to_string(), version.to_string()));
                 }
             }
+            Some(run)
+        })
+        .collect()
+}
+
+/// The runs in aptitude's log: a date line, then "[INSTALL] name:amd64 1.0" or
+/// "[UPGRADE] name:amd64 1.0 -> 1.1".
+pub fn aptitude_runs(text: &str) -> Vec<Run> {
+    let mut runs: Vec<Run> = vec![Run::default()];
+    for line in text.lines() {
+        if let Ok(date) = chrono::DateTime::parse_from_str(&line.split_whitespace().collect::<Vec<_>>().join(" "), "%a, %b %d %Y %H:%M:%S %z") {
+            runs.push(Run { began: Some(date.into()), ..Run::default() });
+            continue;
+        }
+        let Some((tag, entry)) = line.strip_prefix('[').and_then(|l| l.split_once("] ")) else { continue };
+        if !["INSTALL", "UPGRADE", "DOWNGRADE", "REINSTALL"].contains(&tag.split(',').next().unwrap_or("")) {
+            continue;
+        }
+        let mut words = entry.split_whitespace();
+        let (Some(name), Some(version)) = (words.next(), words.last()) else { continue };
+        if let Some(run) = runs.last_mut() {
+            run.installed.push((name.split(':').next().unwrap_or(name).to_string(), version.to_string()));
         }
     }
-
-    /// Read `/var/log/installer/status`: what the Debian installer had installed.
-    pub fn read_installer(&mut self, status: &str) {
-        self.history.extend(installed_packages(status).into_iter().map(|p| (p.name, p.version)));
-    }
-
-    /// Read aptitude's own log: "[INSTALL] name:amd64 1.0" or "[UPGRADE] name:amd64 1.0 -> 1.1".
-    pub fn read_aptitude(&mut self, text: &str) {
-        for line in text.lines() {
-            let Some((tag, entry)) = line.strip_prefix('[').and_then(|l| l.split_once("] ")) else { continue };
-            if !["INSTALL", "UPGRADE", "DOWNGRADE", "REINSTALL"].contains(&tag.split(',').next().unwrap_or("")) {
-                continue;
-            }
-            let mut words = entry.split_whitespace();
-            let (Some(name), Some(version)) = (words.next(), words.last()) else { continue };
-            self.history.insert((name.split(':').next().unwrap_or(name).to_string(), version.to_string()));
-        }
-    }
-
-    pub fn installed_by_apt(&self, p: &Installed) -> bool {
-        self.automatic.contains(&p.name) || self.history.contains(&(p.name.clone(), p.version.clone()))
-    }
+    runs.retain(|r| !r.installed.is_empty());
+    runs
 }
 
 /// The text of a log file that may be packed.
-fn read_log(ctx: &ScanCtx, col: &mut Collector, path: &str) -> Option<String> {
+fn read_log(sys: &SysRoot, notes: &mut Vec<String>, path: &str) -> Option<String> {
     if !compressed_file(path) {
-        return match ctx.sys.read_string(path) {
+        return match sys.read_string(path) {
             Ok(text) => Some(text),
             Err(e) if e.is_permission_denied() => {
-                col.note(format!("{path} can only be read as root, so some old packages may be listed as local"));
+                notes.push(format!("{path} can only be read as root, so some old packages may be listed as local"));
                 None
             }
             Err(_) => None,
         };
     }
     let mut text = Vec::new();
-    match unpack(&ctx.sys.path(path), |reader| {
+    match unpack(&sys.path(path), |reader| {
         let _ = reader.read_to_end(&mut text);
     }) {
         Ok(()) => Some(String::from_utf8_lossy(&text).into_owned()),
         Err(why) => {
-            col.note(format!("The packed log {path} could not be read: {why}"));
+            notes.push(format!("The packed log {path} could not be read: {why}"));
             None
         }
     }
+}
+
+/// The packed, older files of apt's history, newest first ("history.log.1.gz" is the newest).
+fn older_histories(sys: &SysRoot) -> Vec<String> {
+    let mut older: Vec<(u32, String)> = sys
+        .dir_names("/var/log/apt")
+        .into_iter()
+        .filter_map(|n| Some((n.strip_prefix("history.log.")?.split('.').next()?.parse().ok()?, format!("/var/log/apt/{n}"))))
+        .collect();
+    older.sort();
+    older.into_iter().map(|o| o.1).collect()
+}
+
+fn aptitude_logs(sys: &SysRoot) -> Vec<String> {
+    sys.dir_names("/var/log").into_iter().filter(|n| n == "aptitude" || n.starts_with("aptitude.")).map(|n| format!("/var/log/{n}")).collect()
+}
+
+/// Of these (name, version) pairs, the packages whose present state apt explains: apt or
+/// aptitude installed exactly this version from a source after `since`, and none of what dpkg
+/// keeps about the package has been written since that run ended.
+pub fn explained_by_apt(sys: &SysRoot, since: SystemTime, wanted: &[(String, String)]) -> HashSet<String> {
+    let mut explained = HashSet::new();
+    if wanted.is_empty() {
+        return explained;
+    }
+    // when dpkg's files of each wanted package were last written (the change time can't be set back)
+    let mut written: HashMap<&str, SystemTime> = HashMap::new();
+    let names: HashSet<&str> = wanted.iter().map(|w| w.0.as_str()).collect();
+    for file in sys.dir_names("/var/lib/dpkg/info") {
+        let Some((package, kind)) = file.rsplit_once('.') else { continue };
+        let Some(name) = names.get(package.split(':').next().unwrap_or(package)) else { continue };
+        if !SCRIPTS.iter().chain(&SETTINGS).any(|k| *k == kind) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(sys.path(format!("/var/lib/dpkg/info/{file}"))) else { continue };
+        let changed = SystemTime::UNIX_EPOCH + Duration::new(meta.ctime().max(0) as u64, meta.ctime_nsec() as u32);
+        let latest = written.entry(name).or_insert(changed);
+        *latest = (*latest).max(changed);
+    }
+    let mut accounts_for = |runs: Vec<Run>| {
+        for run in runs {
+            // aptitude states no end; an interrupted apt run has none either
+            let Some(ended) = run.ended.or_else(|| run.began.map(|b| b + Duration::from_secs(6 * 3600))) else { continue };
+            if ended < since {
+                continue;
+            }
+            for (name, version) in &run.installed {
+                let in_time = written.get(name.as_str()).is_some_and(|w| *w <= ended + Duration::from_secs(60));
+                if in_time && wanted.iter().any(|w| w.0 == *name && w.1 == *version) {
+                    explained.insert(name.clone());
+                }
+            }
+        }
+        wanted.iter().all(|w| explained.contains(&w.0))
+    };
+    let mut unread = Vec::new();
+    for path in aptitude_logs(sys) {
+        if let Some(text) = read_log(sys, &mut unread, &path) {
+            accounts_for(aptitude_runs(&text));
+        }
+    }
+    for path in std::iter::once("/var/log/apt/history.log".to_string()).chain(older_histories(sys)) {
+        let Some(text) = read_log(sys, &mut unread, &path) else { continue };
+        let runs = history_runs(&text);
+        // a file that reaches back before `since` is the last one that matters
+        let reaches_back = runs.iter().any(|r| r.began.is_some_and(|b| b < since));
+        if accounts_for(runs) || reaches_back {
+            break;
+        }
+    }
+    explained
 }
 
 /// What apt, aptitude and the installer recorded. The older apt history files are only read
@@ -291,61 +410,76 @@ fn apt_records(ctx: &ScanCtx, col: &mut Collector, wanted: &[&Installed]) -> Apt
     if let Ok(text) = ctx.sys.read_string("/var/lib/apt/extended_states") {
         records.read_states(&text);
     }
-    if let Some(text) = read_log(ctx, col, "/var/log/apt/history.log") {
+    let mut notes = Vec::new();
+    if let Some(text) = read_log(ctx.sys, &mut notes, "/var/log/apt/history.log") {
         records.read_history(&text);
     }
-    if let Some(text) = read_log(ctx, col, "/var/log/installer/status") {
+    if let Some(text) = read_log(ctx.sys, &mut notes, "/var/log/installer/status") {
         records.read_installer(&text);
     }
-    for name in ctx.sys.dir_names("/var/log").into_iter().filter(|n| n == "aptitude" || n.starts_with("aptitude.")) {
-        if let Some(text) = read_log(ctx, col, &format!("/var/log/{name}")) {
+    for path in aptitude_logs(ctx.sys) {
+        if let Some(text) = read_log(ctx.sys, &mut notes, &path) {
             records.read_aptitude(&text);
         }
     }
-    // "history.log.2.gz" is older than "history.log.1.gz"
-    let mut older: Vec<(u32, String)> = ctx
-        .sys
-        .dir_names("/var/log/apt")
-        .into_iter()
-        .filter_map(|n| Some((n.strip_prefix("history.log.")?.split('.').next()?.parse().ok()?, n)))
-        .collect();
-    older.sort();
-    for (_, name) in older {
+    for path in older_histories(ctx.sys) {
         if wanted.iter().all(|p| records.installed_by_apt(p)) {
             break;
         }
-        if let Some(text) = read_log(ctx, col, &format!("/var/log/apt/{name}")) {
+        if let Some(text) = read_log(ctx.sys, &mut notes, &path) {
             records.read_history(&text);
         }
+    }
+    for note in notes {
+        col.note(note);
     }
     records
 }
 
-/// A fingerprint of what dpkg keeps about each installed package: the checksums of its files and
-/// the scripts it runs. Keyed as dpkg names the files ("name" or "name:arch").
+/// What dpkg keeps about a package: the checksums of its files and the scripts it runs as root.
+const SCRIPTS: [&str; 5] = ["md5sums", "preinst", "postinst", "prerm", "postrm"];
+/// The debconf script, also run as root, and the triggers that start `postinst` again.
+const SETTINGS: [&str; 2] = ["config", "triggers"];
+
+/// A fingerprint of what dpkg keeps about each installed package, keyed as dpkg names the files
+/// ("name" or "name:arch"): "checksums and scripts+debconf script and triggers". The first part
+/// is what older versions recorded.
 pub fn package_sums(ctx: &ScanCtx, installed: &[Installed]) -> BTreeMap<String, String> {
-    const KEPT: [&str; 5] = ["md5sums", "preinst", "postinst", "prerm", "postrm"];
     let names: HashSet<&str> = installed.iter().map(|p| p.name.as_str()).collect();
     let mut files: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for file in ctx.sys.dir_names("/var/lib/dpkg/info") {
         let Some((package, kind)) = file.rsplit_once('.') else { continue };
-        if KEPT.contains(&kind) && names.contains(package.split(':').next().unwrap_or(package)) {
+        if SCRIPTS.iter().chain(&SETTINGS).any(|k| *k == kind) && names.contains(package.split(':').next().unwrap_or(package)) {
             files.entry(package.to_string()).or_default().push(kind.to_string());
         }
     }
     files
         .into_iter()
+        .filter(|(_, kinds)| kinds.iter().any(|k| SCRIPTS.contains(&k.as_str())))
         .map(|(package, mut kinds)| {
             kinds.sort();
-            let mut sum = Sha256::new();
-            for kind in kinds {
-                let data = ctx.sys.read_bytes(format!("/var/lib/dpkg/info/{package}.{kind}")).unwrap_or_default();
-                sum.update(format!("{kind} {}\n", data.len()));
-                sum.update(&data);
-            }
-            (package, sum.finalize().iter().map(|b| format!("{b:02x}")).collect())
+            let part = |wanted: &[&str]| {
+                let mut sum = Sha256::new();
+                for kind in kinds.iter().filter(|k| wanted.contains(&k.as_str())) {
+                    let data = ctx.sys.read_bytes(format!("/var/lib/dpkg/info/{package}.{kind}")).unwrap_or_default();
+                    sum.update(format!("{kind} {}\n", data.len()));
+                    sum.update(&data);
+                }
+                sum.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+            };
+            let sum = format!("{}+{}", part(&SCRIPTS), part(&SETTINGS));
+            (package, sum)
         })
         .collect()
+}
+
+/// Do two fingerprints differ? An older one without the second part only compares the first.
+pub fn sums_differ(before: &str, now: &str) -> bool {
+    let (b, n) = (before.split_once('+'), now.split_once('+'));
+    match (b, n) {
+        (Some(b), Some(n)) => b != n,
+        _ => before.split('+').next() != now.split('+').next(),
+    }
 }
 
 /// Sort the installed packages against what the sources offer. A package counts as Debian's own

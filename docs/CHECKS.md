@@ -213,7 +213,8 @@ every network, to one address, or only to this computer.
 | `PERS-APT-HOOK` | Critical/High | apt runs a suspicious command (`apt.conf.d` hooks) |
 | `PERS-HISTORY` | High–Low | Suspicious commands in a shell history (reverse shells, history switched off, logs deleted, download-and-run …); only those lines are shown |
 | `PERS-PYTHON-STARTUP` | High–Low | A `.pth` file with `import` lines, or `sitecustomize.py`/`usercustomize.py`, from no package or changed (system folders, `/usr/local`, `~/.local`, virtual environments). High when it runs text as code, starts programs or uses the network; a `.pth` file is only skipped when every code line is exactly what setuptools, editable installs, namespace packages, virtualenv or coverage write. `sitecustomize`/`usercustomize` (source, package or compiled) are also looked for in the folders that `.pth` files add. Every `.pth` file is recorded in the baseline |
-| `PERS-PYTHON-PATH` | High | A `.pth` file adds a folder that others control (also through a link): in a temporary folder or another user's home, or where the folder or one above it is writable by everyone, writable by a group with other members, or owned by someone other than root and the owner of the `.pth` file (or of the home it lies in). A sticky folder above an existing folder does not count |
+| `PERS-PYTHON-PATH` | High | A `.pth` file adds a folder that others control (also through a link): in a temporary folder or another user's home, or where the folder or one above it is writable by everyone, writable by a group with other members, or owned by someone other than root and the owner of the `.pth` file (or of the home it lies in), also through an access list (`setfacl`). A sticky folder above an existing folder does not count |
+| `PERS-PYTHON-WRITABLE` | High | Others can change what Python runs: a `site-packages`, `dist-packages` or version folder, a `.pth` file or a `sitecustomize`/`usercustomize` file (or a folder above) writable by everyone, by a group with other members or through an access list, or owned by someone other than root and the owner of the home it lies in |
 | `PERS-MOTD` | Critical–Medium | A script in `/etc/update-motd.d` from no package or changed; it runs as root at every login |
 | `PERS-LOGROTATE` | Critical–Low | A `postrotate`/`prerotate` script in a logrotate file from no package, changed, or with a suspicious command |
 | `PERS-ENV-PROXY` | Medium/Low | A proxy set in environment files, `curlrc`, `wgetrc` or git settings (desktop, browser, apt and pip proxies have their own rules) |
@@ -348,7 +349,8 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-ADDON-NEW` | Medium | A browser add-on that was not switched on before |
 | `BASE-EDITOR-NEW` | Low | A new editor extension |
 | `BASE-LOCAL-PACKAGE` | Medium | A package that no source offers and that was not installed in this version when the baseline was made, also one that looks like an old Debian package. Packages a release upgrade leaves behind were installed then and stay quiet |
-| `BASE-PACKAGE-REPLACED` | High/Medium | A package's checksum list or install scripts (`/var/lib/dpkg/info`) changed while its version stayed the same. High when no source offers the package |
+| `BASE-PACKAGE-REPLACED` | High/Medium | A package's checksum list, install scripts, debconf script (`config`) or triggers (`/var/lib/dpkg/info`) changed while its version stayed the same. High when no source offers the package |
+| `BASE-PACKAGE-CHANGED` | Medium | Packages installed in another version, newly installed or with new files for another architecture, that apt's history does not explain (see below); one finding with the list |
 | `BASE-FIREWALL-OFF` | High | A firewall that was on is off |
 | `BASE-FIREWALL-RULE` | Medium/Low | A new accept rule since the baseline (root; compared without counters, with the members of named sets). Medium for incoming chains, Low for forwarded and other traffic. In Docker's and libvirt's own chains (not `DOCKER-USER`) private addresses and `veth*`/`br-*` names are ignored, so a new container is not a new rule |
 | `BASE-EFI-FILE-CHANGED` | Medium/Info | A boot file built on this computer (such as a local `grubx64.efi`) changed; Info when `dpkg.log` shows an update of GRUB (or fwupd) after the baseline, and the baseline then takes the new file in |
@@ -376,6 +378,13 @@ the package after the baseline (or its file list was rewritten since). This uses
 MD5 records, like `debsums`; a root attacker who also rewrites those records and the log could
 fool it, so run `debsums` or scan from trusted media when in doubt.
 
+A changed or new **package** is accepted, and written into the automatic baseline with its new
+version and fingerprint, only when **all** hold: apt or aptitude's history shows that exactly this
+version was installed after the baseline, by a command that was not handed a `.deb` file; none of
+dpkg's files for the package (`/var/lib/dpkg/info`) has been written since that run ended; and a
+software source offers the package. Everything else is gathered in `BASE-PACKAGE-CHANGED`, so
+packages stay protected as updates arrive. A root scan is needed to update the baseline.
+
 ## External tools (`external:*`)
 
 | Rule | Usual level | Meaning |
@@ -396,9 +405,11 @@ module names, changed system files and login record gaps.
   unreadable. The report says what was skipped.
 * Very large folders are only searched up to a limit; the notes then say `Incomplete` and which
   search stopped early. In home folders, ordinary folders are searched before hidden ones, the
-  hidden folders with Python environments each on their own, and package caches
-  (`.cargo/registry`, `.rustup`, `.npm`, `.gradle`, `.m2`, `.conda/pkgs`, `go/pkg/mod` …) not at
-  all.
+  hidden folders with Python environments each on their own. Skipped are `node_modules` and
+  `.git` everywhere, and caches, games and containers at their usual place only (`~/.cache`,
+  `~/.local/share/Trash`, `Steam`, `containers`, `flatpak`, `~/.var`, `.cargo/registry`,
+  `.rustup`, `.npm`, `.yarn`, `.gradle`, `.m2`, `.conda/pkgs`, `go/pkg/mod` …): a project folder
+  with one of these names is searched.
 * A scan is a short moment: the password wallet is only heard while the scanner listens, and a
   program that read a password file and closed it before the scan leaves nothing open. A program
   that ends right after asking the wallet may not be identified.

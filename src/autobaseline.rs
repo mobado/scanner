@@ -97,7 +97,33 @@ pub fn refresh_upgraded(report: &Report, path: &std::path::Path) -> Result<usize
         }
     }
     base.suid.sort_by(|a, b| a.path.cmp(&b.path));
-    base.save(path)?;
+    // packages apt installed from a source: their new version and fingerprint are protected too
+    let name_of = |p: &str| p.split([' ', ':']).next().unwrap_or(p).to_string();
+    if let (Some(then), Some(now)) = (&mut base.installed_packages, &report.inventory.installed_packages) {
+        for package in &report.updated_packages {
+            then.retain(|p| name_of(p) != *package);
+            then.extend(now.iter().filter(|p| name_of(p) == *package).cloned());
+            if let (Some(sums), Some(fresh)) = (&mut base.package_sums, &report.inventory.package_sums) {
+                sums.retain(|key, _| name_of(key) != *package);
+                sums.extend(fresh.iter().filter(|(key, _)| name_of(key) == *package).map(|(k, v)| (k.clone(), v.clone())));
+            }
+            n += 1;
+        }
+    }
+    // a removed package is forgotten, so that putting something back under its name is seen
+    let mut removed = false;
+    if let (Some(then), Some(now)) = (&mut base.installed_packages, report.inventory.installed_packages.as_ref().filter(|n| !n.is_empty())) {
+        let installed: std::collections::HashSet<String> = now.iter().map(|p| name_of(p)).collect();
+        let before = then.len();
+        then.retain(|p| installed.contains(&name_of(p)));
+        removed = then.len() != before;
+        if let Some(sums) = &mut base.package_sums {
+            sums.retain(|key, _| installed.contains(&name_of(key)));
+        }
+    }
+    if n > 0 || removed {
+        base.save(path)?;
+    }
     Ok(n)
 }
 
@@ -154,6 +180,20 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
         if let (None, Some(now)) = (&base.installed_packages, &report.inventory.installed_packages) {
             base.installed_packages = Some(now.iter().filter(|p| !p.split(' ').next().is_some_and(reported)).cloned().collect());
             added.push("the installed packages".to_string());
+        }
+        // fingerprints from before the debconf script and triggers were included get them, when
+        // the part that was recorded still matches
+        if let (Some(sums), Some(now)) = (&mut base.package_sums, &report.inventory.package_sums) {
+            let mut upgraded = 0;
+            for (key, before) in sums.iter_mut().filter(|(_, v)| !v.contains('+')) {
+                if let Some(current) = now.get(key).filter(|c| c.split('+').next() == Some(before.as_str())) {
+                    *before = current.clone();
+                    upgraded += 1;
+                }
+            }
+            if upgraded > 0 {
+                added.push("the debconf scripts and triggers to the package fingerprints".to_string());
+            }
         }
         if let (None, Some(now)) = (&base.package_sums, &report.inventory.package_sums) {
             // only for packages still in the version the baseline knows

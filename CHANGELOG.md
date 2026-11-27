@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.0
+* Packages stay protected after updates: a new version that apt installed from a source (shown
+  by its history, with dpkg's files untouched since) is written into the automatic baseline with
+  its fingerprint. Other changes are reported (`BASE-PACKAGE-CHANGED`), including `.deb` files
+  installed by hand.
+* The package fingerprint also covers the debconf script (`config`) and `triggers`; older
+  baselines are completed without false alarms.
+* Python: others being able to write to Python's own folders, `.pth` or `sitecustomize` files is
+  High (`PERS-PYTHON-WRITABLE`); access lists (`setfacl`) are read.
+* The home folder search only skips caches, games and containers at their usual place; project
+  folders with such names are searched.
+
 ## 0.17.0
 * The home folder search reaches your projects first: package caches are skipped, ordinary
   folders come before hidden ones, and the hidden folders with Python environments are searched

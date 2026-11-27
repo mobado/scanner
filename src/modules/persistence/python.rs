@@ -7,7 +7,7 @@ use crate::finding::{Finding, Severity};
 use crate::modules::common::{clip, shq};
 use crate::modules::{homeindex, Collector, ScanCtx};
 use crate::pkgverify::{tidy, verify_paths, Verdict};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::os::unix::fs::MetadataExt;
 use std::time::SystemTime;
 
@@ -139,11 +139,11 @@ fn customize_files(ctx: &ScanCtx, folder: &str) -> Vec<String> {
     found
 }
 
-fn startup_files(ctx: &ScanCtx, homes: &Homes) -> Vec<String> {
+fn startup_files(ctx: &ScanCtx, folders: &[String]) -> Vec<String> {
     let mut files = Vec::new();
-    for folder in python_folders(ctx, homes) {
-        files.extend(ctx.sys.dir_names(&folder).into_iter().filter(|n| n.ends_with(".pth")).map(|n| format!("{folder}/{n}")));
-        files.extend(customize_files(ctx, &folder));
+    for folder in folders {
+        files.extend(ctx.sys.dir_names(folder).into_iter().filter(|n| n.ends_with(".pth")).map(|n| format!("{folder}/{n}")));
+        files.extend(customize_files(ctx, folder));
     }
     files
 }
@@ -232,44 +232,126 @@ fn real_path(ctx: &ScanCtx, path: &str) -> String {
     if done.is_empty() { "/".into() } else { done }
 }
 
-/// Can someone other than root and the `trusted` users change what is in this folder, through
-/// its own rights or those of a folder above it? The check stops at a link (followed apart).
-fn writable_by(ctx: &ScanCtx, accounts: &Accounts, trusted: &BTreeSet<u32>, folder: &str) -> Option<String> {
+/// One entry of a POSIX access list: (kind, rights, user or group id).
+pub type AclEntry = (u16, u16, u32);
+const ACL_USER: u16 = 0x02;
+const ACL_OWNING_GROUP: u16 = 0x04;
+const ACL_GROUP: u16 = 0x08;
+const ACL_MASK: u16 = 0x10;
+
+/// Read the value of the `system.posix_acl_access` attribute: a version, then 8 bytes per entry.
+pub fn parse_acl(data: &[u8]) -> Option<Vec<AclEntry>> {
+    let (version, entries) = data.split_first_chunk::<4>()?;
+    if u32::from_le_bytes(*version) != 2 || entries.len() % 8 != 0 {
+        return None;
+    }
+    Some(entries.chunks_exact(8).map(|e| (u16::from_le_bytes([e[0], e[1]]), u16::from_le_bytes([e[2], e[3]]), u32::from_le_bytes([e[4], e[5], e[6], e[7]]))).collect())
+}
+
+/// The access list set on a file or folder (`setfacl`), if it has one.
+fn access_list(ctx: &ScanCtx, path: &str) -> Option<Vec<AclEntry>> {
+    let mut value = [0u8; 4096];
+    let length = rustix::fs::lgetxattr(ctx.sys.path(path), "system.posix_acl_access", &mut value[..]).ok()?;
+    parse_acl(value.get(..length)?)
+}
+
+/// Can someone other than root and the `trusted` users change this folder or file, through its
+/// own rights or those of a folder above it? The check stops at a link (followed apart).
+fn writable_by(ctx: &ScanCtx, accounts: &Accounts, trusted: &BTreeSet<u32>, path: &str) -> Option<String> {
     let mut prefixes = vec!["/".to_string()];
     let mut at = String::new();
-    for part in folder.split('/').filter(|p| !p.is_empty()) {
+    for part in path.split('/').filter(|p| !p.is_empty()) {
         at = format!("{at}/{part}");
         prefixes.push(at.clone());
     }
     let mut found = Vec::new();
     for prefix in &prefixes {
         match std::fs::symlink_metadata(ctx.sys.path(prefix)) {
-            Ok(meta) if meta.is_dir() => found.push((prefix, meta)),
+            Ok(meta) if meta.is_dir() || meta.is_file() && prefix == path => found.push((prefix, meta)),
             _ => break,
         }
     }
     // what does not exist yet can be made by whoever may write to the last folder that does
     let last = found.len().checked_sub(1)?;
+    let user = |uid: u32| accounts.users.get(&uid).cloned().unwrap_or_else(|| format!("user id {uid}"));
+    // the members of a group who are neither root nor trusted
+    let strangers = |gid: u32| {
+        let (name, members) = accounts.groups.get(&gid)?;
+        let others: Vec<String> = members.iter().filter(|u| **u != 0 && !trusted.contains(u)).map(|u| user(*u)).collect();
+        (!others.is_empty()).then(|| (name.clone(), others.join(", ")))
+    };
     for (i, (place, meta)) in found.iter().enumerate() {
         // in a sticky folder others can add files but not replace those of someone else
-        let counts = meta.mode() & 0o1000 == 0 || i == last;
+        let counts = !meta.is_dir() || meta.mode() & 0o1000 == 0 || i == last;
         if meta.mode() & 0o002 != 0 && counts {
             return Some(format!("everyone can write to {place}"));
         }
-        if meta.mode() & 0o020 != 0 && counts {
-            if let Some((group, members)) = accounts.groups.get(&meta.gid()) {
-                let others: Vec<&str> = members.iter().filter(|u| **u != 0 && !trusted.contains(u)).map(|u| accounts.users.get(u).map(String::as_str).unwrap_or("?")).collect();
-                if !others.is_empty() {
-                    return Some(format!("group {group} can write to {place} ({})", others.join(", ")));
+        // with an access list, the group bits of the mode show its mask, not the group's rights
+        let list = access_list(ctx, place);
+        let mask = list.iter().flatten().find(|e| e.0 == ACL_MASK).map(|e| e.1).unwrap_or(7);
+        let writes = |rights: u16| rights & mask & 2 != 0;
+        let group_writes = match &list {
+            Some(entries) => entries.iter().any(|e| e.0 == ACL_OWNING_GROUP && writes(e.1)),
+            None => meta.mode() & 0o020 != 0,
+        };
+        if counts {
+            if let Some((group, others)) = group_writes.then(|| strangers(meta.gid())).flatten() {
+                return Some(format!("group {group} can write to {place} ({others})"));
+            }
+            for (kind, _, id) in list.iter().flatten().copied().filter(|e| writes(e.1)) {
+                if kind == ACL_USER && id != 0 && !trusted.contains(&id) {
+                    return Some(format!("an access list lets {} write to {place}", user(id)));
+                }
+                if let Some((group, others)) = (kind == ACL_GROUP).then(|| strangers(id)).flatten() {
+                    return Some(format!("an access list lets group {group} write to {place} ({others})"));
                 }
             }
         }
         if meta.uid() != 0 && !trusted.contains(&meta.uid()) {
-            let owner = accounts.users.get(&meta.uid()).cloned().unwrap_or_else(|| format!("user id {}", meta.uid()));
-            return Some(format!("{place} belongs to {owner}, who can change what runs"));
+            return Some(format!("{place} belongs to {}, who can change what runs", user(meta.uid())));
         }
     }
     None
+}
+
+/// In a copy of a system (not the running one), whoever owns its top folder stands for root: a
+/// copy unpacked by an ordinary user belongs to that user throughout.
+fn copy_owner(ctx: &ScanCtx) -> Option<u32> {
+    (!ctx.sys.is_live()).then(|| std::fs::metadata(ctx.sys.path("/")).ok().map(|m| m.uid())).flatten()
+}
+
+/// Python's own folders and startup files that others can change: whoever writes there decides
+/// what every Python program runs.
+fn check_writable(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, accounts: &Accounts, places: &[String]) {
+    // reason → the places it applies to
+    let mut found: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for place in places {
+        // the owner of the home a folder lies in may change it
+        let trusted: BTreeSet<u32> = homes.iter().filter(|(_, _, h)| h != "/" && place.starts_with(&format!("{h}/"))).map(|h| h.1).chain(copy_owner(ctx)).collect();
+        let target = real_path(ctx, place);
+        if let Some(why) = writable_by(ctx, accounts, &trusted, &target).or_else(|| writable_by(ctx, accounts, &trusted, place)) {
+            found.entry(why).or_default().push(place);
+        }
+    }
+    if found.is_empty() {
+        return;
+    }
+    let first = found.values().flatten().next().map(|p| p.to_string()).unwrap_or_default();
+    let lines: Vec<String> = found
+        .iter()
+        .map(|(why, places)| {
+            let more = places.len().saturating_sub(3);
+            let rest = if more > 0 { format!(" and {more} more") } else { String::new() };
+            format!("{why}\n  affects {}{rest}", places.iter().take(3).copied().collect::<Vec<_>>().join(", "))
+        })
+        .collect();
+    col.push(
+        Finding::new(Severity::High, MODULE, "PERS-PYTHON-WRITABLE", "Others can change what Python runs at every start")
+            .evidence(clip(&lines.join("\n"), 1500))
+            .description("Whoever can write to a folder Python loads from can put a path file or code there, which then runs in your Python programs, also those run as root. A chmod -R 777 or a package installation gone wrong leaves this behind. Remove the extra rights, for example with chmod go-w, setfacl -b or chown.")
+            .verify(format!("namei -l {}", shq(&first)))
+            .verify(format!("getfacl {}", shq(&first))),
+    );
 }
 
 /// Why Python should not load code from a folder that the file `pth` adds, if it should not.
@@ -286,6 +368,7 @@ fn odd_folder(ctx: &ScanCtx, homes: &Homes, accounts: &Accounts, pth: &str, fold
     // whoever owns the path file, or the home it lies in, can already change what runs
     let mut trusted: BTreeSet<u32> = home_of(homes, pth).map(|h| h.1).into_iter().collect();
     trusted.extend(std::fs::symlink_metadata(ctx.sys.path(pth)).map(|m| m.uid()));
+    trusted.extend(copy_owner(ctx));
     why(folder)
         .or_else(|| why(&target))
         .or_else(|| writable_by(ctx, accounts, &trusted, &target))
@@ -294,9 +377,8 @@ fn odd_folder(ctx: &ScanCtx, homes: &Homes, accounts: &Accounts, pth: &str, fold
 
 /// Look at the folders `.pth` files add: Python searches them for `sitecustomize` and
 /// `usercustomize` too. Returns those files, each with whether its folder is an odd one.
-fn added_folders(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, files: &[String]) -> HashMap<String, (String, bool)> {
+fn added_folders(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, accounts: &Accounts, files: &[String]) -> HashMap<String, (String, bool)> {
     let mut reached = HashMap::new();
-    let accounts = accounts(ctx);
     for pth in files.iter().filter(|f| f.ends_with(".pth")) {
         // every path file goes into the baseline, also one that only names folders
         record(ctx, col, pth);
@@ -304,7 +386,7 @@ fn added_folders(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, files: &[Str
         let folder = pth.rsplit_once('/').map(|(f, _)| f).unwrap_or("");
         let mut odd = Vec::new();
         for added in pth_folders(folder, &String::from_utf8_lossy(&bytes)) {
-            let why = odd_folder(ctx, homes, &accounts, pth, &added);
+            let why = odd_folder(ctx, homes, accounts, pth, &added);
             let runs = customize_files(ctx, &added);
             if let Some(why) = &why {
                 odd.push(format!("adds {added}: {why}"));
@@ -329,14 +411,19 @@ fn added_folders(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, files: &[Str
 }
 
 pub fn check_python(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
-    let mut files = startup_files(ctx, homes);
-    if files.is_empty() {
-        return;
-    }
-    let reached = added_folders(ctx, col, homes, &files);
+    let folders: Vec<String> = python_folders(ctx, homes).into_iter().filter(|f| ctx.sys.exists(f)).collect();
+    let mut files = startup_files(ctx, &folders);
+    let accounts = accounts(ctx);
+    let reached = added_folders(ctx, col, homes, &accounts, &files);
     files.extend(reached.keys().cloned());
     files.sort();
     files.dedup();
+    // the folders themselves, and the files Python reads from them
+    let places: Vec<String> = folders.into_iter().chain(files.iter().cloned()).collect();
+    check_writable(ctx, col, homes, &accounts, &places);
+    if files.is_empty() {
+        return;
+    }
     let has_dpkg = !ctx.sys.dir_names("/var/lib/dpkg/info").is_empty();
     let verdicts = verify_paths(ctx.sys, &files, SystemTime::UNIX_EPOCH);
     for path in files {
