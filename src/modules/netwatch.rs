@@ -201,7 +201,7 @@ pub fn nat_redirects(ruleset: &str) -> Vec<String> {
     out
 }
 
-/// Redirect rules in `iptables-legacy-save -t nat` (the old firewall, which `nft` does not show).
+/// Redirect rules in `iptables-legacy-save` (the old firewall, which `nft` does not show).
 pub fn iptables_redirects(saved: &str) -> Vec<String> {
     saved
         .lines()
@@ -216,18 +216,14 @@ fn check_nat(ctx: &ScanCtx, col: &mut Collector) {
     if !ctx.sys.is_live() || !ctx.privileged {
         return;
     }
-    if let Some(save) = crate::external_tools::find_binary("iptables-legacy-save") {
-        if let Ok(o) = crate::external_tools::run_capture(&save, &["-t", "nat"], 30) {
-            let rules = iptables_redirects(&o.stdout);
-            if !rules.is_empty() {
-                col.push(
-                    Finding::new(Severity::Medium, MODULE, "NET-NAT-REDIRECT", "Old-style iptables rules redirect traffic")
-                        .evidence(clip(&rules.join("\n"), 1200))
-                        .description("These rules use the old iptables system, which the usual nftables listing does not show. Debian does not use it by default, so rules there are easy to overlook.")
-                        .verify("iptables-legacy-save -t nat"),
-                );
-            }
-        }
+    let rules: Vec<String> = super::firewall::legacy_saved(ctx).iter().flat_map(|(_, saved)| iptables_redirects(saved)).collect();
+    if !rules.is_empty() {
+        col.push(
+            Finding::new(Severity::Medium, MODULE, "NET-NAT-REDIRECT", "Old-style iptables rules redirect traffic")
+                .evidence(clip(&rules.join("\n"), 1200))
+                .description("These rules use the old iptables system, which the usual nftables listing does not show. Debian does not use it by default, so rules there are easy to overlook.")
+                .verify("iptables-legacy-save -t nat"),
+        );
     }
     let Some(nft) = crate::external_tools::find_binary("nft") else { return };
     let ruleset = match crate::external_tools::run_capture(&nft, &["list", "ruleset"], 30) {

@@ -181,7 +181,7 @@ pub fn check_shell_files(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u
                 }
             }
             if path == "/etc/environment" && line.contains("LD_PRELOAD") {
-                found.push(CmdIssue { severity: Severity::Critical, reason: "LD_PRELOAD i /etc/environment".into() });
+                found.push(CmdIssue { severity: Severity::Critical, reason: "LD_PRELOAD in /etc/environment".into() });
             }
             if !found.is_empty() {
                 lines.push(line.to_string());

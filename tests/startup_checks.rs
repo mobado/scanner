@@ -79,7 +79,7 @@ fn fake_process(root: &Path, pid: u32, exe: &str, uids: &str, caps: &str) {
 #[test]
 fn python_startup_files() {
     assert_eq!(pth_code("/opt/lib\nimport os\n  import ignored\n"), vec!["import os"]);
-    assert!(usual_pth_line("import os; os.environ.get('X') and __import__('_distutils_hack').add_shim()"));
+    assert!(usual_pth_line("import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim(); "));
     assert!(!usual_pth_line("import _distutils_hack; exec('x')"));
     assert!(python_danger("import socket").is_some() && python_danger("import sys").is_none());
 
@@ -187,10 +187,11 @@ fn files_of_no_package_and_local_packages() {
     let installed = installed_packages(status);
     assert_eq!(installed.len(), 5);
     let offered: HashMap<String, Vec<String>> = [("dpkg", "1.22"), ("sudo", "9.5"), ("waiting", "1.1")].iter().map(|(n, v)| (n.to_string(), vec![v.to_string()])).collect();
-    let (unknown, newer, kernels) = local_packages(&installed, &offered);
-    assert_eq!(unknown.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["own"]);
-    assert_eq!(newer.iter().map(|p| p.0.name.as_str()).collect::<Vec<_>>(), vec!["sudo"]);
-    assert_eq!(kernels, vec!["linux-image-1"]);
+    let local = local_packages(&installed, &offered);
+    assert_eq!(local.unknown.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["own"]);
+    assert_eq!(local.newer.iter().map(|p| p.0.name.as_str()).collect::<Vec<_>>(), vec!["sudo"]);
+    assert_eq!(local.kernels, vec!["linux-image-1"]);
+    assert!(local.retired.is_empty());
 
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -228,7 +229,7 @@ fn firewall_and_rights_of_programs() {
     let ufw = "table ip filter {\n chain INPUT {\n  type filter hook input priority filter; policy drop;\n  counter packets 1 bytes 2 jump ufw-before-input\n }\n chain ufw-user-input {\n  ip saddr 203.0.113.5 counter packets 0 bytes 0 accept\n  ip saddr 192.168.1.5 accept\n  tcp dport 22 ip saddr 203.0.113.9 accept\n }\n}\n";
     let rules = read_ruleset(ufw);
     assert!(rules.protects);
-    assert_eq!(rules.public_allows, vec!["chain ufw-user-input: ip saddr 203.0.113.5 accept"]);
+    assert_eq!(rules.public_allows, vec!["chain ufw-user-input: ip saddr 203.0.113.5 accept", "chain ufw-user-input: tcp dport 22 ip saddr 203.0.113.9 accept"]);
     // anti-spoofing drops and forwarding rules are no protection
     let vpn = "table ip filter {\n chain INPUT {\n  type filter hook input priority filter; policy accept;\n }\n chain ts-input {\n  ip saddr 100.64.0.0/10 counter drop\n }\n chain FORWARD {\n  type filter hook forward priority filter; policy drop;\n  reject\n }\n}\n";
     assert!(!read_ruleset(vpn).protects);

@@ -4,8 +4,58 @@
 use crate::config::Config;
 use crate::finding::Severity;
 use chrono::{Datelike, NaiveDateTime};
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+
+thread_local! {
+    /// Searches of the running scan that stopped at their limit.
+    static CUT_SHORT: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
+}
+
+/// Remember that a search stopped at its limit, so an incomplete scan does not look clean.
+pub fn cut_short(what: &str, limit: usize) {
+    CUT_SHORT.with(|s| s.borrow_mut().insert(format!("Incomplete: the search of {what} stopped at its limit of {limit}; the rest was not looked at")));
+}
+
+/// The notes about searches that stopped early since the last call.
+pub fn take_cut_short() -> Vec<String> {
+    CUT_SHORT.with(|s| std::mem::take(&mut *s.borrow_mut())).into_iter().collect()
+}
+
+/// Like `take(limit)`, but notes it when there was more.
+pub fn capped<I: Iterator>(items: I, limit: usize, what: impl Into<String>) -> Capped<I> {
+    Capped { items, left: limit, limit, what: Some(what.into()) }
+}
+
+pub struct Capped<I> {
+    items: I,
+    left: usize,
+    limit: usize,
+    what: Option<String>,
+}
+
+impl<I: Iterator> Iterator for Capped<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        if self.left == 0 {
+            // look one further, once, to know whether anything was left out
+            if let Some(what) = self.what.take() {
+                if self.items.next().is_some() {
+                    cut_short(&what, self.limit);
+                }
+            }
+            return None;
+        }
+        self.left -= 1;
+        self.items.next()
+    }
+}
+
+/// The word for settings that only a cryptocurrency miner has (also matched in shell histories).
+pub const MINER_REASON: &str = "cryptocurrency miner settings";
 
 /// A suspicious trait in a command.
 #[derive(Debug, Clone, PartialEq)]
@@ -252,7 +302,7 @@ pub fn analyze_command(cmd: &str, cfg: &Config) -> Vec<CmdIssue> {
         }
     }
     if lower.contains("stratum+tcp") || lower.contains("--donate-level") {
-        add(Severity::Critical, "kryptominer-parametrar");
+        add(Severity::Critical, MINER_REASON);
     }
     out
 }

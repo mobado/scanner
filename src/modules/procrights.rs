@@ -8,9 +8,10 @@ use crate::finding::{Finding, Severity};
 use crate::procinfo::status_field;
 
 /// Capabilities that are close to root: (bit, name).
-const DANGEROUS: [(u32, &str); 14] = [
-    (0, "chown"), (1, "dac_override"), (2, "dac_read_search"), (6, "setgid"), (7, "setuid"), (12, "net_admin"), (13, "net_raw"),
-    (16, "sys_module"), (17, "sys_rawio"), (19, "sys_ptrace"), (21, "sys_admin"), (31, "setfcap"), (38, "perfmon"), (39, "bpf"),
+const DANGEROUS: [(u32, &str); 15] = [
+    (0, "chown"), (1, "dac_override"), (2, "dac_read_search"), (3, "fowner"), (6, "setgid"), (7, "setuid"), (12, "net_admin"),
+    (13, "net_raw"), (16, "sys_module"), (17, "sys_rawio"), (19, "sys_ptrace"), (21, "sys_admin"), (31, "setfcap"),
+    (38, "perfmon"), (39, "bpf"),
 ];
 
 /// Installed services and tools that hold such rights as part of their job.
@@ -38,7 +39,9 @@ pub(crate) fn check(ctx: &ScanCtx, col: &mut Collector) {
             continue;
         }
         let mask = |key: &str| status_field(&status, key).and_then(|v| u64::from_str_radix(v.trim(), 16).ok()).unwrap_or(0);
-        let held = dangerous_capabilities(mask("CapEff") | mask("CapAmb"));
+        // permitted rights count too: the program can switch them on whenever it likes
+        let active = mask("CapEff") | mask("CapAmb");
+        let held = dangerous_capabilities(active | mask("CapPrm"));
         if held.is_empty() {
             continue;
         }
@@ -59,9 +62,11 @@ pub(crate) fn check(ctx: &ScanCtx, col: &mut Collector) {
             continue;
         }
         let severity = if odd || shell { Severity::High } else if system || exe.is_empty() { Severity::Low } else { Severity::Medium };
+        let waiting: Vec<String> = held.iter().filter(|c| !dangerous_capabilities(active).contains(c)).map(|c| format!("cap_{c}")).collect();
+        let waiting = if waiting.is_empty() { String::new() } else { format!("\nheld but switched off right now (can be switched on): {}", waiting.join(", ")) };
         col.push(
             Finding::new(severity, MODULE, "PROC-CAPABILITIES", format!("A program without root holds root-like rights: {}", p.display_name()))
-                .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\ncapabilities: {}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), held.iter().map(|c| format!("cap_{c}")).collect::<Vec<_>>().join(", ")))
+                .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\ncapabilities: {}{waiting}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), held.iter().map(|c| format!("cap_{c}")).collect::<Vec<_>>().join(", ")))
                 .description("Capabilities give parts of root's power: reading any file, watching the network, tracing other programs or loading kernel code. Some services need one; an unknown program or a shell holding them is a way to stay in control without being root.")
                 .verify(format!("grep Cap /proc/{}/status", p.pid))
                 .verify("capsh --decode=<value>   # package libcap2-bin"),

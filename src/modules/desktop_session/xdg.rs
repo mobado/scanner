@@ -2,7 +2,7 @@
 
 use super::MODULE;
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{analyze_command, analyze_user_command, clip, max_severity, program_words, reasons, risky_home_place, shq, CmdIssue};
+use crate::modules::common::{analyze_command, analyze_user_command, capped, clip, max_severity, program_words, reasons, risky_home_place, shq, CmdIssue};
 use crate::modules::persistence::record;
 use crate::modules::persistence::rules::{check_system_scripts, files_at, script_issues, session_finding};
 use crate::modules::{Collector, ScanCtx};
@@ -250,7 +250,7 @@ fn check_autostart(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, St
 pub(super) fn check_user_launchers(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)]) {
     for (_, _, home) in homes {
         let dir = format!("{home}/.local/share/applications");
-        for name in ctx.sys.dir_names(&dir).into_iter().filter(|n| n.ends_with(".desktop")).take(500) {
+        for name in capped(ctx.sys.dir_names(&dir).into_iter().filter(|n| n.ends_with(".desktop")), 500, dir.as_str()) {
             let path = format!("{dir}/{name}");
             let Ok(text) = ctx.sys.read_string(&path) else { continue };
             record(ctx, col, &path);

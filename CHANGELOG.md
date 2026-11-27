@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.15.0
+Fixes:
+* Firewall: a rule that lets an internet address in is flagged also when it names a port or a
+  set; chains reached by `jump` count. `iptables-legacy` rules are read too, so they no longer
+  give a false "No firewall". Every accept rule is kept in the baseline, and new ones are
+  reported (`BASE-FIREWALL-RULE`).
+* Python: a `.pth` line is only skipped when it is exactly what setuptools, virtualenv or
+  coverage write; searching for words let obfuscated code through.
+* Boot files: a `grubx64.efi` built by `grub-install` (without the signed GRUB package) is no
+  longer reported as High; the baseline remembers it instead.
+* Capabilities: rights a program holds but has switched off (`CapPrm`) count, and so does
+  `cap_fowner`.
+* Proxies: only this computer's exact names and addresses count as local
+  (`localhost.evil.example` no longer does).
+* Debian packages that the sources no longer carry (after an upgrade) are one Info line.
+* Editors: lazy.nvim plugins and `vim.cmd("!…")` are checked; a folder named like an extension
+  with another ending no longer hides.
+* Searches that stop at a limit now say so in the notes. Two remaining Swedish messages are in
+  English.
+
+New checks:
+* Kernel options: `systemd.debug_shell`, `lsm=` without AppArmor, `intel_iommu=off`,
+  `amd_iommu=off`, `kgdboc=`, `kgdbwait`, `rd.shell`, `rd.break`, `break`; also in
+  `/etc/default/grub.d/*.cfg` and `/etc/kernel/cmdline`.
+* VS Code tasks that run when a project folder is opened.
+* JetBrains plugins.
+* Packed apt package lists (`.lz4`, `.gz`, `.xz` …).
+
 ## 0.14.1
 * Fixed a false High alarm `NET-SS-MISMATCH` for short-lived sockets (for example a UDP socket on a
   random port): `/proc/net` was read well before `ss` ran. Now `/proc/net` is read just before and

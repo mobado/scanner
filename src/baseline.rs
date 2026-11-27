@@ -8,6 +8,7 @@ use crate::modules::common::shq;
 use crate::modules::desktop_session::is_desktop_path;
 use crate::modules::fs_perms::SuidEntry;
 use crate::modules::persistence::extra::{is_login_shell, AccountEntry};
+use crate::modules::persistence::packages::RETIRED;
 use crate::modules::Inventory;
 use crate::report::Report;
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,8 @@ pub struct Baseline {
     pub editor_plugins: Option<Vec<String>>,
     #[serde(default)]
     pub local_packages: Option<Vec<String>>,
+    #[serde(default)]
+    pub firewall_rules: Option<Vec<String>>,
 }
 
 /// The parts of a recorded key that identify it: the file and the fingerprint.
@@ -102,7 +105,10 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
         }
     }
     if let (true, Some(old), Some(new)) = (both("persistence"), &base.local_packages, &inv.local_packages) {
-        for package in new.iter().filter(|p| !old.contains(p)) {
+        // a package that Debian retired after the baseline is no news
+        let name = |p: &str| p.strip_suffix(RETIRED).unwrap_or(p).to_string();
+        let known: BTreeSet<String> = old.iter().map(|p| name(p)).collect();
+        for package in new.iter().filter(|p| !known.contains(&name(p)) && !p.ends_with(RETIRED)) {
             out.push(
                 Finding::new(Severity::Medium, MODULE, "BASE-LOCAL-PACKAGE", format!("New package from outside the software sources since the baseline: {package}"))
                     .evidence(format!("{package}\n(compared with {src})"))
@@ -121,6 +127,40 @@ fn compare_access(base: &Baseline, inv: &Inventory, both: &dyn Fn(&str) -> bool,
                 .verify("nft list ruleset")
                 .verify("ufw status verbose"),
         );
+    }
+    if let (true, Some(old), Some(new)) = (both("net_proc"), &base.firewall_rules, &inv.firewall_rules) {
+        let known: BTreeSet<&String> = old.iter().collect();
+        for (into, severity, title) in [
+            (true, Severity::Medium, "New firewall rule(s) that let traffic in since the baseline"),
+            (false, Severity::Low, "New firewall rule(s) that accept forwarded or other traffic since the baseline"),
+        ] {
+            let fresh: Vec<&str> = new.iter().filter(|r| !known.contains(r) && r.starts_with("incoming ") == into).map(String::as_str).collect();
+            if fresh.is_empty() {
+                continue;
+            }
+            out.push(
+                Finding::new(severity, MODULE, "BASE-FIREWALL-RULE", title)
+                    .evidence(format!("{}\n(compared with {src})", crate::modules::common::clip(&fresh.join("\n"), 1200)))
+                    .description("An accept rule opens a way through the firewall. Adding a rule of your own, a VPN, containers or virtual machines do this; check that you know each one. Save a new baseline when they are yours.")
+                    .verify("nft list ruleset")
+                    .verify("iptables-legacy-save"),
+            );
+        }
+    }
+    // boot files built on this machine have no package copy; the baseline remembers them
+    if both("integrity") {
+        for (key, hash) in inv.boot.iter().filter(|(k, _)| k.starts_with("efi_file ")) {
+            if let Some(before) = base.boot.get(key).filter(|b| *b != hash) {
+                let path = key.trim_start_matches("efi_file ");
+                out.push(
+                    Finding::new(Severity::Medium, MODULE, "BASE-EFI-FILE-CHANGED", format!("A boot file built on this computer changed since the baseline: {path}"))
+                        .evidence(format!("{path}\nnow sha256 {hash}\npreviously sha256 {before}\n(compared with {src})"))
+                        .description("grub-install writes this file again after a GRUB update. If GRUB was not updated, something else changed what starts before the operating system.")
+                        .verify(format!("ls -l --time-style=full-iso {}", shq(path)))
+                        .verify("grep -E ' (upgrade|install) grub' /var/log/dpkg.log | tail"),
+                );
+            }
+        }
     }
     if let (true, Some(old), Some(new)) = (both("kernel"), &base.peripherals, &inv.peripherals) {
         for device in new.iter().filter(|d| !old.contains(d)) {
@@ -163,6 +203,8 @@ pub fn newly_tracked(path: &str) -> bool {
         ||["/etc/xdg/openbox/", "/etc/xdg/lxsession/", "/etc/sway/", "/usr/local/share/autostart/"].iter().any(|p| path.starts_with(p))
         || path.contains("-generators/")
         || path.contains("/.git/hooks/")
+        || path.ends_with("/.vscode/tasks.json")
+        || path == "/etc/kernel/cmdline"
         || path.contains("/NativeMessagingHosts/")
         || path.contains("/native-messaging-hosts/")
         || (path.contains("/systemd/") && path.contains(".d/") && path.ends_with(".conf"))
@@ -285,6 +327,7 @@ impl Baseline {
             addons: r.inventory.addons.clone(),
             editor_plugins: r.inventory.editor_plugins.clone(),
             local_packages: r.inventory.local_packages.clone(),
+            firewall_rules: r.inventory.firewall_rules.clone(),
         }
     }
 
@@ -444,6 +487,9 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
         } else if own && (path.ends_with("mimeapps.list") || path.ends_with("/.vimrc") || path.contains("/.vim/") || path.contains("/.config/nvim/")) {
             f.severity = Severity::Medium;
             f.description = "Your editor's settings or the list of programs that open your files is new or changed. Using the editor or choosing a default program does this; check that it was you.".into();
+        } else if path.ends_with("/.vscode/tasks.json") && own {
+            f.severity = Severity::Medium;
+            f.description = "A project's task that runs when the folder is opened is new or changed. Check the command it runs before you open the folder.".into();
         } else if path.ends_with("/pkcs11.txt") && own {
             // browsers and mail programs write these themselves; PERS-KEY-MODULE judges the libraries
             f.severity = Severity::Medium;

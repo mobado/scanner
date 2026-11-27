@@ -1,7 +1,7 @@
 //! Files in home folders (part of `fs_perms`): what lies in the download folder, scripts in
 //! `~/.local/bin` and program files hidden in dot folders. Nothing is executed or changed.
 
-use super::common::{analyze_user_command, clip, reasons, shq};
+use super::common::{analyze_user_command, capped, clip, reasons, shq};
 use super::filemarks::program_kind;
 use super::fs_perms::MODULE;
 use super::persistence::history::judge_command;
@@ -13,7 +13,7 @@ use std::os::unix::fs::MetadataExt;
 use walkdir::{DirEntry, WalkDir};
 
 /// Most files looked at per folder tree.
-const LIMIT: usize = 30_000;
+const LIMIT: usize = 300_000;
 /// Scripts bigger than this are not read.
 const SCRIPT_LIMIT: u64 = 256 * 1024;
 /// Most single findings per kind and user.
@@ -50,14 +50,14 @@ pub fn download_folders(ctx: &ScanCtx, home: &str) -> BTreeSet<String> {
 }
 
 fn files(ctx: &ScanCtx, folder: &str, depth: usize) -> impl Iterator<Item = DirEntry> {
-    WalkDir::new(ctx.sys.path(folder))
+    let walk = WalkDir::new(ctx.sys.path(folder))
         .follow_links(false)
         .max_depth(depth)
         .into_iter()
         .filter_entry(|e| e.depth() == 0 || !SKIPPED.iter().any(|s| e.file_name() == *s))
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .take(LIMIT)
+        .filter(|e| e.file_type().is_file());
+    capped(walk, LIMIT, folder)
 }
 
 /// The first line of a script that looks like an intrusion command.

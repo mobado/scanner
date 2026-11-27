@@ -4,7 +4,7 @@
 
 use super::{parse_unit, record, EXEC_KEYS, MODULE};
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{analyze_command, analyze_user_command, clip, max_severity, reasons, shq, CmdIssue};
+use crate::modules::common::{analyze_command, analyze_user_command, capped, clip, max_severity, reasons, shq, CmdIssue};
 use crate::modules::secrets::{hide_secrets, is_proxy_variable, judge_proxy, judge_variable};
 use crate::modules::{Collector, ScanCtx};
 use crate::pkgverify::owned_paths;
@@ -15,15 +15,13 @@ use walkdir::WalkDir;
 type Homes = [(String, u32, String)];
 
 fn files_below(ctx: &ScanCtx, dir: &str, depth: usize) -> Vec<String> {
-    let mut out: Vec<String> = WalkDir::new(ctx.sys.path(dir))
+    let walk = WalkDir::new(ctx.sys.path(dir))
         .max_depth(depth)
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| !e.file_type().is_dir())
-        .take(2000)
-        .map(|e| ctx.sys.display(e.path()))
-        .collect();
+        .filter(|e| !e.file_type().is_dir());
+    let mut out: Vec<String> = capped(walk, 2000, dir).map(|e| ctx.sys.display(e.path())).collect();
     out.sort();
     out
 }
@@ -788,7 +786,7 @@ pub fn check_hooks(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
     check_quadlets(ctx, col, homes);
     check_boot_images(ctx, col);
     // saved firewall rules and boot loader settings belong in the baseline too
-    for path in ["/etc/nftables.conf", "/etc/iptables/rules.v4", "/etc/iptables/rules.v6", "/etc/default/grub"] {
+    for path in ["/etc/nftables.conf", "/etc/iptables/rules.v4", "/etc/iptables/rules.v6", "/etc/default/grub", "/etc/kernel/cmdline"] {
         record(ctx, col, path);
     }
     for path in files_below(ctx, "/etc/default/grub.d", 1).into_iter().chain(files_below(ctx, "/etc/grub.d", 1)) {

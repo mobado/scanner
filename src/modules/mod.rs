@@ -82,6 +82,9 @@ pub struct Inventory {
     /// Names of packages no software source offers; `None` when they could not be compared.
     #[serde(default)]
     pub local_packages: Option<Vec<String>>,
+    /// Loaded firewall rules that accept traffic, without counters; `None` when they were not read.
+    #[serde(default)]
+    pub firewall_rules: Option<Vec<String>>,
     /// USB keyboards and Thunderbolt devices; `None` when the machine's buses were not read.
     #[serde(default)]
     pub peripherals: Option<Vec<String>>,

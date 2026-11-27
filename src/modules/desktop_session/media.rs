@@ -4,7 +4,7 @@
 
 use super::MODULE;
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{analyze_user_command, clip, max_severity, reasons, risky_home_place, shq};
+use crate::modules::common::{analyze_user_command, capped, clip, max_severity, reasons, risky_home_place, shq};
 use crate::modules::persistence::record;
 use crate::modules::{wallet, Collector, ScanCtx};
 use crate::pkgverify::owned_paths;
@@ -92,8 +92,8 @@ fn settings_files(ctx: &ScanCtx, homes: &Homes) -> Vec<String> {
     }
     let mut files = Vec::new();
     for dir in dirs {
-        let walk = WalkDir::new(ctx.sys.path(&dir)).max_depth(4).follow_links(false).into_iter().filter_map(|e| e.ok()).filter(|e| !e.file_type().is_dir()).take(300);
-        files.extend(walk.map(|e| ctx.sys.display(e.path())));
+        let walk = WalkDir::new(ctx.sys.path(&dir)).max_depth(4).follow_links(false).into_iter().filter_map(|e| e.ok()).filter(|e| !e.file_type().is_dir());
+        files.extend(capped(walk, 300, dir.as_str()).map(|e| ctx.sys.display(e.path())));
     }
     files.sort();
     files

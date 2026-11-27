@@ -127,6 +127,18 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
         base.modules.push(id.to_string());
         added.push(id.to_string());
     }
+    let ran = |id: &str| report.modules.iter().any(|m| m == id);
+    if base.firewall_rules.is_none() && report.inventory.firewall_rules.is_some() && ran("net_proc") {
+        base.firewall_rules = report.inventory.firewall_rules.clone();
+        added.push("the firewall rules".to_string());
+    }
+    if base.scanner_version != env!("CARGO_PKG_VERSION") && ran("integrity") {
+        let fresh: Vec<_> = report.inventory.boot.iter().filter(|(k, _)| k.starts_with("efi_file ") && !base.boot.contains_key(*k)).collect();
+        if !fresh.is_empty() {
+            base.boot.extend(fresh.into_iter().map(|(k, v)| (k.clone(), v.clone())));
+            added.push("the boot files built on this computer".to_string());
+        }
+    }
     // Kinds of files that later versions started to track.
     if base.scanner_version != env!("CARGO_PKG_VERSION") && report.modules.iter().any(|m| m == "persistence") {
         let mut new_files = 0;
@@ -157,6 +169,14 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
         if base.editor_plugins.is_none() && report.inventory.editor_plugins.is_some() {
             base.editor_plugins = report.inventory.editor_plugins.clone();
             added.push("the editor extensions".to_string());
+        }
+        // plugins of editors that earlier versions did not look at
+        if let (Some(known), Some(now)) = (&mut base.editor_plugins, &report.inventory.editor_plugins) {
+            let fresh: Vec<String> = now.iter().filter(|p| p.contains("/.local/share/JetBrains/") && !known.contains(p)).cloned().collect();
+            if !fresh.is_empty() {
+                known.extend(fresh);
+                added.push("the JetBrains plugins".to_string());
+            }
         }
         if base.local_packages.is_none() && report.inventory.local_packages.is_some() {
             base.local_packages = report.inventory.local_packages.clone();

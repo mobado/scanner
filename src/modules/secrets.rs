@@ -2,7 +2,7 @@
 //! that others can read, settings in the environment that load code into programs, and tokens
 //! carried by running programs. Secret values are never read into a report.
 
-use super::common::{analyze_command, clip, risky_home_place, shq};
+use super::common::{analyze_command, capped, clip, risky_home_place, shq};
 use super::{Collector, ScanCtx};
 use crate::config::Config;
 use crate::finding::{Finding, Severity};
@@ -157,9 +157,22 @@ pub fn is_proxy_variable(name: &str) -> bool {
 
 /// A proxy on this computer is usually a tool of one's own; one elsewhere sees the traffic.
 pub fn judge_proxy(value: &str) -> Severity {
+    let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
     let rest = value.split_once("://").map(|(_, r)| r).unwrap_or(value);
-    let host = rest.rsplit('@').next().unwrap_or(rest).split('/').next().unwrap_or("");
-    let local = host.starts_with("127.") || host.starts_with("localhost") || host.starts_with("[::1]") || host.starts_with("unix:");
+    // "user:password@host:port/path": the whole host name has to be this computer's
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let address = authority.rsplit('@').next().unwrap_or(authority);
+    let host = match address.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        // an address without brackets and more than one colon is an IPv6 address
+        None if address.matches(':').count() > 1 => address,
+        None => address.split(':').next().unwrap_or(""),
+    };
+    let host = host.trim_end_matches('.');
+    let local = rest.starts_with("unix:")
+        || value.starts_with("unix:")
+        || ["localhost", "ip6-localhost", "ip6-loopback"].iter().any(|n| host.eq_ignore_ascii_case(n))
+        || host.parse::<std::net::IpAddr>().map(|ip| crate::modules::net_proc::ip_is_loopback(&ip)).unwrap_or(false);
     if local {
         Severity::Low
     } else {
@@ -307,13 +320,13 @@ fn private_keys(ctx: &ScanCtx, home: &str) -> Vec<String> {
 
 /// `.env` files of projects in a home folder.
 fn env_files(ctx: &ScanCtx, home: &str) -> Vec<String> {
-    WalkDir::new(ctx.sys.path(home))
+    let walk = WalkDir::new(ctx.sys.path(home))
         .follow_links(false)
         .max_depth(4)
         .into_iter()
         .filter_entry(|e| e.depth() == 0 || !(e.file_type().is_dir() && (e.file_name().to_string_lossy().starts_with('.') || e.file_name() == "node_modules")))
-        .filter_map(|e| e.ok())
-        .take(30_000)
+        .filter_map(|e| e.ok());
+    capped(walk, 30_000, format!("{home} for .env files (files and folders)"))
         .filter(|e| e.file_type().is_file() && (e.file_name() == ".env" || e.file_name() == ".env.local" || e.file_name() == ".env.production"))
         .map(|e| ctx.sys.display(e.path()))
         .collect()

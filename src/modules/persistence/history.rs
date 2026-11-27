@@ -3,7 +3,7 @@
 
 use super::MODULE;
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{analyze_command, clip, shq};
+use crate::modules::common::{analyze_command, clip, cut_short, shq, MINER_REASON};
 use crate::modules::{Collector, ScanCtx};
 
 const FILES: [&str; 4] = [".bash_history", ".zsh_history", ".sh_history", ".local/share/fish/fish_history"];
@@ -55,7 +55,7 @@ pub fn judge_command(ctx: &ScanCtx, command: &str) -> Option<(Severity, String)>
     // Reuse the command rules, but only the ones that are rare in honest use
     for issue in analyze_command(command, ctx.cfg) {
         let r = issue.reason.as_str();
-        if r.starts_with("netcat with") || r.starts_with("socat with") || r.starts_with("uses /dev/tcp") || r.ends_with("(reverse shell pattern)") || r == "kryptominer-parametrar" {
+        if r.starts_with("netcat with") || r.starts_with("socat with") || r.starts_with("uses /dev/tcp") || r.ends_with("(reverse shell pattern)") || r == MINER_REASON {
             return high(r);
         }
         if r.starts_with("downloads and runs code") {
@@ -91,6 +91,9 @@ pub fn check_histories(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32
         for name in FILES {
             let path = format!("{home}/{name}");
             let Ok(bytes) = ctx.sys.read_bytes(&path) else { continue };
+            if bytes.len() > READ_LIMIT {
+                cut_short(&format!("the older part of {path} (bytes)"), READ_LIMIT);
+            }
             let text = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(READ_LIMIT)..]);
             let mut hits: Vec<(Severity, String)> = Vec::new();
             for line in text.lines() {

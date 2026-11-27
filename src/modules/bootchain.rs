@@ -7,6 +7,7 @@ use super::integrity::MODULE;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::pkgverify::{owned_paths, verify_paths, Verdict};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::time::SystemTime;
@@ -28,6 +29,14 @@ pub fn weakening_options(line: &str) -> Vec<(Severity, String)> {
                 ("nokaslr", _) => (Severity::Medium, "switches off address randomisation"),
                 ("mitigations", "off") => (Severity::Medium, "switches off protection against processor flaws"),
                 ("audit", "0") => (Severity::Low, "switches off the kernel's audit log"),
+                // the Linux security modules that start: AppArmor left out means switched off
+                ("lsm", list) if !list.split(',').any(|m| m == "apparmor") => (Severity::High, "starts without AppArmor"),
+                ("systemd.debug_shell" | "systemd.debug-shell", v) if !["0", "no", "false", "off"].contains(&v) => (Severity::High, "opens a root shell without a password on tty9"),
+                ("intel_iommu" | "amd_iommu" | "iommu", "off") => (Severity::Medium, "switches off the IOMMU, so devices on Thunderbolt and other ports can read memory"),
+                ("kgdboc", v) if !v.is_empty() => (Severity::High, "opens the kernel debugger"),
+                ("kgdbwait", _) => (Severity::High, "waits for a kernel debugger at start"),
+                ("rd.break" | "break", _) => (Severity::High, "stops during the start with a root shell"),
+                ("rd.shell", v) if v != "0" => (Severity::Medium, "gives a root shell when the start fails"),
                 _ => return None,
             };
             Some((judged.0, format!("{word}: {}", judged.1)))
@@ -37,21 +46,30 @@ pub fn weakening_options(line: &str) -> Vec<(Severity, String)> {
 
 fn check_boot_options(ctx: &ScanCtx, col: &mut Collector) {
     // option → where it appears
-    let mut found: BTreeMap<String, (Severity, Vec<&str>)> = BTreeMap::new();
-    let mut add = |place: &'static str, line: &str| {
+    let mut found: BTreeMap<String, (Severity, Vec<String>)> = BTreeMap::new();
+    let mut add = |place: &str, line: &str| {
         for (severity, what) in weakening_options(line) {
             let entry = found.entry(what).or_insert((severity, Vec::new()));
-            if !entry.1.contains(&place) {
-                entry.1.push(place);
+            if !entry.1.iter().any(|p| p == place) {
+                entry.1.push(place.to_string());
             }
         }
     };
     if let Ok(text) = ctx.sys.read_string("/proc/cmdline") {
         add("the running kernel (/proc/cmdline)", &text);
     }
-    if let Ok(text) = ctx.sys.read_string("/etc/default/grub") {
+    // the settings that the next update of the boot menu or kernel uses
+    let mut settings = vec!["/etc/default/grub".to_string()];
+    settings.extend(ctx.sys.dir_names("/etc/default/grub.d").into_iter().filter(|n| n.ends_with(".cfg")).map(|n| format!("/etc/default/grub.d/{n}")));
+    for path in settings {
+        let Ok(text) = ctx.sys.read_string(&path) else { continue };
         for line in text.lines().map(str::trim).filter(|l| l.starts_with("GRUB_CMDLINE_LINUX")) {
-            add("/etc/default/grub", line.split_once('=').map(|(_, v)| v).unwrap_or(""));
+            add(&path, line.split_once('=').map(|(_, v)| v).unwrap_or(""));
+        }
+    }
+    if let Ok(text) = ctx.sys.read_string("/etc/kernel/cmdline") {
+        for line in text.lines().map(str::trim).filter(|l| !l.starts_with('#')) {
+            add("/etc/kernel/cmdline", line);
         }
     }
     match ctx.sys.read_string("/boot/grub/grub.cfg") {
@@ -70,7 +88,7 @@ fn check_boot_options(ctx: &ScanCtx, col: &mut Collector) {
             .evidence(clip(&lines.join("\n"), 900))
             .description("Options on the kernel's command line switch protections off or change what starts. People set some for speed or hardware problems; an attacker uses them to get in at the next start.")
             .verify("cat /proc/cmdline")
-            .verify("grep CMDLINE /etc/default/grub; grep -n '^\\s*linux' /boot/grub/grub.cfg"),
+            .verify("grep -r CMDLINE /etc/default/grub /etc/default/grub.d; cat /etc/kernel/cmdline; grep -n '^\\s*linux' /boot/grub/grub.cfg"),
     );
 }
 
@@ -188,7 +206,9 @@ fn efi_originals(name: &str) -> Vec<String> {
         _ => "x86_64-efi",
     };
     let shim = |n: &str| vec![format!("/usr/lib/shim/{n}{arch}.efi.signed"), format!("/usr/lib/shim/{n}{arch}.efi")];
-    let grub = |n: &str| vec![format!("/usr/lib/grub/{platform}-signed/{n}{arch}.efi.signed"), format!("/usr/lib/grub/{platform}/monolithic/{n}{arch}.efi")];
+    // Only the signed images are copied as they are. Without them grub-install builds an image
+    // for this computer, which matches no file of any package.
+    let grub = |n: &str| vec![format!("/usr/lib/grub/{platform}-signed/{n}{arch}.efi.signed")];
     match program {
         "shim" | "mm" | "fb" => shim(program),
         "grub" => [grub("grub"), grub("gcd"), grub("grubnet")].concat(),
@@ -222,7 +242,13 @@ fn check_efi_files(ctx: &ScanCtx, col: &mut Collector) {
         // Windows keeps its own loader under the standard name too
         if originals.is_empty() {
             if !removable {
-                unknown.push(format!("{path}: no package on this system has a copy to compare with"));
+                // remembered in the baseline, so a later change is seen
+                col.inventory.boot.insert(format!("efi_file {path}"), Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect());
+                unknown.push(if name.starts_with("grub") {
+                    format!("{path}: built on this computer by grub-install (no signed GRUB package), so there is no copy to compare with")
+                } else {
+                    format!("{path}: no package on this system has a copy to compare with")
+                });
             }
             continue;
         }
@@ -252,7 +278,7 @@ fn check_efi_files(ctx: &ScanCtx, col: &mut Collector) {
         (Severity::High, changed, "A boot file does not match its package", "These start before the operating system. A changed one can take over everything. Compare, then restore with: sudo apt install --reinstall shim-signed grub-efi-amd64-signed && sudo grub-install."),
         (Severity::Medium, older, "A boot file is older than the installed package", "The package was updated but the file on the EFI partition was not written again; sudo grub-install does that."),
         (Severity::Low, fallback, "The fallback boot file differs from the installed packages", "EFI/BOOT is started when no other entry works. It is often an old copy from the installation; grub-install --force-extra-removable refreshes it."),
-        (Severity::Info, unknown, "Boot files without a package copy to compare with", "Firmware updaters and other tools put their own files here."),
+        (Severity::Info, unknown, "Boot files without a package copy to compare with", "grub-install without Secure Boot support, firmware updaters and other tools put their own files here. The baseline remembers them, so a change is reported."),
     ] {
         if lines.is_empty() {
             continue;

@@ -5,7 +5,7 @@
 use super::hooks::serious_lines;
 use super::{record, MODULE};
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{clip, max_severity, reasons, shq};
+use crate::modules::common::{capped, clip, cut_short, max_severity, reasons, shq};
 use crate::modules::secrets::{hide_secrets, judge_proxy};
 use crate::modules::{debianfs, Collector, ScanCtx};
 use crate::pkgverify::{verify_paths, Verdict};
@@ -172,8 +172,8 @@ fn check_pac_files(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
             .follow_links(false)
             .into_iter()
             .filter_entry(|e| e.depth() == 0 || !e.file_type().is_dir() || e.file_name() == ".config" || !e.file_name().to_string_lossy().starts_with('.'))
-            .filter_map(|e| e.ok())
-            .take(30_000);
+            .filter_map(|e| e.ok());
+        let walk = capped(walk, 30_000, format!("{root} for proxy auto-config files (files and folders)"));
         for entry in walk.filter(|e| e.file_type().is_file()) {
             let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
             if !(name.ends_with(".pac") || name == "wpad.dat") {
@@ -262,8 +262,8 @@ fn check_unowned(ctx: &ScanCtx, col: &mut Collector) {
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| !(e.file_type().is_dir() && SKIPPED.iter().any(|s| e.file_name() == *s) && (e.file_name() != "modules" || e.depth() == 1)))
-        .filter_map(|e| e.ok())
-        .take(600_000);
+        .filter_map(|e| e.ok());
+    let walk = capped(walk, 600_000, "/usr/lib for programs of no package (files and folders)");
     let mut candidates = Vec::new();
     for entry in walk.filter(|e| e.file_type().is_file()) {
         let path = ctx.sys.display(entry.path());
@@ -274,6 +274,7 @@ fn check_unowned(ctx: &ScanCtx, col: &mut Collector) {
         if is_program(ctx, &path, mode) {
             candidates.push(path);
             if candidates.len() >= 2000 {
+                cut_short("/usr/lib for programs of no package (unlisted programs)", 2000);
                 break;
             }
         }
@@ -305,8 +306,8 @@ fn check_unowned(ctx: &ScanCtx, col: &mut Collector) {
     // other files an administrator, or someone else, added to systemd's folders
     let mut added = Vec::new();
     for dir in ["/etc/systemd/system", "/etc/systemd/user"] {
-        let walk = WalkDir::new(ctx.sys.path(dir)).max_depth(3).follow_links(false).into_iter().filter_map(|e| e.ok()).take(2000);
-        for entry in walk.filter(|e| e.file_type().is_file()) {
+        let walk = WalkDir::new(ctx.sys.path(dir)).max_depth(3).follow_links(false).into_iter().filter_map(|e| e.ok());
+        for entry in capped(walk, 2000, dir).filter(|e| e.file_type().is_file()) {
             let path = ctx.sys.display(entry.path());
             // units, drop-ins and generators have their own checks
             let covered = [".service", ".timer", ".socket", ".path", ".conf"].iter().any(|e| path.ends_with(e)) || path.contains("-generators/");

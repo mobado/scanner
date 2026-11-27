@@ -181,6 +181,8 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
     let wallet_watch_secs = opts.watch_wallet_secs.unwrap_or(if opts.deep_pid_scan { cfg.wallet_watch_secs } else { 0 }).min(600);
     let ctx = ScanCtx { sys, cfg, deep_pid_scan: opts.deep_pid_scan, wallet_watch_secs, privileged, processes: &processes };
 
+    // left over from an earlier scan in this thread
+    crate::modules::common::take_cut_short();
     let mut modules_run = Vec::new();
     for m in ModuleId::ALL {
         if !opts.modules.contains(&m) {
@@ -206,6 +208,9 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
             ModuleId::Kernel => kernel::run(&ctx, &mut col),
             ModuleId::Services => services::run(&ctx, &mut col),
             ModuleId::Integrity => integrity::run(&ctx, &mut col),
+        }
+        for note in crate::modules::common::take_cut_short() {
+            col.note(format!("{}: {note}", m.id()));
         }
         modules_run.push(m.id().to_string());
     }

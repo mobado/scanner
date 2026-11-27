@@ -3,7 +3,7 @@
 
 use super::MODULE;
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{clip, shq};
+use crate::modules::common::{capped, clip, shq};
 use crate::modules::homefiles::download_folders;
 use crate::modules::persistence::{parse_unit, record};
 use crate::modules::{Collector, ScanCtx};
@@ -199,7 +199,7 @@ fn check_appimages(ctx: &ScanCtx, col: &mut Collector, user: &str, home: &str) {
     folders.insert(home.to_string());
     let mut found = Vec::new();
     for folder in folders {
-        for name in ctx.sys.dir_names(&folder).into_iter().take(2000) {
+        for name in capped(ctx.sys.dir_names(&folder).into_iter(), 2000, format!("{folder} for AppImages")) {
             let path = format!("{folder}/{name}");
             let Ok(meta) = std::fs::symlink_metadata(ctx.sys.path(&path)) else { continue };
             if meta.is_file() && meta.mode() & 0o111 != 0 && is_appimage(ctx, &path) {

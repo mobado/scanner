@@ -127,12 +127,12 @@ impl SocketEntry {
 pub fn parse_hex_addr(s: &str, v6: bool) -> Result<SocketAddr> {
     let (ip_hex, port_hex) = s
         .split_once(':')
-        .ok_or_else(|| ScanError::parse("/proc/net", format!("saknar ':' i adress '{s}'")))?;
+        .ok_or_else(|| ScanError::parse("/proc/net", format!("no ':' in address '{s}'")))?;
     let port = u16::from_str_radix(port_hex, 16)
-        .map_err(|e| ScanError::parse("/proc/net", format!("ogiltig port '{port_hex}': {e}")))?;
+        .map_err(|e| ScanError::parse("/proc/net", format!("invalid port '{port_hex}': {e}")))?;
     let word = |chunk: &str| {
         u32::from_str_radix(chunk, 16)
-            .map_err(|e| ScanError::parse("/proc/net", format!("ogiltig adress '{chunk}': {e}")))
+            .map_err(|e| ScanError::parse("/proc/net", format!("invalid address '{chunk}': {e}")))
     };
     let ip = if v6 {
         if ip_hex.len() != 32 || !ip_hex.is_ascii() {

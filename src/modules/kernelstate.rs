@@ -5,7 +5,7 @@
 use super::kernel::{parse_modules, MODULE};
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{clip, shq};
+use crate::modules::common::{capped, clip, shq};
 use crate::pkgverify::{verify_paths, Verdict};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -137,7 +137,8 @@ fn check_ebpf(ctx: &ScanCtx, col: &mut Collector) {
     judge_bpf(&programs, &network, col);
     // objects "pinned" here stay loaded without any process
     let mut pinned = Vec::new();
-    for entry in walkdir::WalkDir::new(ctx.sys.path("/sys/fs/bpf")).max_depth(4).into_iter().filter_map(|e| e.ok()).filter(|e| !e.file_type().is_dir()).take(100) {
+    let walk = walkdir::WalkDir::new(ctx.sys.path("/sys/fs/bpf")).max_depth(4).into_iter().filter_map(|e| e.ok()).filter(|e| !e.file_type().is_dir());
+    for entry in capped(walk, 100, "/sys/fs/bpf") {
         pinned.push(ctx.sys.display(entry.path()));
     }
     if !pinned.is_empty() {

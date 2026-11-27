@@ -3,7 +3,7 @@
 
 use super::{check_perms, record, MODULE};
 use crate::finding::{Finding, Severity};
-use crate::modules::common::{analyze_command, analyze_user_command, clip, max_severity, reasons, shq, CmdIssue};
+use crate::modules::common::{analyze_command, analyze_user_command, capped, clip, max_severity, reasons, shq, CmdIssue};
 use crate::modules::{Collector, ScanCtx};
 use crate::pkgverify::owned_paths;
 use walkdir::WalkDir;
@@ -13,15 +13,13 @@ const MACHINE_DIRS: [&str; 3] = ["/etc/NetworkManager/dispatcher.d", "/etc/syste
 
 /// The files at or below a path.
 pub(crate) fn files_at(ctx: &ScanCtx, path: &str) -> Vec<String> {
-    let mut out: Vec<String> = WalkDir::new(ctx.sys.path(path))
+    let walk = WalkDir::new(ctx.sys.path(path))
         .max_depth(3)
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| !e.file_type().is_dir())
-        .take(500)
-        .map(|e| ctx.sys.display(e.path()))
-        .collect();
+        .filter(|e| !e.file_type().is_dir());
+    let mut out: Vec<String> = capped(walk, 500, path).map(|e| ctx.sys.display(e.path())).collect();
     out.sort();
     out
 }
