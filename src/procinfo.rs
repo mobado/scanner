@@ -1,6 +1,7 @@
 //! Reads processes from /proc. Processes can disappear at any time, so every
 //! read is tolerant: missing files give empty fields, never a panic.
 
+use crate::modules::ScanCtx;
 use crate::sys::SysRoot;
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +77,26 @@ impl ProcInfo {
     /// `candidate_names` or `display_name`. Where the file lies is for the caller to judge.
     pub fn is_program<S: AsRef<str>>(&self, names: &[S]) -> bool {
         self.exe_path().is_some_and(|exe| is_program_path(exe, names))
+    }
+
+    /// Code this process runs from places the user's programs can write to, or from memory (see
+    /// [`crate::modules::persistence::keys::odd_libraries`]): a library slipped into it, a plugin,
+    /// `LD_PRELOAD`. Not the program file itself, nor an AppImage's own mounted files. Empty when
+    /// the maps cannot be read.
+    pub fn foreign_code(&self, sys: &SysRoot) -> Vec<String> {
+        let Ok(maps) = sys.read_string(format!("/proc/{}/maps", self.pid)) else { return Vec::new() };
+        let exe = self.exe_path();
+        let own_mount = exe.and_then(|e| e.strip_prefix("/tmp/.mount_")?.split_once('/')).map(|(name, _)| format!("/tmp/.mount_{name}/"));
+        let mut code = crate::modules::persistence::keys::odd_libraries(&maps);
+        code.retain(|path| Some(path.strip_suffix(" (deleted)").unwrap_or(path)) != exe && !own_mount.as_deref().is_some_and(|m| path.starts_with(m)));
+        code
+    }
+
+    /// [`Self::is_program`], and the process runs no foreign code: an installed program with such
+    /// code in it does that code's bidding, whatever its file is. Use this for every exception in
+    /// the sensitive checks (saved passwords, the wallet, the keyboard).
+    pub fn is_clean_program<S: AsRef<str>>(&self, ctx: &ScanCtx, names: &[S]) -> bool {
+        self.is_program(names) && self.foreign_code(ctx.sys).is_empty()
     }
 
     /// Every name the process goes by: exe name, comm and argv[0]. The process chooses the last

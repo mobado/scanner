@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.2
+* An installed program with foreign code in it no longer gets its exception in the sensitive
+  checks (saved passwords and cookies, who answers as the wallet, keyboard readers, the virtual
+  keyboard): code from a temporary or home folder, `/run/user` or memory. The finding weighs
+  more and lists the code. Installed programs asking the wallet are reported then too.
+* `PROC-KEY-LIBRARY` counts every executable mapping, not only files named `.so`, also from
+  `/run/user` and `memfd`.
+* New `KERN-PTRACE-SCOPE` (Low): `kernel.yama.ptrace_scope = 0` lets your programs write code
+  into each other; set it to 1.
+
 ## 0.19.1
 Programs were approved by names they choose themselves: `exec -a firefox sqlite3 …/cookies.sqlite`
 or a Python script renaming itself passed as the browser, as the password wallet and more.

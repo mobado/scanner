@@ -2,6 +2,7 @@
 
 use crate::finding::{Finding, Severity};
 use crate::modules::common::clip;
+use crate::modules::secrets::foreign_note;
 use crate::modules::{Collector, ScanCtx};
 use std::collections::BTreeSet;
 
@@ -31,15 +32,18 @@ pub(super) fn check_input(ctx: &ScanCtx, col: &mut Collector) {
             .filter_map(|fd| ctx.sys.read_link(format!("/proc/{}/fd/{fd}", p.pid)))
             .filter(|t| t.starts_with("/dev/input/event") || t.starts_with("/dev/input/mice") || t.starts_with("/dev/input/mouse"))
             .collect();
-        let expected = system && p.is_program(&INPUT_READERS);
+        let expected = system && p.is_clean_program(ctx, &INPUT_READERS);
         if !spying && (devices.is_empty() || expected) {
             continue;
         }
-        let severity = if spying || !system { Severity::High } else { Severity::Medium };
+        // an expected reader that runs foreign code is no longer excused, and weighs more
+        let tainted = system && p.is_program(&INPUT_READERS) && !expected;
+        let severity = if spying || !system || tainted { Severity::High } else { Severity::Medium };
+        let foreign = if tainted { foreign_note(ctx, p) } else { String::new() };
         col.push(
             Finding::new(severity, super::MODULE, "PROC-INPUT-READER", format!("Program reads the keyboard or mouse directly: {name}"))
                 .evidence(format!(
-                    "PID {} UID {} exe={}\ncmdline=\"{}\"\n{}",
+                    "PID {} UID {} exe={}\ncmdline=\"{}\"\n{}{foreign}",
                     p.pid,
                     p.uid,
                     p.exe.as_deref().unwrap_or("?"),

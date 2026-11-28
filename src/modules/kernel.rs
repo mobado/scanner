@@ -134,6 +134,15 @@ fn check_sysctl(ctx: &ScanCtx, col: &mut Collector) {
             report(sev, key, bad, text);
         }
     }
+    if sysctl(ctx, "kernel.yama.ptrace_scope").as_deref() == Some("0") {
+        col.findings.push(
+            Finding::new(Severity::Low, MODULE, "KERN-PTRACE-SCOPE", "Your programs may put code into each other (kernel.yama.ptrace_scope = 0)")
+                .evidence("kernel.yama.ptrace_scope = 0")
+                .description("With ptrace any program of yours can attach to any other of yours, such as the browser or the password wallet, and write code straight into its memory, leaving no file behind. This is Debian's default. To close that way, put the line \"kernel.yama.ptrace_scope = 1\" in a file such as /etc/sysctl.d/90-ptrace.conf and restart (or run sudo sysctl --system). Debuggers still work on programs they start; attaching to one that already runs then needs sudo.")
+                .verify("sysctl kernel.yama.ptrace_scope")
+                .verify("grep -rn ptrace_scope /etc/sysctl.d /etc/sysctl.conf /usr/lib/sysctl.d 2>/dev/null"),
+        );
+    }
 }
 
 fn check_modprobe_config(ctx: &ScanCtx, col: &mut Collector) {

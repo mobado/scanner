@@ -34,12 +34,26 @@ pub fn secret_store(path: &str) -> Option<&'static str> {
     (BROWSER_SECRETS.contains(&name) && PROFILE_MARKS.iter().any(|m| path.contains(m))).then_some("browser passwords or cookies")
 }
 
+/// The programs whose job it is to read a store.
+fn rightful(store: &str) -> &'static [&'static str] {
+    if store == "password wallet" {
+        &KEYRINGS
+    } else {
+        &BROWSERS
+    }
+}
+
+/// Lines for the evidence of a program that lost an exception: the foreign code it runs.
+pub(crate) fn foreign_note(ctx: &ScanCtx, p: &ProcInfo) -> String {
+    format!("\nruns code from a place your programs can write to, so its name earns it nothing:\n{}", clip(&p.foreign_code(ctx.sys).join("\n"), 600))
+}
+
 /// How worrying it is that this program has the store open. `None` for its rightful users, who
-/// are known by their program file only: any process can call itself "firefox".
+/// are known by their program file only: any process can call itself "firefox". The caller also
+/// checks that they run no foreign code ([`ProcInfo::is_clean_program`]).
 pub fn judge_reader(cfg: &Config, store: &str, exe: &str) -> Option<Severity> {
     let system = ["/usr/", "/opt/", "/snap/", "/app/"].iter().any(|d| exe.starts_with(d)) && !exe.starts_with("/usr/local/");
-    let rightful: &[&str] = if store == "password wallet" { &KEYRINGS } else { &BROWSERS };
-    if system && is_program_path(exe, rightful) {
+    if system && is_program_path(exe, rightful(store)) {
         return None;
     }
     if system && is_program_path(exe, &READS_EVERYTHING) {
@@ -59,11 +73,24 @@ fn check_open_stores(ctx: &ScanCtx, col: &mut Collector) {
         }
         let exe = p.exe_path().unwrap_or("");
         for (store, files) in open {
-            let Some(severity) = judge_reader(ctx.cfg, store, exe) else { continue };
+            let judged = judge_reader(ctx.cfg, store, exe);
+            // the rightful users and the programs that read everything get their exception only
+            // while they run no foreign code; with such code in them they weigh the most
+            let clean = match judged {
+                None => p.is_clean_program(ctx, rightful(store)),
+                Some(Severity::Low) => p.is_clean_program(ctx, &READS_EVERYTHING),
+                Some(_) => true,
+            };
+            let severity = match judged {
+                _ if !clean => Severity::Critical,
+                Some(severity) => severity,
+                None => continue,
+            };
+            let foreign = if clean { String::new() } else { foreign_note(ctx, p) };
             col.push(
                 Finding::new(severity, super::proc_audit::MODULE, "PROC-SECRET-ACCESS", format!("{} has the {store} open", p.display_name()))
-                    .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\n{}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), clip(&files.into_iter().collect::<Vec<_>>().join("\n"), 600)))
-                    .description("Only the browser (or the wallet program) should read these files. Password-stealing malware copies them. If you do not know this program, disconnect from the network and change your passwords from another computer.")
+                    .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\n{}{foreign}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), clip(&files.into_iter().collect::<Vec<_>>().join("\n"), 600)))
+                    .description("Only the browser (or the wallet program) should read these files. Password-stealing malware copies them, or slips its code into a program that may read them. If you do not know this program, or the code listed for it, disconnect from the network and change your passwords from another computer.")
                     .verify(format!("ls -l /proc/{}/fd", p.pid))
                     .verify(format!("ps -o pid,user,lstart,cmd -p {}", p.pid)),
             );

@@ -179,18 +179,25 @@ fn check_modules(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
 /// Programs that hold keys or ask for passwords.
 const KEY_PROGRAMS: [&str; 14] = ["ssh", "ssh-agent", "ssh-add", "sshd", "gpg", "gpg2", "gpg-agent", "scdaemon", "openvpn", "sudo", "su", "gnome-keyring-daemon", "gnome-keyring-d", "ksecretd"];
 
-/// Libraries in a `/proc/<pid>/maps` listing that come from temporary or home folders.
+/// Places the user's own programs can write to, and memory files that never were on a disk.
+const WRITABLE_PLACES: [&str; 7] = ["/tmp/", "/var/tmp/", "/dev/shm/", "/run/user/", "/home/", "/root/", "/memfd:"];
+
+/// Code in a `/proc/<pid>/maps` listing that runs from such a place: every executable mapping,
+/// whatever the file is called. Qt compiles QML to machine code in memory files it names
+/// "JITCode:…"; those are left out in a program that has the installed Qt QML library loaded.
 pub fn odd_libraries(maps: &str) -> Vec<String> {
-    let mut out = BTreeSet::new();
-    for line in maps.lines() {
-        // address perms offset dev inode path
-        let Some(at) = line.find('/') else { continue };
-        let path = line[at..].trim_end_matches(" (deleted)");
-        let library = path.ends_with(".so") || path.contains(".so.");
-        if library && ["/tmp/", "/var/tmp/", "/dev/shm/", "/home/", "/root/"].iter().any(|p| path.starts_with(p)) && !path.starts_with("/tmp/.mount_") {
-            out.insert(line[at..].to_string());
-        }
-    }
+    // address perms offset dev inode path
+    let code = || {
+        maps.lines().filter_map(|line| {
+            let executable = line.split_whitespace().nth(1).is_some_and(|rights| rights.contains('x'));
+            line.find('/').filter(|_| executable).map(|at| &line[at..])
+        })
+    };
+    let qml = code().any(|path| (path.starts_with("/usr/") || path.starts_with("/app/")) && path.rsplit('/').next().is_some_and(|name| name.starts_with("libQt") && name.contains("Qml.so")));
+    let out: BTreeSet<String> = code()
+        .filter(|path| WRITABLE_PLACES.iter().any(|place| path.starts_with(place)) && !(qml && path.starts_with("/memfd:JITCode:")))
+        .map(str::to_string)
+        .collect();
     out.into_iter().collect()
 }
 
@@ -202,14 +209,13 @@ pub(crate) fn check_loaded(ctx: &ScanCtx, col: &mut Collector) {
         if !p.candidate_names().iter().any(|n| KEY_PROGRAMS.contains(&n.as_str())) {
             continue;
         }
-        let Ok(maps) = ctx.sys.read_string(format!("/proc/{}/maps", p.pid)) else { continue };
-        let odd = odd_libraries(&maps);
+        let odd = p.foreign_code(ctx.sys);
         if !odd.is_empty() {
             col.push(
-                Finding::new(Severity::High, crate::modules::proc_audit::MODULE, "PROC-KEY-LIBRARY", format!("{name} has loaded a library from an odd place"))
+                Finding::new(Severity::High, crate::modules::proc_audit::MODULE, "PROC-KEY-LIBRARY", format!("{name} runs code from an odd place"))
                     .evidence(format!("PID {} UID {} exe={}\n{}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&odd.join("\n"), 700)))
-                    .description("A program that handles keys or passwords runs code from a temporary or home folder. Unless you built it yourself, treat your keys and passwords as read.")
-                    .verify(format!("grep -E '/(tmp|home|shm)/' /proc/{}/maps", p.pid)),
+                    .description("A program that handles keys or passwords runs code from a temporary or home folder, or from memory. Unless you built it yourself, treat your keys and passwords as read.")
+                    .verify(format!("grep -E ' r.x. .*(/tmp/|/shm/|/run/user/|/home/|/root/|/memfd:)' /proc/{}/maps", p.pid)),
             );
         }
     }

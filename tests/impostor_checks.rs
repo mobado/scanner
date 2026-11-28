@@ -2,8 +2,10 @@
 //! an exception: only its program file counts, and never an interpreter's.
 
 use scanner::config::Config;
+use scanner::modules::persistence::keys::odd_libraries;
 use scanner::modules::secrets::judge_reader;
-use scanner::modules::wallet::judge_owner;
+use scanner::modules::wallet::{judge_holder, judge_owner};
+use scanner::modules::ScanCtx;
 use scanner::procinfo::{is_program_path, runs_any_code, ProcInfo};
 use scanner::{run_scan, ModuleId, Report, ScanOptions, Severity, SysRoot};
 use std::fs;
@@ -74,6 +76,99 @@ fn stealing_cookies_under_a_browsers_name_is_seen() {
     let found: Vec<&str> = report.findings.iter().filter(|f| f.rule == "PROC-SECRET-ACCESS").map(|f| f.evidence.as_str()).collect();
     assert_eq!(found.len(), 2, "{found:?}");
     assert!(found.iter().all(|e| e.contains("sqlite3") || e.contains("python3")));
+}
+
+/// A `/proc/<pid>/maps` line.
+fn map(rights: &str, path: &str) -> String {
+    format!("7f0000000000-7f0000001000 {rights} 00000000 08:01 42                   {path}\n")
+}
+
+#[test]
+fn every_executable_mapping_from_a_writable_place_counts() {
+    let maps = [
+        map("r-xp", "/usr/lib/x86_64-linux-gnu/libc.so.6"),
+        // whatever the file is called
+        map("r-xp", "/home/anna/.cache/data.bin"),
+        map("rwxp", "/run/user/1000/x.so"),
+        map("r-xs", "/memfd:stage2 (deleted)"),
+        map("r-xp", "/dev/shm/a b.so (deleted)"),
+        // data is not code
+        map("r--p", "/home/anna/.local/share/fonts/x.ttf"),
+        map("rw-s", "/memfd:wayland-shm (deleted)"),
+        map("r-xp", "[vdso]"),
+        map("r-xp", ""),
+    ]
+    .concat();
+    assert_eq!(odd_libraries(&maps), ["/dev/shm/a b.so (deleted)", "/home/anna/.cache/data.bin", "/memfd:stage2 (deleted)", "/run/user/1000/x.so"]);
+    // Qt's compiler for QML works in memory files, in programs that have Qt's QML library
+    let jit = map("r-xp", "/memfd:JITCode:QtQml (deleted)");
+    assert_eq!(odd_libraries(&jit).len(), 1, "without Qt the name proves nothing");
+    let qt = jit.clone() + &map("r-xp", "/usr/lib/x86_64-linux-gnu/libQt6Qml.so.6.8.2");
+    assert!(odd_libraries(&qt).is_empty());
+    let fake = jit + &map("r-xp", "/home/anna/libQt6Qml.so.6");
+    assert_eq!(odd_libraries(&fake).len(), 2);
+}
+
+#[test]
+fn an_installed_program_running_foreign_code_loses_its_exception() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/usr/share/xsessions/x.desktop", "");
+    let cookies = "/home/anna/.mozilla/firefox/x.default/cookies.sqlite";
+    let libc = map("r-xp", "/usr/lib/x86_64-linux-gnu/libc.so.6");
+    let evil = map("r-xp", "/home/anna/.cache/x/hook.so");
+    let process = |pid: u32, exe: &str, name: &str, opens: &str, maps: String| {
+        impostor(root, pid, exe, name, "");
+        link(root, &format!("/proc/{pid}/fd/3"), opens);
+        write(root, &format!("/proc/{pid}/maps"), &maps);
+    };
+    // the browser, a backup program and a keyboard reader, clean and with code slipped in
+    process(70, "/usr/lib/firefox-esr/firefox-esr", "firefox-esr", cookies, libc.clone());
+    process(71, "/usr/lib/firefox-esr/firefox-esr", "firefox-esr", cookies, libc.clone() + &evil);
+    process(72, "/usr/bin/rsync", "rsync", cookies, libc.clone() + &map("r-xp", "/memfd:x (deleted)"));
+    process(73, "/usr/bin/kwin_wayland", "kwin_wayland", "/dev/input/event3", libc.clone());
+    process(74, "/usr/bin/kwin_wayland", "kwin_wayland", "/dev/input/event3", libc.clone() + &evil);
+    process(75, "/usr/bin/keyd", "keyd", "/dev/uinput", libc.clone());
+    process(76, "/usr/bin/keyd", "keyd", "/dev/uinput", libc + &evil);
+    let report = scan(root, &[ModuleId::ProcAudit, ModuleId::DesktopSession]);
+    let pids = |rule: &str| {
+        let mut found: Vec<(u32, Severity)> = report.findings.iter().filter(|f| f.rule == rule).map(|f| (f.evidence[4..6].parse().expect("pid"), f.severity)).collect();
+        found.sort();
+        found
+    };
+    assert_eq!(pids("PROC-SECRET-ACCESS"), [(71, Severity::Critical), (72, Severity::Critical)]);
+    assert_eq!(pids("PROC-INPUT-READER"), [(74, Severity::High)]);
+    assert_eq!(pids("DESK-INPUT-INJECT"), [(76, Severity::High)]);
+    assert!(report.findings.iter().filter(|f| f.rule == "PROC-INPUT-READER").all(|f| f.evidence.contains("/home/anna/.cache/x/hook.so")));
+}
+
+#[test]
+fn a_wallet_running_foreign_code_is_reported() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/proc/80/maps", &map("r-xp", "/usr/lib/x86_64-linux-gnu/libc.so.6"));
+    write(root, "/proc/81/maps", &map("r-xp", "/run/user/1000/hook.so"));
+    let (cfg, sys) = (Config::default(), SysRoot::new(root));
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
+    let wallet = |pid: u32| ProcInfo { pid, exe: Some("/usr/bin/ksecretd".into()), ..ProcInfo::default() };
+    assert!(judge_holder(&ctx, 1000, "org.freedesktop.secrets", &wallet(80)).is_none());
+    let found = judge_holder(&ctx, 1000, "org.freedesktop.secrets", &wallet(81)).expect("reported");
+    assert_eq!(found.severity, Severity::High);
+    assert!(found.evidence.contains("/run/user/1000/hook.so"));
+    assert!(!wallet(81).is_clean_program(&ctx, &["ksecretd"]) && wallet(80).is_clean_program(&ctx, &["ksecretd"]));
+}
+
+#[test]
+fn programs_that_may_attach_to_each_other_are_pointed_out() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/proc/sys/kernel/yama/ptrace_scope", "0\n");
+    let found = |report: Report| report.findings.into_iter().filter(|f| f.rule == "KERN-PTRACE-SCOPE").map(|f| (f.severity, f.description)).collect::<Vec<_>>();
+    let open = found(scan(root, &[ModuleId::Kernel]));
+    assert_eq!(open.len(), 1);
+    assert!(open[0].0 == Severity::Low && open[0].1.contains("kernel.yama.ptrace_scope = 1") && open[0].1.contains("/etc/sysctl.d/"));
+    write(root, "/proc/sys/kernel/yama/ptrace_scope", "1\n");
+    assert!(found(scan(root, &[ModuleId::Kernel])).is_empty());
 }
 
 #[test]

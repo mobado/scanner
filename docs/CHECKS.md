@@ -16,9 +16,20 @@ can be hidden. Where a name points to trouble (known malware, shells, tunnel too
 the process goes by is looked at. Where a program file cannot be read (without root, other
 users' processes), notes say what was **NOT CHECKED**.
 
-This is not proof of identity: a program can still run its own code inside a trusted one (for
-example with `LD_PRELOAD`, which is reported separately), or show a path of its own making
-from a mount namespace it created.
+`argv[1]` proves nothing either (`python3 /usr/bin/tool`): a process can rewrite its whole
+command line after it starts.
+
+In the sensitive checks (saved passwords, who answers as the wallet, keyboard readers, holders
+of the virtual keyboard) the right file is not enough: the program must also run no code from a
+place your programs can write to (`/tmp`, `/var/tmp`, `/dev/shm`, `/run/user`, home folders) or
+from memory (`memfd`) – every executable mapping in `/proc/<pid>/maps` counts, whatever its
+name. A program with such code in it (`LD_PRELOAD`, a plugin, a slipped-in library) loses the
+exception and its finding weighs more. Qt's QML compiler uses memory files named `JITCode:…`;
+they are accepted in programs that have the installed Qt QML library loaded.
+
+This is not proof of identity: code written straight into a program's memory with `ptrace`
+leaves no mapping to see (see `KERN-PTRACE-SCOPE`), code can pose as Qt's compiler inside a Qt
+program, and a program can show a path of its own making from a mount namespace it created.
 
 ## Levels and context
 
@@ -94,6 +105,7 @@ every network, to one address, or only to this computer.
 | `KERN-ROOTKIT-NAME` | Critical | A known rootkit module name |
 | `KERN-MODULE-UNTRUSTED` | Medium | Out-of-tree, unsigned or forced modules not in `allowed_out_of_tree_modules` |
 | `KERN-SYSCTL` | Critical–Low | Dangerous settings: `kernel.modprobe`, `core_pattern`, `hotplug`, ASLR off, link protection off … |
+| `KERN-PTRACE-SCOPE` | Low | `kernel.yama.ptrace_scope = 0` (Debian's default): any program of a user can attach to the user's other programs and write code into their memory. Set it to 1 in `/etc/sysctl.d/`; `PROC-TRACED` reports a tracer that is attached at the time of the scan |
 | `KERN-MODPROBE-CMD` | Critical/High | A suspicious `install`/`remove` command in `modprobe.d` |
 | `KERN-EBPF` / `-PINNED` | Medium/Low | Loaded eBPF programs that can watch system calls or traffic (Medium when the holder is unfamiliar or none; systemd's own file system filter is not listed); pinned objects in `/sys/fs/bpf`. Complete with root and the `bpftool` package, otherwise only programs held by processes |
 | `KERN-TAINTED` | High–Low | Why the kernel is "tainted", bit by bit; Medium when the module that caused it is no longer loaded, High after a forced removal |
@@ -150,14 +162,14 @@ every network, to one address, or only to this computer.
 | `PROC-TRACED` | Critical–Low | A process is being traced (`TracerPid`): Critical when an unknown program traces sshd, sudo, a browser, a key agent …; Low for an installed debugger on an ordinary program |
 | `PROC-HIDDEN-MOUNT` | Critical–Medium | A mount over `/proc/<pid>` (hides a process), or over parts of `/etc`, `/usr/bin`, libraries … |
 | `PROC-LD-LIBRARY-PATH` | High/Low | `LD_LIBRARY_PATH` points to a temporary (High) or relative folder (AppImages are skipped) |
-| `PROC-SECRET-ACCESS` | Critical–Low | A program other than the browser (or wallet program) has saved passwords or cookies (`Cookies`, `Login Data`, `logins.json`, `key4.db` …) or a keyring/KWallet file open. Low for backup, search and antivirus programs; Critical from a temporary, download or hidden folder |
+| `PROC-SECRET-ACCESS` | Critical–Low | A program other than the browser (or wallet program) has saved passwords or cookies (`Cookies`, `Login Data`, `logins.json`, `key4.db` …) or a keyring/KWallet file open. Low for backup, search and antivirus programs; Critical from a temporary, download or hidden folder, and when one of the accepted programs runs foreign code |
 | `PROC-ENV-INJECT` | High–Low | A running program has a variable that loads code: `NODE_OPTIONS=--require`, `PYTHONSTARTUP`, `BASH_ENV`, `LD_AUDIT`, `PERL5OPT`, `RUBYOPT`, `-javaagent`, library paths in temporary folders … |
 | `PROC-SSH-SOCKET` | Medium | `SSH_AUTH_SOCK` points somewhere key agents do not normally put their socket |
 | `PROC-ENV-SECRETS` | Medium/Low | Programs carry API keys, tokens or passwords in their environment (**names only**, values are never reported); Medium when a browser, viewer or temporary program has one |
 | `PROC-CAPABILITIES` | High–Low | A running program that is not root holds root-like capabilities (`CapEff`/`CapAmb`, and `CapPrm`, which it can switch on at any time: sys_admin, sys_ptrace, sys_module, dac_override, fowner, net_raw …). Known services, set-uid programs and sandboxes with a user namespace of their own are skipped; shells and programs from home or temporary folders are High |
 | `PROC-ENV-PROXY` | Medium/Low | Running programs started with `http_proxy`/`https_proxy`/`all_proxy` (Low for a proxy on this computer; passwords are hidden) |
-| `PROC-SECRET-SERVICE` | High/Medium | Another program than the usual one answers as the password wallet (`org.freedesktop.secrets`, KWallet) or as the desktop portal on the session bus |
-| `PROC-KEY-LIBRARY` | High | SSH, GnuPG, sudo, OpenVPN or a wallet has loaded a library from a temporary or home folder |
+| `PROC-SECRET-SERVICE` | High/Medium | Another program than the usual one answers as the password wallet (`org.freedesktop.secrets`, KWallet) or as the desktop portal on the session bus; High also when the usual one runs foreign code |
+| `PROC-KEY-LIBRARY` | High | SSH, GnuPG, sudo, OpenVPN or a wallet runs code from a temporary or home folder, `/run/user` or memory |
 | `PROC-SECRET-CALL` | Critical–Low | A program asked the password wallet (Secret Service, GNOME Keyring, KWallet) for secrets while the scanner listened: full scan (`wallet_watch_secs` = 15) or `--watch-wallet SECS`. Medium for scripts and command line tools, High/Critical from odd folders; installed programs are only named in the notes. Passwords never pass through the scanner (`dbus-monitor --profile` shows who asked for what) |
 | `PROC-IO-URING` | High–Low | A program outside the system folders uses io_uring, which sidesteps system call monitoring |
 | `PROC-NAMESPACE` | High–Low | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps – whose folder holds Chromium's files), container, Snap or system service explains. Spaces of programs that a running Steam client started (also games, and the runtime container that started Steam) are listed as Low. A mount namespace alone only counts for programs in home or temporary folders |
@@ -303,13 +315,13 @@ made then reports `BASE-DESKTOP-NEW` (High) when a desktop appears.
 | `DESK-SESSION-REMOTE` / `-ROOT` | Medium/Info | A graphical session from another computer, or a desktop running as root |
 | `DESK-XSERVER-OPEN` | High | Xorg or Xwayland runs without access control or accepts network connections |
 | `DESK-XWAYLAND-KEYS` | Medium/Low | KDE lets X11 programs see all typing, or the mouse, under Wayland |
-| `DESK-INPUT-INJECT` | High–Low | A program that can type and click for you (`ydotool`, `wtype`, `xdotool`, holders of `/dev/uinput`) |
+| `DESK-INPUT-INJECT` | High–Low | A program that can type and click for you (`ydotool`, `wtype`, `xdotool`, holders of `/dev/uinput`); High when an accepted holder runs foreign code |
 | `DESK-INPUT-GROUP` / `-OPEN` | Medium / High | Users in the `input` group; keyboard devices open to everyone |
 | `DESK-AUDIO-EXEC` / `-NETWORK` / `-SCRIPT` / `-VIRTUAL` | High–Info | PipeWire/WirePlumber settings from no package that start programs, send audio over the network, run own scripts or add virtual devices |
 | `DESK-RECORDING` | High–Info | A program is recording sound or video right now (`pw-dump`); High from an odd place, Medium for recording tools |
 | `DESK-DEVICE-OPEN` | High–Info | A program holds the camera or microphone device itself |
 | `DESK-PORTAL-GRANT` | Low/Info | Apps with a remembered permission to control or record the screen (Low), or to use camera, microphone, location or the background |
-| `PROC-INPUT-READER` | High/Medium | A program that reads `/dev/input` directly and is not a known compositor, key or mouse tool (High from outside the system folders), known keyloggers, or `xinput test`. The report's notes also say whether each session is Wayland or X11 |
+| `PROC-INPUT-READER` | High/Medium | A program that reads `/dev/input` directly and is not a known compositor, key or mouse tool (High from outside the system folders, and when a known one runs foreign code), known keyloggers, or `xinput test`. The report's notes also say whether each session is Wayland or X11 |
 
 ## Pending updates (`updates`)
 

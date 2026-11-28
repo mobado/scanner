@@ -5,6 +5,7 @@
 
 use super::common::{clip, risky_home_place};
 use super::proc_audit::MODULE;
+use super::secrets::foreign_note;
 use super::{Collector, ScanCtx};
 use crate::config::Config;
 use crate::external_tools::{find_binary, run_capture};
@@ -172,6 +173,26 @@ pub fn judge_owner(cfg: &Config, name: &str, exe: &str) -> Option<Severity> {
     }
 }
 
+/// The finding about the program `p` holding `name`, if there is one: another program than the
+/// usual ones, or a usual one that runs foreign code.
+pub fn judge_holder(ctx: &ScanCtx, uid: u32, name: &str, p: &ProcInfo) -> Option<Finding> {
+    let judged = judge_owner(ctx.cfg, name, p.exe_path().unwrap_or(""));
+    let usual = OWNERS.iter().find(|o| o.0 == name)?.1;
+    let clean = judged.is_some() || p.is_clean_program(ctx, usual);
+    let (severity, title, foreign) = match judged {
+        _ if !clean => (Severity::High, format!("The program answering as {name} runs foreign code: {}", p.display_name()), foreign_note(ctx, p)),
+        Some(severity) => (severity, format!("An unusual program answers as {name}: {}", p.display_name()), String::new()),
+        None => return None,
+    };
+    Some(
+        Finding::new(severity, MODULE, "PROC-SECRET-SERVICE", title)
+            .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\nholds {name} on the session bus of user {uid}{foreign}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300)))
+            .description("Programs send passwords to whoever holds this name, or ask it for files and screen pictures. Another wallet program you chose looks like this; so does an impostor, or code slipped into the usual program.")
+            .verify(format!("busctl --user status {name}"))
+            .verify(format!("grep -E ' r.x. ' /proc/{}/maps", p.pid)),
+    )
+}
+
 /// Who answers when a program asks for saved passwords or for the screen?
 pub(crate) fn check_owners(ctx: &ScanCtx, col: &mut Collector) {
     if !ctx.sys.is_live() {
@@ -186,14 +207,10 @@ pub(crate) fn check_owners(ctx: &ScanCtx, col: &mut Collector) {
         for (name, _) in OWNERS {
             // a name nobody holds gives no answer
             let Some(p) = caller(ctx, uid, gid, &address, name) else { continue };
-            match judge_owner(ctx.cfg, name, p.exe_path().unwrap_or("")) {
-                None => usual.push(format!("{name}: {}", p.display_name())),
-                Some(severity) => col.push(
-                    Finding::new(severity, MODULE, "PROC-SECRET-SERVICE", format!("An unusual program answers as {name}: {}", p.display_name()))
-                        .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\nholds {name} on the session bus of user {uid}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300)))
-                        .description("Programs send passwords to whoever holds this name, or ask it for files and screen pictures. Another wallet program you chose looks like this; so does an impostor.")
-                        .verify(format!("busctl --user status {name}")),
-                ),
+            if let Some(finding) = judge_holder(ctx, uid, name, &p) {
+                col.push(finding);
+            } else {
+                usual.push(format!("{name}: {}", p.display_name()));
             }
         }
         if !usual.is_empty() {
@@ -232,7 +249,11 @@ pub(crate) fn watch(ctx: &ScanCtx, col: &mut Collector) {
                 );
                 continue;
             };
-            let (severity, why) = judge_caller(ctx.cfg, &p.candidate_names(), p.exe.as_deref().unwrap_or(""));
+            let (mut severity, mut why) = judge_caller(ctx.cfg, &p.candidate_names(), p.exe.as_deref().unwrap_or(""));
+            // being installed counts for nothing while the program runs foreign code
+            if severity == Severity::Low && !p.foreign_code(ctx.sys).is_empty() {
+                (severity, why) = (Severity::High, "an installed program that runs code from a place your programs can write to");
+            }
             if severity == Severity::Low {
                 normal.insert(p.display_name());
                 continue;
