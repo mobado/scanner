@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.4
+* Fixed: a program could be passed off as an installed one by mounting it at that path in a
+  namespace of one's own (`bwrap`, no root needed), and so read saved passwords or answer as the
+  wallet without a finding. Program files and loaded libraries of processes with their own mount
+  namespace are now compared by device and inode with the real files; Flatpak programs only count
+  when they are files under `/var/lib/flatpak`. Flatpaks installed for one person no longer get
+  exceptions.
+* New `PROC-FAKE-PROGRAM`: a program that shows another's path. `PROC-NAMESPACE` no longer lets
+  bubblewrap explain programs from home or temporary folders, or posing ones.
+* The browser video module's checksum is that of the file the browser loaded.
+* The user list is read once per scan.
+
 ## 0.19.3
 * Chrome and browsers like it load the Widevine video module from the profile in the home
   folder, which 0.19.2 would have reported as Critical code in the process holding the cookies.

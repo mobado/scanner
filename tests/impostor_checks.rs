@@ -107,7 +107,7 @@ fn every_executable_mapping_from_a_writable_place_counts() {
 
 /// A context over a made-up root, for asking about single processes.
 fn context<'a>(sys: &'a SysRoot, cfg: &'a Config) -> ScanCtx<'a> {
-    ScanCtx { sys, cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] }
+    ScanCtx { sys, cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[], accounts: scanner::procinfo::read_accounts(sys) }
 }
 
 #[test]
@@ -122,10 +122,11 @@ fn qt_compiler_memory_is_accepted_only_where_qml_is_compiled() {
     write(root, "/proc/3/maps", &(jit.clone() + &map("r-xp", "/home/anna/libQt6Qml.so.6")));
     // another memory file in plasmashell
     write(root, "/proc/4/maps", &(map("r-xp", "/memfd:stage2 (deleted)") + &qml));
-    let sys = SysRoot::new(root);
+    let (cfg, sys) = (Config::default(), SysRoot::new(root));
+    let ctx = context(&sys, &cfg);
     let code = |pid: u32, exe: &str| {
         let p = ProcInfo { pid, exe: Some(exe.into()), ..ProcInfo::default() };
-        (p.foreign_code(&sys).expect("read").len(), p.foreign_code_strict(&sys).expect("read").len())
+        (p.foreign_code(&ctx).expect("read").len(), p.foreign_code_strict(&sys).expect("read").len())
     };
     assert_eq!(code(1, "/usr/bin/plasmashell"), (0, 1));
     assert_eq!(code(1, "/usr/bin/kwin_wayland"), (0, 1));
@@ -148,7 +149,7 @@ fn what_cannot_be_seen_does_not_count_as_clean() {
     // no maps file, and an empty one (the program is ending)
     for pid in [4, 5] {
         let p = ProcInfo { pid, exe: Some("/usr/bin/ksecretd".into()), ..ProcInfo::default() };
-        assert_eq!(p.foreign_code(&sys), None);
+        assert_eq!(p.foreign_code(&ctx), None);
         assert!(!p.is_clean_program(&ctx, &["ksecretd"]));
         let found = judge_holder(&ctx, 1000, "org.freedesktop.secrets", &p).expect("reported");
         assert_eq!(found.severity, Severity::Medium, "not known to be tainted either");
@@ -242,7 +243,7 @@ fn a_wallet_running_foreign_code_is_reported() {
     write(root, "/proc/80/maps", &map("r-xp", "/usr/lib/x86_64-linux-gnu/libc.so.6"));
     write(root, "/proc/81/maps", &map("r-xp", "/run/user/1000/hook.so"));
     let (cfg, sys) = (Config::default(), SysRoot::new(root));
-    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[], accounts: scanner::procinfo::read_accounts(&sys) };
     let wallet = |pid: u32| ProcInfo { pid, exe: Some("/usr/bin/ksecretd".into()), ..ProcInfo::default() };
     assert!(judge_holder(&ctx, 1000, "org.freedesktop.secrets", &wallet(80)).is_none());
     let found = judge_holder(&ctx, 1000, "org.freedesktop.secrets", &wallet(81)).expect("reported");

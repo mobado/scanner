@@ -260,7 +260,7 @@ fn only_caches_in_their_usual_place_are_skipped() {
     }
     let sys = SysRoot::new(root);
     let cfg = Config::default();
-    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[], accounts: scanner::procinfo::read_accounts(&sys) };
     let index = homeindex::build(&ctx, home, 10_000);
     assert_eq!(index.site_packages.len(), 6, "{:?}", index.site_packages);
     assert!(index.site_packages.iter().all(|p| p.contains("/.venv/")));

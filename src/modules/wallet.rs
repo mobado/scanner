@@ -152,7 +152,7 @@ fn listen(ctx: &ScanCtx, uid: u32, gid: u32, address: &str, secs: u64) -> Option
 
 /// Names on the session bus that receive passwords or hand out files and the screen, with the
 /// programs that normally provide them.
-const OWNERS: [(&str, &[&str]); 4] = [
+pub(crate) const OWNERS: [(&str, &[&str]); 4] = [
     ("org.freedesktop.secrets", &["gnome-keyring-daemon", "ksecretd", "kwalletd5", "kwalletd6", "keepassxc", "oo7-daemon"]),
     ("org.kde.kwalletd6", &["ksecretd", "kwalletd6"]),
     ("org.kde.kwalletd5", &["ksecretd", "kwalletd5", "kwalletd6"]),
@@ -179,9 +179,11 @@ pub fn judge_holder(ctx: &ScanCtx, uid: u32, name: &str, p: &ProcInfo) -> Option
     let judged = judge_owner(ctx.cfg, name, p.exe_path().unwrap_or(""));
     let usual = OWNERS.iter().find(|o| o.0 == name)?.1;
     // whoever holds a name of the password wallet gets no exceptions for the code it runs
-    let code = if name == "org.freedesktop.portal.Desktop" { p.foreign_code(ctx.sys) } else { p.foreign_code_strict(ctx.sys) };
+    let code = if name == "org.freedesktop.portal.Desktop" { p.foreign_code(ctx) } else { p.foreign_code_strict(ctx.sys) };
     let clean = judged.is_some() || code.as_ref().is_some_and(|c| c.is_empty()) && p.is_program(usual);
     let (severity, title, foreign) = match judged {
+        // the path says nothing about what this program is
+        judged if p.claimed().is_some() => (judged.unwrap_or(Severity::High).max(Severity::High), format!("A program that is not the installed one answers as {name}: {}", p.display_name()), p.mount_note()),
         _ if !clean => {
             let what = if code.is_some() { "runs foreign code" } else { "cannot be checked" };
             (without_exception(&code, Severity::High, Severity::Medium), format!("The program answering as {name} {what}: {}", p.display_name()), foreign_note(&code))
@@ -257,8 +259,11 @@ pub(crate) fn watch(ctx: &ScanCtx, col: &mut Collector) {
             let (mut severity, mut why) = judge_caller(ctx.cfg, &p.candidate_names(), p.exe.as_deref().unwrap_or(""));
             // being installed counts for nothing while the program runs foreign code, or when
             // its code cannot be seen
+            if p.claimed().is_some() {
+                (severity, why) = (Severity::High, "its program file is not the one installed at the path it shows");
+            }
             if severity == Severity::Low {
-                match p.foreign_code(ctx.sys) {
+                match p.foreign_code(ctx) {
                     Some(code) if !code.is_empty() => (severity, why) = (Severity::High, "an installed program that runs code from a place your programs can write to"),
                     None => (severity, why) = (Severity::Medium, "an installed program whose code could not be checked (it may have ended)"),
                     Some(_) => {}

@@ -36,10 +36,38 @@ clean either; its finding says so. Two exceptions:
   Settings, KRunner, the lock and login screens, Discover and the like) that have the Qt QML
   library loaded, and never for programs that handle keys or answer as the password wallet.
 
+### Programs in a mount namespace of their own
+
+The paths in `/proc/<pid>/exe` and `maps` are those the process sees. On Debian any user may
+create a user and mount namespace (`bwrap`, `unshare`) and mount a program of their own at an
+installed program's path. So for every process outside the host's mount namespace the files are
+compared by what the kernel knows of them:
+
+* **Program file:** device and inode of `/proc/<pid>/exe` (the file that runs) must be those of
+  the file at the same path on this system. A root-owned file replaced by an upgrade while it ran
+  still counts.
+* **Flatpak:** a program of a Flatpak counts when the sandbox's `.flatpak-info` leads to the very
+  file under `/var/lib/flatpak`, which only root can change. Flatpaks installed for one person
+  get no exception: that person's programs can change them.
+* **Otherwise** the program gets no exception. In a namespace made without root its paths and
+  name count for nothing (a path that looks installed is shown as `/proc/<pid>/root/…`; one in
+  a home or temporary folder stays as it is and is judged as such), and it is reported as
+  `PROC-FAKE-PROGRAM` when it shows the path of a program on this computer or the name of one
+  that earns exceptions. In a namespace made by root (containers, Snap) it only loses the
+  exceptions of the sensitive checks.
+* **Libraries:** for an installed program in a namespace made without root, every executable
+  mapping must be the file its path names (device and inode from `maps`, or the mapped file
+  itself through `map_files` with root), or a root-owned file of a system Flatpak. Others count as
+  foreign code. A deleted mapping can only be checked as root.
+* **bubblewrap** explains that a namespace exists, not what runs in it: programs under it that
+  run from home or temporary folders, or pose as another, are listed as `PROC-NAMESPACE`.
+
 This is not proof of identity: code written straight into a program's memory with `ptrace`
-leaves no mapping to see (see `KERN-PTRACE-SCOPE`), code can still pose as Qt's compiler inside
-one of the QML programs or as a browser's video module, and a program can show a path of its own
-making from a mount namespace it created.
+leaves no mapping to see (see `KERN-PTRACE-SCOPE`), and code can still pose as Qt's compiler
+inside one of the QML programs or as a browser's video module. The journal records a sender's
+program path without its namespace, so login lines from the few programs that log as the person
+can be forged this way; they never lead to more than a Medium finding. Without root on btrfs, a
+library is compared by inode only.
 
 ## Levels and context
 
@@ -183,7 +211,8 @@ every network, to one address, or only to this computer.
 | `PROC-KEY-LIBRARY` | High | SSH, GnuPG, sudo, OpenVPN or a wallet runs code from a temporary or home folder, `/run/user` or memory |
 | `PROC-SECRET-CALL` | Critical–Low | A program asked the password wallet (Secret Service, GNOME Keyring, KWallet) for secrets while the scanner listened: full scan (`wallet_watch_secs` = 15) or `--watch-wallet SECS`. Medium for scripts and command line tools, High/Critical from odd folders; installed programs are only named in the notes. Passwords never pass through the scanner (`dbus-monitor --profile` shows who asked for what) |
 | `PROC-IO-URING` | High–Low | A program outside the system folders uses io_uring, which sidesteps system call monitoring |
-| `PROC-NAMESPACE` | High–Low | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps – whose folder holds Chromium's files), container, Snap or system service explains. Spaces of programs that a running Steam client started (also games, and the runtime container that started Steam) are listed as Low. A mount namespace alone only counts for programs in home or temporary folders |
+| `PROC-NAMESPACE` | High–Low | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps – whose folder holds Chromium's files), container, Snap or system service explains. bubblewrap does not explain programs in home or temporary folders, or ones posing as others. Spaces of programs that a running Steam client started (also games, and the runtime container that started Steam) and of Flatpak apps are listed as Low. A mount namespace alone only counts for programs in home or temporary folders, or posing ones |
+| `PROC-FAKE-PROGRAM` | High–Low | In a mount namespace made without root, the file that runs is not the one installed at the path it shows (see *Programs in a mount namespace of their own*). High; Medium for a Flatpak installed for one person with the name of a program that earns exceptions; Low for ordinary programs of containers and Steam's runtime |
 
 ## File permissions (`fs_perms`)
 

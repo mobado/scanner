@@ -151,10 +151,9 @@ fn check_programs(ctx: &ScanCtx, col: &mut Collector) {
             );
         }
     }
-    let accounts = crate::procinfo::read_accounts(ctx.sys);
     let mut configs = vec!["/etc/ssh/ssh_config".to_string()];
     configs.extend(ctx.sys.dir_names("/etc/ssh/ssh_config.d").into_iter().map(|n| format!("/etc/ssh/ssh_config.d/{n}")));
-    configs.extend(super::persistence::home_dirs(ctx, &accounts).into_iter().map(|(_, _, h)| format!("{h}/.ssh/config")));
+    configs.extend(super::persistence::home_dirs(ctx, &ctx.accounts).into_iter().map(|(_, _, h)| format!("{h}/.ssh/config")));
     for path in configs {
         let Ok(text) = ctx.sys.read_string(&path) else { continue };
         check_agent_forwarding(col, &path, &text);

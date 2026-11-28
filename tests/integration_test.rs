@@ -147,7 +147,7 @@ fn detects_deleted_binary_and_tmp_exe() {
 
     let cfg = Config::default();
     let procs = snapshot(&sys);
-    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &procs };
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &procs, accounts: scanner::procinfo::read_accounts(&sys) };
     let mut col = Collector::default();
     proc_audit::run(&ctx, &mut col);
     let rules: Vec<&str> = col.findings.iter().map(|f| f.rule.as_str()).collect();
@@ -239,7 +239,7 @@ fn fs_walk_skips_virtual_paths() {
     fs::set_permissions(root.join("proc/1/fake"), fs::Permissions::from_mode(0o4755)).expect("chmod");
     let sys = SysRoot::new(root);
     let cfg = Config::default();
-    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[], accounts: scanner::procinfo::read_accounts(&sys) };
     let mut col = Collector::default();
     fs_perms::run(&ctx, &mut col);
     assert!(col.inventory.suid.is_empty(), "/proc should be skipped");

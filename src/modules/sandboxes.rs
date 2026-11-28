@@ -1,5 +1,6 @@
-//! Newer ways to stay out of sight (part of `proc_audit`): io_uring in unknown programs, and
-//! processes in their own user, network or mount namespace that no known sandbox explains.
+//! Newer ways to stay out of sight (part of `proc_audit`): io_uring in unknown programs,
+//! programs that pose as installed ones inside a mount namespace, and processes in their own
+//! user, network or mount namespace that no known sandbox explains.
 
 use super::common::{clip, is_steam_path, shq};
 use super::proc_audit::MODULE;
@@ -25,6 +26,75 @@ fn is_sandbox(p: &ProcInfo) -> bool {
     installed && p.program_name().is_some_and(|n| SANDBOXES.iter().any(|s| n.starts_with(s)))
 }
 
+// ---------------------------------------------------------------- posing programs
+
+/// Is the program named like one that earns exceptions somewhere: it may read passwords, hold
+/// keys, answer for the wallet or read the keyboard?
+fn earns_exceptions(name: &str) -> bool {
+    let lists: [&[&str]; 5] = [
+        &super::secrets::BROWSERS,
+        &super::secrets::KEYRINGS,
+        &super::persistence::keys::KEY_PROGRAMS,
+        &super::desktop_session::input::INPUT_READERS,
+        &super::desktop_session::session::UINPUT_USERS,
+    ];
+    lists.iter().any(|list| list.contains(&name)) || super::wallet::OWNERS.iter().any(|(_, usual)| usual.contains(&name))
+}
+
+/// Is the program one that shows another's path: not the installed file, in a namespace made
+/// without root, at a path where this computer has a program or by a name that earns exceptions?
+/// A Flatpak of the person's own shows paths of its own, so it only counts by such a name.
+fn poses(p: &ProcInfo) -> bool {
+    let (Some(claimed), Some(mounts)) = (p.claimed(), &p.mounts) else { return false };
+    p.forged() && (earns_exceptions(crate::procinfo::basename(claimed)) || mounts.installed_here && !mounts.own_flatpak)
+}
+
+/// Programs whose file is not the one their path names, one finding for each namespace and path.
+pub(crate) fn check_fake_programs(ctx: &ScanCtx, col: &mut Collector) {
+    let by_pid: HashMap<u32, &ProcInfo> = ctx.processes.iter().map(|p| (p.pid, p)).collect();
+    let steam = steam_roots(ctx.processes);
+    let mut found: BTreeMap<(&str, &str), Vec<&ProcInfo>> = BTreeMap::new();
+    for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread() && poses(p)) {
+        let (Some(claimed), Some(mounts)) = (p.claimed(), &p.mounts) else { continue };
+        found.entry((claimed, mounts.namespace.as_str())).or_default().push(p);
+    }
+    for ((claimed, namespace), processes) in found {
+        let first = processes[0];
+        let sensitive = earns_exceptions(crate::procinfo::basename(claimed));
+        let own_flatpak = first.mounts.as_ref().is_some_and(|m| m.own_flatpak);
+        // containers and Steam's runtime bring their own copies of ordinary programs
+        let of_steam = processes.iter().all(|p| p.uid != 0 && from_steam(p, &by_pid, &steam));
+        let contained = processes.iter().all(|p| {
+            let cgroup = ctx.sys.read_string(format!("/proc/{}/cgroup", p.pid)).unwrap_or_default();
+            ["libpod", "docker", "/lxc", "machine.slice"].iter().any(|m| cgroup.contains(m))
+        });
+        let (severity, title) = if own_flatpak {
+            (Severity::Medium, format!("A Flatpak installed for one person runs its own {claimed}"))
+        } else if !sensitive && (of_steam || contained) {
+            (Severity::Low, format!("A container or Steam runs its own program as {claimed}"))
+        } else {
+            (Severity::High, format!("A program file pretends to be {claimed}"))
+        };
+        let lines: Vec<String> = processes
+            .iter()
+            .take(6)
+            .map(|p| format!("PID {} UID {} exe={} cmdline=\"{}\"", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 160)))
+            .collect();
+        col.push(
+            Finding::new(severity, MODULE, "PROC-FAKE-PROGRAM", title)
+                .evidence(format!(
+                    "shows its program as {claimed}, but the file that runs is another one\nmount namespace {namespace}\n{}{}",
+                    lines.join("\n"),
+                    if processes.len() > 6 { format!("\n… and {} more", processes.len() - 6) } else { String::new() }
+                ))
+                .description("These processes have a mount namespace of their own in which another file lies at that path, so they look like that program to anyone who reads the path. Any program of yours can arrange this without root, with bwrap or unshare, to be mistaken for a browser, a key program or a system tool. The scanner compares the real files and gives such a program no exception. Containers (podman, docker), Steam and Flatpak bring files of their own: if you did not start such a thing, treat this as hostile.")
+                .verify(format!("stat -L -c '%d:%i %U %n' /proc/{}/exe {}", first.pid, shq(claimed)))
+                .verify(format!("sha256sum /proc/{}/exe", first.pid))
+                .verify(format!("pstree -asp {}", first.pid)),
+        );
+    }
+}
+
 // ---------------------------------------------------------------- Steam
 // Steam lives in a folder the user can write to, so nothing there is trusted outright: what
 // belongs to a running Steam client is reported quietly (Low), never hidden.
@@ -34,7 +104,7 @@ const STEAM_RUNTIME: [&str; 4] = ["srt-bwrap", "pv-bwrap", "pv-adverb", "pressur
 
 /// Steam's main program: "steam" in a Steam folder.
 fn is_steam_main(p: &ProcInfo) -> bool {
-    p.exe_path().is_some_and(|e| is_steam_path(e) && crate::procinfo::basename(e) == "steam")
+    p.claimed().is_none() && p.exe_path().is_some_and(|e| is_steam_path(e) && crate::procinfo::basename(e) == "steam")
 }
 
 /// The process ids a running Steam client starts from: its main program, and the parts of the
@@ -144,6 +214,7 @@ pub(crate) fn check_namespaces(ctx: &ScanCtx, col: &mut Collector) {
     let by_pid: HashMap<u32, &ProcInfo> = ctx.processes.iter().map(|p| (p.pid, p)).collect();
     // the namespaces that differ → processes
     let mut odd: BTreeMap<String, Vec<&ProcInfo>> = BTreeMap::new();
+    let mut flatpak: BTreeSet<u32> = BTreeSet::new();
     for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread() && p.pid != 1) {
         let differing: Vec<(&str, String)> = host
             .iter()
@@ -154,36 +225,45 @@ pub(crate) fn check_namespaces(ctx: &ScanCtx, col: &mut Collector) {
         }
         let exe = p.exe_path().unwrap_or("");
         // services and desktops make private mounts all the time
+        let strange = is_odd_place(ctx, exe) || poses(p);
         let only_mounts = differing.iter().all(|(k, _)| *k == "mnt");
-        if only_mounts && !is_odd_place(ctx, exe) {
+        if only_mounts && !strange {
             continue;
         }
+        let mut ancestors = Vec::new();
         let mut chain = Some(p);
-        let mut explained = false;
         for _ in 0..8 {
             let Some(current) = chain else { break };
-            // systemd (the system's and each user's) is above every program, so as an ancestor
-            // it explains nothing
-            let manager = current.pid != p.pid && current.candidate_names().iter().any(|n| n == "systemd");
-            if current.pid != 1 && !manager && (is_sandbox(current) || is_chromium_sandbox(ctx, current)) {
-                explained = true;
-                break;
-            }
+            ancestors.push(current);
             chain = by_pid.get(&current.ppid).copied();
         }
+        // anyone can start bubblewrap: it explains that there is a namespace, not what runs in
+        // it, so a program from an odd place or one posing as another is still looked at
+        let in_bubblewrap = strange && ancestors.iter().any(|a| a.pid != p.pid && a.is_program(&["bwrap"]));
+        // systemd (the system's and each user's) is above every program, so as an ancestor it
+        // explains nothing
+        let explained = ancestors.iter().any(|current| {
+            let manager = current.pid != p.pid && current.candidate_names().iter().any(|n| n == "systemd");
+            current.pid != 1 && !manager && (is_sandbox(current) || is_chromium_sandbox(ctx, current))
+        });
         let cgroup = ctx.sys.read_string(format!("/proc/{}/cgroup", p.pid)).unwrap_or_default();
-        if explained || managed_cgroup(&cgroup) || is_sandboxed_user_service(p, by_pid.get(&p.ppid).copied(), &cgroup) {
+        if !in_bubblewrap && (explained || managed_cgroup(&cgroup) || is_sandboxed_user_service(p, by_pid.get(&p.ppid).copied(), &cgroup)) {
             continue;
+        }
+        // Flatpak apps such as game launchers keep programs of their own in the home folder
+        if in_bubblewrap && !poses(p) && cgroup.contains("app-flatpak-") {
+            flatpak.insert(p.pid);
         }
         let key = differing.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>().join(" ");
         odd.entry(key).or_default().push(p);
     }
     let steam = steam_roots(ctx.processes);
     for (spaces, processes) in odd.into_iter().take(10) {
-        let strange = processes.iter().any(|p| is_odd_place(ctx, p.exe_path().unwrap_or("")));
+        let strange = processes.iter().any(|p| is_odd_place(ctx, p.exe_path().unwrap_or("")) || poses(p));
         // Steam and its games run in containers of Steam's own runtime
         let of_steam = processes.iter().all(|p| p.uid != 0 && from_steam(p, &by_pid, &steam));
-        let severity = if of_steam { Severity::Low } else if strange { Severity::High } else { Severity::Medium };
+        let of_flatpak = processes.iter().all(|p| flatpak.contains(&p.pid));
+        let severity = if of_steam || of_flatpak { Severity::Low } else if strange { Severity::High } else { Severity::Medium };
         let first = processes[0];
         let lines: Vec<String> = processes.iter().take(6).map(|p| format!("PID {} UID {} exe={} cmdline=\"{}\"", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 160))).collect();
         let title = if of_steam { "Steam runs programs in a space of their own" } else { "Programs run in an isolated space of their own" };
@@ -193,7 +273,7 @@ pub(crate) fn check_namespaces(ctx: &ScanCtx, col: &mut Collector) {
                 .description(if of_steam {
                     "These were started by your Steam client, which runs itself and its games in containers. Steam's folder can be written by any program of yours, so they are listed: check that the paths are Steam's."
                 } else {
-                    "These processes have their own user, network or mount namespace, and no known sandbox, container or service explains it. Any user may create such a space on Debian (unshare) to mount things or run a network that others do not see."
+                    "These processes have their own user, network or mount namespace, and no known sandbox, container or service explains what runs in it. Any user may create such a space on Debian (unshare, bwrap) to mount things or run a network that others do not see."
                 })
                 .verify(format!("ls -l /proc/{}/ns", first.pid))
                 .verify("lsns")

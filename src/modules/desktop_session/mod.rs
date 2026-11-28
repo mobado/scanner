@@ -15,7 +15,6 @@ pub mod xdg;
 
 use super::persistence::home_dirs;
 use super::{Collector, ScanCtx};
-use crate::procinfo::read_accounts;
 
 pub const MODULE: &str = "desktop_session";
 
@@ -110,8 +109,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     if signs.is_empty() {
         col.note("desktop_session: no graphical desktop was found on this machine, so the desktop checks were skipped (the baseline reports if one appears)");
     } else {
-        let accounts = read_accounts(ctx.sys);
-        let homes = home_dirs(ctx, &accounts);
+        let homes = home_dirs(ctx, &ctx.accounts);
         xdg::check_xdg(ctx, col, &homes);
         environments::check_environments(ctx, col, &homes);
         apps::check_apps(ctx, col, &homes);

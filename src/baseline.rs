@@ -33,6 +33,12 @@ pub struct ListenerKey {
 /// with a new name each time, and an upgraded program that still runs is marked "(deleted)".
 fn program_path(exe: &str) -> String {
     let exe = exe.strip_suffix(" (deleted)").unwrap_or(exe);
+    // a path seen through a process's own namespace carries its process id, which changes
+    if let Some((pid, inside)) = exe.strip_prefix("/proc/").and_then(|rest| rest.split_once("/root/")) {
+        if !pid.is_empty() && pid.chars().all(|c| c.is_ascii_digit()) {
+            return format!("/proc/*/root/{inside}");
+        }
+    }
     match exe.strip_prefix("/tmp/.mount_").and_then(|rest| rest.split_once('/')) {
         Some((_, inside)) => format!("/tmp/.mount_*/{inside}"),
         None => exe.to_string(),

@@ -64,7 +64,7 @@ fn projects_come_before_caches_and_tool_folders() {
     write(root, &format!("{home}/.cargo/registry/x/site-packages/a.pth"), "");
     let sys = SysRoot::new(root);
     let cfg = Config::default();
-    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[], accounts: scanner::procinfo::read_accounts(&sys) };
     take_cut_short();
     let index = homeindex::build(&ctx, home, 40);
     for wanted in ["zz-project/.venv", ".virtualenvs/x", ".pyenv/versions/3.12/envs/y", ".conda/envs/z", ".cache/pypoetry/virtualenvs/p"] {

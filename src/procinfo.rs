@@ -1,7 +1,9 @@
 //! Reads processes from /proc. Processes can disappear at any time, so every
 //! read is tolerant: missing files give empty fields, never a panic.
 
+use crate::modules::persistence::keys::in_writable_place;
 use crate::modules::ScanCtx;
+use crate::mounts::{self, executable_mappings, Mounts};
 use crate::sys::SysRoot;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +32,10 @@ pub struct ProcInfo {
     pub ld_library_path: Option<String>,
     /// Could the fd directory be read? (Needs root for other users' processes.)
     pub fds_readable: bool,
+    /// Set when the process has a mount namespace of its own, in which paths may be of anyone's
+    /// making (see [`crate::mounts`]).
+    #[serde(default)]
+    pub mounts: Option<Mounts>,
 }
 
 impl ProcInfo {
@@ -66,31 +72,54 @@ impl ProcInfo {
         self.exe_path().map(basename)
     }
 
+    /// The path the program file shows when it is not shown to be the file installed there.
+    pub fn claimed(&self) -> Option<&str> {
+        self.mounts.as_ref()?.claimed.as_deref()
+    }
+
+    /// Is that so in a namespace made without root, where anyone chooses what lies at a path?
+    /// No path or name then earns anything, and a path that looks installed is shown in `exe` as
+    /// leading through `/proc/<pid>/root`.
+    pub fn forged(&self) -> bool {
+        self.claimed().is_some() && self.mounts.as_ref().is_some_and(|m| m.user_made)
+    }
+
+    /// A line for the evidence when the program file is not the one its path names.
+    pub fn mount_note(&self) -> String {
+        let Some(m) = &self.mounts else { return String::new() };
+        match &m.claimed {
+            None => String::new(),
+            Some(path) if m.own_flatpak => format!("\n{path} is from a Flatpak installed for one person, whose files that person's programs can change, so it earns nothing"),
+            Some(path) => format!("\nin its own mount namespace it shows {path} as its program, but the file that runs is not the one installed there, so it earns nothing"),
+        }
+    }
+
     /// The name of the program's own file, unless it runs whatever it is handed (an
     /// interpreter, a shell or the loader). Only `/proc/<pid>/exe` counts, which the kernel
     /// sets: a process chooses its `comm` (prctl) and `argv[0]` (`exec -a`) itself.
     pub fn program_name(&self) -> Option<&str> {
-        self.exe_basename().filter(|name| !runs_any_code(name))
+        self.exe_basename().filter(|name| !self.forged() && !runs_any_code(name))
     }
 
     /// Is the program's own file one of these? Use this wherever a name earns an exception; never
     /// `candidate_names` or `display_name`. Where the file lies is for the caller to judge.
     pub fn is_program<S: AsRef<str>>(&self, names: &[S]) -> bool {
-        self.exe_path().is_some_and(|exe| is_program_path(exe, names))
+        !self.forged() && self.exe_path().is_some_and(|exe| is_program_path(exe, names))
     }
 
     /// Code this process runs from places the user's programs can write to, or from memory (see
     /// [`crate::modules::persistence::keys::odd_libraries`]): a library slipped into it, a plugin,
-    /// `LD_PRELOAD`. Not the program file itself, nor an AppImage's own mounted files, a
-    /// browser's video module where that browser puts it, or Qt's compiled QML in the programs
-    /// that use it. `None` when the memory maps cannot be read: nothing is known then.
-    pub fn foreign_code(&self, sys: &SysRoot) -> Option<Vec<String>> {
-        let (mut code, maps) = self.code_from_writable_places(sys)?;
+    /// `LD_PRELOAD`; in a namespace made without root also any file that is not the one its path
+    /// names. Not the program file itself, nor an AppImage's own mounted files, a browser's video
+    /// module where that browser puts it, or Qt's compiled QML in the programs that use it.
+    /// `None` when the memory maps cannot be read: nothing is known then.
+    pub fn foreign_code(&self, ctx: &ScanCtx) -> Option<Vec<String>> {
+        let (mut code, maps) = self.code_from_writable_places(ctx.sys)?;
         // the name of a memory file is chosen by whoever makes it, so only a few installed
         // programs that compile QML may run memory files with Qt's name
-        let installed = self.exe_path().is_some_and(|e| e.starts_with("/usr/") && !e.starts_with("/usr/local/"));
+        let installed = self.claimed().is_none() && self.exe_path().is_some_and(|e| e.starts_with("/usr/") && !e.starts_with("/usr/local/"));
         let compiles_qml = installed && self.is_program(&QML_PROGRAMS) && crate::modules::persistence::keys::loads_qml(&maps);
-        let module = browser_module_of(self, sys);
+        let module = browser_module_of(self, &ctx.accounts);
         code.retain(|path| {
             let file = path.strip_suffix(" (deleted)").unwrap_or(path);
             !(compiles_qml && path.starts_with("/memfd:JITCode:")) && !module.as_ref().is_some_and(|m| m.accepts(file))
@@ -111,15 +140,27 @@ impl ProcInfo {
         let own_mount = exe.and_then(|e| e.strip_prefix("/tmp/.mount_")?.split_once('/')).map(|(name, _)| format!("/tmp/.mount_{name}/"));
         let mut code = crate::modules::persistence::keys::odd_libraries(&maps);
         code.retain(|path| Some(path.strip_suffix(" (deleted)").unwrap_or(path)) != exe && !own_mount.as_deref().is_some_and(|m| path.starts_with(m)));
+        // an installed program in a namespace somebody made: each file it runs has to be the one
+        // its path names. (A program that is not the installed one gets no exceptions anyway.)
+        if let Some(mounts) = self.mounts.as_ref().filter(|m| m.user_made && m.claimed.is_none()) {
+            for mapping in executable_mappings(&maps) {
+                if !code.iter().any(|c| c == mapping.path) && !mounts.maps_true(sys, self.pid, &mapping) {
+                    code.push(mapping.path.to_string());
+                }
+            }
+            code.sort();
+            code.dedup();
+        }
         Some((code, maps))
     }
 
-    /// [`Self::is_program`], and the process is seen to run no foreign code: an installed program
-    /// with such code in it does that code's bidding, whatever its file is. One whose code cannot
-    /// be seen does not count as clean either. Use this for every exception in the sensitive
-    /// checks (saved passwords, the wallet, the keyboard).
+    /// [`Self::is_program`], the program file is the one its path names, and the process is seen
+    /// to run no foreign code: an installed program with such code in it does that code's bidding,
+    /// whatever its file is. One whose code cannot be seen does not count as clean either. Use
+    /// this for every exception in the sensitive checks (saved passwords, the wallet, the
+    /// keyboard).
     pub fn is_clean_program<S: AsRef<str>>(&self, ctx: &ScanCtx, names: &[S]) -> bool {
-        self.is_program(names) && self.foreign_code(ctx.sys).is_some_and(|code| code.is_empty())
+        self.claimed().is_none() && self.is_program(names) && self.foreign_code(ctx).is_some_and(|code| code.is_empty())
     }
 
     /// Every name the process goes by: exe name, comm and argv[0]. The process chooses the last
@@ -191,10 +232,10 @@ impl BrowserModule {
 
 /// The video module folder of this process, if it is one of those browsers: its own profile in
 /// the home of the user it runs as.
-pub fn browser_module_of(p: &ProcInfo, sys: &SysRoot) -> Option<BrowserModule> {
-    let exe = p.exe_path()?;
+pub fn browser_module_of(p: &ProcInfo, accounts: &[Account]) -> Option<BrowserModule> {
+    let exe = p.exe_path().filter(|_| p.claimed().is_none())?;
     let profile = BROWSER_PROFILES.iter().find(|(program, _)| *program == exe)?.1;
-    let home = read_accounts(sys).into_iter().find(|a| a.uid == p.uid)?.home;
+    let home = &accounts.iter().find(|a| a.uid == p.uid)?.home;
     (home.len() > 1).then(|| BrowserModule { folder: format!("{}/{profile}/WidevineCdm", home.trim_end_matches('/')) })
 }
 
@@ -306,6 +347,13 @@ pub fn read_proc(sys: &SysRoot, pid: u32) -> Option<ProcInfo> {
             .collect();
     }
     info.exe = sys.read_link(format!("{base}/exe"));
+    info.mounts = info.exe.as_deref().and_then(|exe| mounts::examine(sys, pid, exe));
+    // a forged path that looks installed is shown as it can be reached from here, so that no
+    // check mistakes it for the installed file; one in a place your programs write to stays as it
+    // is, where it is looked at more closely
+    if info.forged() && info.exe.as_deref().is_some_and(|exe| !in_writable_place(exe)) {
+        info.exe = info.exe.map(|exe| format!("/proc/{pid}/root{exe}"));
+    }
     info.cwd = sys.read_link(format!("{base}/cwd"));
 
     let fd_dir = sys.path(format!("{base}/fd"));

@@ -188,8 +188,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     }
     let compared = filemarks::check_system_programs(ctx, col);
     filemarks::check_file_times(ctx, col, &compared);
-    let accounts = crate::procinfo::read_accounts(ctx.sys);
-    let homes: Vec<String> = super::persistence::home_dirs(ctx, &accounts).into_iter().map(|(_, _, home)| home).collect();
+    let homes: Vec<String> = super::persistence::home_dirs(ctx, &ctx.accounts).into_iter().map(|(_, _, home)| home).collect();
     homefiles::check_home_files(ctx, col, &homes);
     browsers::check_browsers(ctx, col, &homes);
     super::secrets::check_files(ctx, col, &homes);

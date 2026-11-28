@@ -6,7 +6,7 @@ use super::common::{analyze_command, clip, risky_home_place, shq};
 use super::{Collector, ScanCtx};
 use crate::config::Config;
 use crate::finding::{Finding, Severity};
-use crate::modules::persistence::keys::odd_libraries;
+use crate::mounts::{executable_mappings, Mapping};
 use crate::procinfo::{browser_module_of, is_program_path, ProcInfo};
 use crate::sys::sha256_file;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,11 +17,11 @@ use std::os::unix::fs::MetadataExt;
 const PROFILE_MARKS: [&str; 8] = ["/.mozilla/", "/.config/mozilla/", "/google-chrome", "/chromium/", "/BraveSoftware/", "/microsoft-edge", "/vivaldi", "/.thunderbird/"];
 const BROWSER_SECRETS: [&str; 7] = ["Cookies", "Login Data", "Web Data", "logins.json", "key4.db", "cookies.sqlite", "signons.sqlite"];
 
-const BROWSERS: [&str; 12] = [
+pub(crate) const BROWSERS: [&str; 12] = [
     "firefox", "firefox-esr", "chrome", "chromium", "brave", "msedge", "vivaldi-bin", "opera", "thunderbird", "firefox-bin",
     "thunderbird-bin", "chrome_crashpad_handler",
 ];
-const KEYRINGS: [&str; 5] = ["gnome-keyring-daemon", "kwalletd5", "kwalletd6", "ksecretd", "kwalletmanager5"];
+pub(crate) const KEYRINGS: [&str; 5] = ["gnome-keyring-daemon", "kwalletd5", "kwalletd6", "ksecretd", "kwalletmanager5"];
 /// Backup, search and antivirus programs read every file.
 const READS_EVERYTHING: [&str; 11] = ["baloo_file", "baloo_file_extractor", "tracker-extract-3", "localsearch-3", "rsync", "borg", "restic", "tar", "clamscan", "clamd", "duplicity"];
 
@@ -64,26 +64,47 @@ pub(crate) fn without_exception(code: &Option<Vec<String>>, seen: Severity, unse
     }
 }
 
+/// The SHA-256 of the file a process has loaded, which in a mount namespace of its own need not
+/// be the file at the same path here.
+fn loaded_hash(ctx: &ScanCtx, pid: u32, m: &Mapping) -> Option<String> {
+    const LIMIT: u64 = 128 * 1024 * 1024;
+    // root may read the mapped file itself
+    let mapped = ctx.sys.path(format!("/proc/{pid}/map_files/{}", m.range));
+    sha256_file(&mapped, LIMIT).or_else(|| {
+        let seen = ctx.sys.path(format!("/proc/{pid}/root{}", m.path));
+        // a test folder has no /proc/<pid>/root
+        let seen = if ctx.sys.is_live() { seen } else { ctx.sys.path(m.path) };
+        let right = !ctx.sys.is_live() || std::fs::metadata(&seen).is_ok_and(|f| f.ino() == m.inode);
+        right.then(|| sha256_file(&seen, LIMIT)).flatten()
+    })
+}
+
 /// Browsers running the video module from the person's profile: accepted, and shown, since any
 /// program of theirs could put its own file there.
 fn check_browser_modules(ctx: &ScanCtx, col: &mut Collector) {
-    // module path → the processes running it
-    let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // (module path, hash of what is loaded) → the processes running it
+    let mut found: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    let mut hashes: BTreeMap<(String, u64, (u32, u32)), String> = BTreeMap::new();
     for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread()) {
-        let Some(module) = browser_module_of(p, ctx.sys) else { continue };
+        let Some(module) = browser_module_of(p, &ctx.accounts) else { continue };
         let Ok(maps) = ctx.sys.read_string(format!("/proc/{}/maps", p.pid)) else { continue };
-        for path in odd_libraries(&maps) {
-            if module.accepts(path.strip_suffix(" (deleted)").unwrap_or(&path)) {
-                found.entry(path).or_default().push(format!("{} (PID {})", p.display_name(), p.pid));
+        for m in executable_mappings(&maps) {
+            if !module.accepts(m.path.strip_suffix(" (deleted)").unwrap_or(m.path)) {
+                continue;
             }
+            // many processes map the same file: read it once
+            let hash = hashes
+                .entry((m.path.to_string(), m.inode, m.device))
+                .or_insert_with(|| loaded_hash(ctx, p.pid, &m).map(|h| format!("sha256 {h}")).unwrap_or_else(|| "the loaded file can no longer be read".into()));
+            found.entry((m.path.to_string(), hash.clone())).or_default().insert(format!("{} (PID {})", p.display_name(), p.pid));
         }
     }
-    for (path, processes) in found {
+    for ((path, hash), processes) in found {
         let file = path.strip_suffix(" (deleted)").unwrap_or(&path);
-        let hash = sha256_file(&ctx.sys.path(file), 128 * 1024 * 1024).map(|h| format!("\nsha256 {h}")).unwrap_or_default();
+        let processes: Vec<String> = processes.into_iter().collect();
         col.push(
             Finding::new(Severity::Info, super::proc_audit::MODULE, "PROC-BROWSER-MODULE", format!("A browser runs the video module from your profile: {file}"))
-                .evidence(format!("{path}{hash}\n{} process(es): {}", processes.len(), clip(&processes.join(", "), 300)))
+                .evidence(format!("{path}\n{hash}\n{} process(es): {}", processes.len(), clip(&processes.join(", "), 300)))
                 .description("Chrome and browsers built like it download the Widevine module for protected video (Netflix, Spotify) into your profile and run it. It is accepted at exactly this place in the browser's own profile. A program of yours could replace the file there, so it is listed: it should change only when the browser updates it.")
                 .verify(format!("ls -l --time-style=full-iso {}", shq(file))),
         );
@@ -117,18 +138,23 @@ fn check_open_stores(ctx: &ScanCtx, col: &mut Collector) {
         for (store, files) in open {
             let judged = judge_reader(ctx.cfg, store, exe);
             // the rightful users and the programs that read everything get their exception only
-            // while they run no foreign code; with such code in them they weigh the most
+            // while they run no foreign code; with such code in them they weigh the most. A
+            // program file that is not the one its path names gets none at all
             let clean = match judged {
+                _ if p.claimed().is_some() => true,
                 None => p.is_clean_program(ctx, rightful(store)),
                 Some(Severity::Low) => p.is_clean_program(ctx, &READS_EVERYTHING),
                 Some(_) => true,
             };
-            let severity = match judged {
-                _ if !clean => without_exception(&p.foreign_code(ctx.sys), Severity::Critical, Severity::High),
-                Some(severity) => severity,
-                None => continue,
+            let severity = match (judged, p.claimed()) {
+                // posing as a program that may read the store
+                (_, Some(claimed)) if p.forged() && !p.mounts.as_ref().is_some_and(|m| m.own_flatpak) && is_program_path(claimed, rightful(store)) => Severity::Critical,
+                (judged, Some(_)) => judged.unwrap_or(Severity::High).max(Severity::High),
+                _ if !clean => without_exception(&p.foreign_code(ctx), Severity::Critical, Severity::High),
+                (Some(severity), None) => severity,
+                (None, None) => continue,
             };
-            let foreign = if clean { String::new() } else { foreign_note(&p.foreign_code(ctx.sys)) };
+            let foreign = if clean { p.mount_note() } else { foreign_note(&p.foreign_code(ctx)) };
             col.push(
                 Finding::new(severity, super::proc_audit::MODULE, "PROC-SECRET-ACCESS", format!("{} has the {store} open", p.display_name()))
                     .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\n{}{foreign}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), clip(&files.into_iter().collect::<Vec<_>>().join("\n"), 600)))

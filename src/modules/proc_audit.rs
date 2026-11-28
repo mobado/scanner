@@ -198,6 +198,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     super::secrets::check_processes(ctx, col);
     super::sandboxes::check_io_uring(ctx, col);
     super::sandboxes::check_namespaces(ctx, col);
+    super::sandboxes::check_fake_programs(ctx, col);
     super::persistence::keys::check_loaded(ctx, col);
     super::procrights::check(ctx, col);
     super::wallet::check_owners(ctx, col);

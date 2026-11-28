@@ -219,7 +219,7 @@ fn one_walk_serves_the_home_folder_checks() {
     }
     let sys = SysRoot::new(root);
     let cfg = Config::default();
-    let ctx = scanner::modules::ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] };
+    let ctx = scanner::modules::ScanCtx { sys: &sys, cfg: &cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[], accounts: scanner::procinfo::read_accounts(&sys) };
     let index = scanner::modules::homeindex::of(&ctx, "/home/anna");
     assert_eq!(index.env_files, vec!["/home/anna/code/a/.env"]);
     assert_eq!(index.pac_files, vec!["/home/anna/.config/proxy.pac", "/home/anna/net/auto.pac"]);

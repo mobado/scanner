@@ -177,10 +177,15 @@ fn check_modules(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
 }
 
 /// Programs that hold keys or ask for passwords.
-const KEY_PROGRAMS: [&str; 14] = ["ssh", "ssh-agent", "ssh-add", "sshd", "gpg", "gpg2", "gpg-agent", "scdaemon", "openvpn", "sudo", "su", "gnome-keyring-daemon", "gnome-keyring-d", "ksecretd"];
+pub(crate) const KEY_PROGRAMS: [&str; 14] = ["ssh", "ssh-agent", "ssh-add", "sshd", "gpg", "gpg2", "gpg-agent", "scdaemon", "openvpn", "sudo", "su", "gnome-keyring-daemon", "gnome-keyring-d", "ksecretd"];
 
 /// Places the user's own programs can write to, and memory files that never were on a disk.
 const WRITABLE_PLACES: [&str; 7] = ["/tmp/", "/var/tmp/", "/dev/shm/", "/run/user/", "/home/", "/root/", "/memfd:"];
+
+/// Does a path lie in such a place?
+pub fn in_writable_place(path: &str) -> bool {
+    WRITABLE_PLACES.iter().any(|place| path.starts_with(place))
+}
 
 /// The files of the executable mappings in a `/proc/<pid>/maps` listing.
 fn executable_files(maps: &str) -> impl Iterator<Item = &str> {
@@ -222,7 +227,7 @@ pub(crate) fn check_loaded(ctx: &ScanCtx, col: &mut Collector) {
             col.push(
                 Finding::new(Severity::High, crate::modules::proc_audit::MODULE, "PROC-KEY-LIBRARY", format!("{name} runs code from an odd place"))
                     .evidence(format!("PID {} UID {} exe={}\n{}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&odd.join("\n"), 700)))
-                    .description("A program that handles keys or passwords runs code from a temporary or home folder, or from memory. Unless you built it yourself, treat your keys and passwords as read.")
+                    .description("A program that handles keys or passwords runs code from a temporary or home folder or from memory, or, in a mount namespace somebody made, a file that is not the one its path names. Unless you built it yourself, treat your keys and passwords as read.")
                     .verify(format!("grep -E ' r.x. .*(/tmp/|/shm/|/run/user/|/home/|/root/|/memfd:)' /proc/{}/maps", p.pid)),
             );
         }

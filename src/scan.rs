@@ -188,7 +188,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         Vec::new()
     };
     let wallet_watch_secs = opts.watch_wallet_secs.unwrap_or(if opts.deep_pid_scan { cfg.wallet_watch_secs } else { 0 }).min(600);
-    let ctx = ScanCtx { sys, cfg, deep_pid_scan: opts.deep_pid_scan, wallet_watch_secs, privileged, processes: &processes };
+    let ctx = ScanCtx { sys, cfg, deep_pid_scan: opts.deep_pid_scan, wallet_watch_secs, privileged, processes: &processes, accounts: procinfo::read_accounts(sys) };
 
     // left over from an earlier scan in this thread
     crate::modules::common::take_cut_short();

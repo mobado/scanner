@@ -25,7 +25,7 @@ pub mod system;
 use super::common::{analyze_command, analyze_user_command, clip,max_severity, mode_string, reasons, shq, writable_by_others, CmdIssue};
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
-use crate::procinfo::{read_accounts, Account};
+use crate::procinfo::Account;
 use crate::sys::sha256_file;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -51,11 +51,11 @@ pub struct UnitSummary {
 }
 
 pub fn run(ctx: &ScanCtx, col: &mut Collector) {
-    let accounts = read_accounts(ctx.sys);
+    let accounts = &ctx.accounts;
     if accounts.is_empty() {
         col.note("/etc/passwd could not be read – per-user checks will be incomplete");
     }
-    let homes = home_dirs(ctx, &accounts);
+    let homes = home_dirs(ctx, accounts);
 
     check_systemd(ctx, col, &homes);
     check_cron(ctx, col);
@@ -66,7 +66,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     ssh::check_authorized_keys(ctx, col, &homes, &akf);
     system::check_pam(ctx, col);
     system::check_shell_files(ctx, col, &homes);
-    system::check_accounts(ctx, col, &accounts);
+    system::check_accounts(ctx, col, accounts);
     extra::check_udev(ctx, col);
     extra::check_at_jobs(ctx, col);
     extra::check_keys_and_certificates(ctx, col);
@@ -80,8 +80,8 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     packages::check_packages(ctx, col);
     record_system_files(ctx, col);
     history::check_histories(ctx, col, &homes);
-    system::check_duplicate_ids(ctx, col, &accounts);
-    col.inventory.accounts = extra::collect_accounts(ctx, &accounts);
+    system::check_duplicate_ids(ctx, col, accounts);
+    col.inventory.accounts = extra::collect_accounts(ctx, accounts);
 }
 
 /// (user name, uid, home directory) for root, normal users, directories under /home

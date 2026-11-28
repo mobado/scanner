@@ -7,7 +7,7 @@ use crate::modules::{Collector, ScanCtx};
 use std::collections::BTreeSet;
 
 /// Programs that read the keyboard and mouse devices as part of their job.
-const INPUT_READERS: [&str; 34] = [
+pub(crate) const INPUT_READERS: [&str; 34] = [
     "systemd", "systemd-logind", "Xorg", "Xwayland", "kwin_wayland", "gnome-shell", "mutter", "sway", "Hyprland",
     "wayfire", "labwc", "weston", "cosmic-comp", "upowerd", "thermald", "acpid", "thd", "keyd", "input-remapper-service",
     "interception", "ydotoold", "org_kde_powerdevil", "gsd-media-keys", "steam", "sddm", "lightdm", "gdm3", "bluetoothd",
@@ -38,10 +38,10 @@ pub(super) fn check_input(ctx: &ScanCtx, col: &mut Collector) {
         }
         // an expected reader that runs foreign code is no longer excused, and weighs more; nor
         // is one whose code cannot be seen
-        let unexcused = (system && p.is_program(&INPUT_READERS) && !expected).then(|| p.foreign_code(ctx.sys));
+        let unexcused = (system && p.is_program(&INPUT_READERS) && !expected).then(|| p.foreign_code(ctx));
         let tainted = unexcused.as_ref().is_some_and(|code| code.is_some());
         let severity = if spying || !system || tainted { Severity::High } else { Severity::Medium };
-        let foreign = unexcused.as_ref().map(foreign_note).unwrap_or_default();
+        let foreign = unexcused.as_ref().map(foreign_note).unwrap_or_else(|| p.mount_note());
         col.push(
             Finding::new(severity, super::MODULE, "PROC-INPUT-READER", format!("Program reads the keyboard or mouse directly: {name}"))
                 .evidence(format!(

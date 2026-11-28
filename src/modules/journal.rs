@@ -8,8 +8,10 @@
 //! these groups is asked for separately, so a flood of other messages cannot push the real lines
 //! out of what is read.
 //!
-//! A program of a user can still imitate the last group (it can run them in ways that let it add
-//! code to them). Their lines never lead to more than a Medium finding.
+//! A program of a user can still imitate the last group: it can run them in ways that let it add
+//! code to them, or mount a file of its own at their path in a mount namespace it made, whose
+//! path the journal then records (it records nothing about namespaces). Their lines never lead to
+//! more than a Medium finding.
 
 use serde_json::Value;
 

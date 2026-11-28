@@ -33,7 +33,7 @@ pub mod updates;
 
 use crate::config::Config;
 use crate::finding::Finding;
-use crate::procinfo::ProcInfo;
+use crate::procinfo::{Account, ProcInfo};
 use crate::sys::SysRoot;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -50,6 +50,8 @@ pub struct ScanCtx<'a> {
     pub privileged: bool,
     /// Processes read once and shared between the modules.
     pub processes: &'a [ProcInfo],
+    /// The accounts of /etc/passwd, read once.
+    pub accounts: Vec<Account>,
 }
 
 /// Collected data that is not findings but is needed for baselines and the window.

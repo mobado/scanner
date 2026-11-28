@@ -49,6 +49,7 @@ src/
 ├── config.rs           whitelist in TOML/JSON with Debian 13 defaults
 ├── sys.rs              all file access goes through a selectable root (/ or a test directory)
 ├── procinfo.rs         reads /proc/<pid>/{stat,status,cmdline,exe,fd,environ}
+├── mounts.rs           are a process's paths the files they name? (mount namespaces, Flatpak)
 ├── modules/
 │   ├── net_proc.rs     /proc/net/{tcp,tcp6,udp,udp6} ↔ socket inodes ↔ PID/UID/command line,
 │   │                   reverse/bind shells, ss comparison, hidden PIDs, disguised names
@@ -62,7 +63,7 @@ src/
 │   ├── kernelstate.rs  eBPF, taint marks, Secure Boot, lockdown, UEFI boot entries, AppArmor
 │   ├── netlocal.rs     Bluetooth, shared folders, DNS settings, DNS around a VPN
 │   ├── secrets.rs      open password stores, readable keys, environment variables
-│   ├── sandboxes.rs    io_uring, namespaces no known sandbox explains
+│   ├── sandboxes.rs    io_uring, posing programs, namespaces no known sandbox explains
 │   ├── wallet.rs       listens for programs asking the password wallet
 │   ├── hardware.rs     USB keyboard-and-drive devices, Thunderbolt
 │   ├── bootchain.rs    kernel start options, GRUB scripts, kernel file, disk errors
@@ -121,7 +122,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.19.3-1_amd64.deb
+sudo apt install ./scanner_0.19.4-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -219,7 +220,8 @@ is set to those folders when the program starts.
   refuse a file that others can change. Keep baselines in `/var/lib/scanner/`.
 
 `sh scripts/root-write-test.sh target/release/scanner` tries these attacks in a private
-user namespace, without real root.
+user namespace, without real root. `sh scripts/namespace-test.sh target/release/scanner` tries
+to pass other programs off as installed ones with bubblewrap.
 
 **Exit codes:** `0` no high/critical findings · `1` at least one high · `2` at least one critical · `3` error.
 
