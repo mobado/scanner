@@ -65,16 +65,23 @@ impl std::str::FromStr for Tool {
     }
 }
 
-const EXTRA_DIRS: [&str; 6] = ["/usr/sbin", "/sbin", "/usr/local/sbin", "/usr/local/bin", "/usr/bin", "/bin"];
+/// The only folders programs are run from: Debian's own, which only root can write to.
+pub const SYSTEM_DIRS: [&str; 4] = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 
-/// Look up a program in PATH and in the usual sbin directories.
+/// The PATH of the scanner and of everything it starts.
+pub fn system_path() -> String {
+    SYSTEM_DIRS.join(":")
+}
+
+/// Look up a program in the system folders. The caller's PATH is ignored: it may start with
+/// folders in the home (`~/.local/bin`), where any program of the user could put a fake `ss`
+/// that hides its own connections.
 pub fn find_binary(name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
-    dirs.extend(EXTRA_DIRS.iter().map(PathBuf::from));
-    dirs.into_iter().map(|d| d.join(name)).find(|p| {
+    if name.contains('/') {
+        return None;
+    }
+    SYSTEM_DIRS.iter().map(|d| Path::new(d).join(name)).find(|p| {
         std::fs::metadata(p)
             .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
             .unwrap_or(false)
@@ -98,6 +105,8 @@ pub fn run_capture(program: &Path, args: &[&str], timeout_secs: u64) -> Result<C
     let tool = program.display().to_string();
     let mut child = Command::new(program)
         .args(args)
+        // tools such as lynis start other programs by name
+        .env("PATH", system_path())
         .env("LC_ALL", "C")
         .env("LANG", "C")
         .stdin(Stdio::null())

@@ -28,6 +28,12 @@ reports and baselines you ask for, and the automatic baseline in /var/lib/scanne
 .PP
 Without options a window opens (when a screen is available) and, if not run as root, asks for
 the sudo password to restart with full rights. Any report option gives terminal mode.
+.PP
+The password is only asked for when
+.I /usr/bin/sudo
+(never one found in PATH) is root's set\-uid program, and only root can change the scanner and
+every folder above it; otherwise the scanner says why and runs without root. External tools are
+only taken from /usr/sbin, /usr/bin, /sbin and /bin.
 .SH OPTIONS
 .TP
 .B \-\-cli

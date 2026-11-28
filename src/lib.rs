@@ -28,6 +28,7 @@ pub mod sandbox;
 pub mod scan;
 pub mod second_look;
 pub mod sys;
+pub mod trust;
 
 pub use config::Config;
 pub use error::ScanError;

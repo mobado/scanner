@@ -85,7 +85,9 @@ pub struct ScannerApp {
     is_root: bool,
     shot: Option<Shot>,
     /// Result of "Restart with sudo" (runs in its own thread so the window does not freeze).
-    sudo_result: Option<Receiver<Result<(), &'static str>>>,
+    sudo_result: Option<Receiver<Result<(), String>>>,
+    /// Why the scanner runs without root; stays in view.
+    sudo_note: Option<String>,
     /// Index of the finding shown in the detail panel.
     selected: Option<usize>,
 }
@@ -133,11 +135,9 @@ impl ScannerApp {
             is_root: scanner::sys::is_root(),
             shot: shot.map(|path| Shot { path, frames: 0, requested: false, done: Arc::new(AtomicBool::new(false)) }),
             sudo_result: None,
+            sudo_note,
             selected: None,
         };
-        if let Some(note) = sudo_note {
-            app.status = note;
-        }
         app.start_scan(egui_ctx);
         app
     }
@@ -254,7 +254,7 @@ impl ScannerApp {
             match res {
                 // The root version has started in a new window – close this one.
                 Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                Err(msg) => self.status = msg.to_string(),
+                Err(msg) => self.sudo_note = Some(msg),
             }
         }
     }
@@ -323,6 +323,9 @@ impl ScannerApp {
                 }
             });
         });
+        if let Some(note) = &self.sudo_note {
+            ui.label(RichText::new(note).color(WARN));
+        }
         ui.add_space(6.0);
     }
 

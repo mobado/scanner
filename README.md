@@ -88,7 +88,8 @@ src/
 │   │   ├── apt.rs      software sources (.list and .sources) and apt hooks
 │   │   └── history.rs  suspicious commands in shell histories
 │   └── common.rs       assessment of command lines (base64, /dev/tcp, curl|sh, nc -e …)
-├── external_tools.rs   debsums -c and lynis (PATH check and timeout)
+├── external_tools.rs   debsums -c and lynis; tools only from system folders, with a timeout
+├── trust.rs            only root may be able to change sudo and what runs as root
 ├── baseline.rs         baseline in JSON and diff (new SUID/SGID files = Critical)
 ├── autobaseline.rs     the automatic baseline: save, complete, take in verified upgrades
 ├── pkgverify.rs        was a changed file changed by apt? (dpkg checksums + dpkg.log)
@@ -117,7 +118,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.18.2-1_amd64.deb
+sudo apt install ./scanner_0.18.3-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -182,6 +183,20 @@ scanner --root /mnt/disk --cli                # scan a mounted disk (e.g. from a
 (in a small window, or in the terminal in terminal mode) and restarts itself with
 sudo. If you cancel, it runs without root, and the *Restart with sudo* button in the
 window asks again. `--no-sudo` (or `SCANNER_NO_SUDO=1`) turns the question off.
+
+Before asking for a password the program checks two things, and runs without root
+(telling you why) if either fails:
+
+- sudo is `/usr/bin/sudo` and nothing else: owned by root, set-uid, and not writable
+  by others. A `sudo` found in `$PATH`, such as one in `~/.local/bin`, is never used.
+- only root can change the scanner itself and every folder above it, so no other
+  program of yours can swap it and get root next time. The `.deb` package
+  (`/usr/bin/scanner`) and the `install` line above meet this; a copy run from
+  `target/release/` or a download folder does not.
+
+External tools (`ss`, `journalctl`, `debsums` and the others) are only taken from
+`/usr/sbin`, `/usr/bin`, `/sbin` and `/bin`, also in a scan without root, and `$PATH`
+is set to those folders when the program starts.
 
 **Exit codes:** `0` no high/critical findings · `1` at least one high · `2` at least one critical · `3` error.
 

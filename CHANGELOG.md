@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.3
+Another program of yours could use the root question to steal your password or get root:
+* sudo is only `/usr/bin/sudo`, checked to be owned by root, set-uid and not writable by others.
+  A fake `sudo` in `~/.local/bin` (first in Debian's `PATH`) is never started.
+* Root rights are only asked for when only root can change the scanner and every folder above
+  it. A copy in `target/release/` or a download folder now runs without root and says why;
+  install the `.deb` package.
+* External tools (`ss`, `journalctl`, `debsums` …) are only taken from the system folders, also
+  in scans without root, so a fake one cannot hide what it does. `PATH` is set to those folders.
+
 ## 0.18.2
 * The Steam exceptions of 0.18.1 were too wide: Steam's folder can be written by any program of
   yours. Ports and connections are now Low (visible), only for `steam`/`steamwebhelper` started

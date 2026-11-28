@@ -133,6 +133,9 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
+    // Everything the scanner starts comes from the system folders, also what those programs
+    // start by name. Set first, before any thread exists.
+    std::env::set_var("PATH", external_tools::system_path());
     // sudo runs the program as its password prompt (SUDO_ASKPASS) with the prompt as the only argument.
     if std::env::var_os(elevate::ASKPASS_ENV).is_some() && !scanner::sys::is_root() {
         #[cfg(feature = "gui")]

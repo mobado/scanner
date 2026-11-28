@@ -33,12 +33,30 @@ const NO_SUDO: &str = "sudo is not installed – run the program as root (apt in
 const NOT_AUTH: &str = "No valid sudo password – the scanner runs without root and does not see everything.";
 const CANNOT_ASK: &str = "Could not ask for the sudo password (no terminal or screen) – running without root.";
 
-fn sudo_path() -> Option<PathBuf> {
-    scanner::external_tools::find_binary("sudo")
+/// Debian's sudo. Never looked up in PATH: a program of the user could put a fake one there and
+/// collect the password.
+const SUDO: &str = "/usr/bin/sudo";
+
+fn sudo_path() -> Result<PathBuf, String> {
+    let sudo = Path::new(SUDO);
+    if !sudo.exists() {
+        return Err(NO_SUDO.into());
+    }
+    match scanner::trust::sudo_problem(sudo) {
+        Some(why) => Err(format!("The password was not asked for: {why}. Check your sudo installation – running without root.")),
+        None => Ok(sudo.to_path_buf()),
+    }
 }
 
-fn self_exe() -> Option<PathBuf> {
-    std::env::current_exe().ok()
+/// This program, if only root can change it: it is what gets root rights.
+fn self_exe() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|_| CANNOT_ASK.to_string())?;
+    match scanner::trust::changeable_by_others(&exe) {
+        Some(why) => Err(format!(
+            "Root rights were not asked for: {why}, so another program could replace the scanner and run as root. Install the .deb package (it puts the scanner in /usr/bin) – running without root."
+        )),
+        None => Ok(exe),
+    }
 }
 
 fn has_display() -> bool {
@@ -102,14 +120,21 @@ fn root_command(sudo: &Path, exe: &Path, args: &[OsString], askpass: bool) -> Co
         with_askpass(&mut cmd, exe);
         cmd.args(["-p", "Password for %p: "]);
     }
-    cmd.arg("--").arg("env").args(display_env()).arg(exe).args(args).arg("--no-sudo");
+    cmd.arg("--").arg("/usr/bin/env").args(display_env()).arg(exe).args(args).arg("--no-sudo");
     cmd
 }
 
 /// Ask for the password and run the root version. See the module description.
 pub fn relaunch_with_sudo(args: &[OsString], gui: bool) -> Outcome {
-    let Some(sudo) = sudo_path() else { return Outcome::Declined(NO_SUDO.into()) };
-    let Some(exe) = self_exe() else { return Outcome::Declined(CANNOT_ASK.into()) };
+    // both are checked before any password is typed
+    let sudo = match sudo_path() {
+        Ok(p) => p,
+        Err(why) => return Outcome::Declined(why),
+    };
+    let exe = match self_exe() {
+        Ok(p) => p,
+        Err(why) => return Outcome::Declined(why),
+    };
 
     let terminal = std::io::stdin().is_terminal();
     // Window mode always asks in a window; terminal mode asks in the terminal when there is one.
@@ -182,20 +207,20 @@ pub fn relaunch_with_sudo(args: &[OsString], gui: bool) -> Outcome {
 
 /// Start a new root instance in the background (the button in the window).
 #[cfg(feature = "gui")]
-pub fn spawn_with_sudo(args: &[OsString]) -> Result<(), &'static str> {
-    let Some(sudo) = sudo_path() else { return Err(NO_SUDO) };
-    let Some(exe) = self_exe() else { return Err(CANNOT_ASK) };
+pub fn spawn_with_sudo(args: &[OsString]) -> Result<(), String> {
+    let sudo = sudo_path()?;
+    let exe = self_exe()?;
     if !validate(&sudo, &exe, true, false) {
-        return Err(NOT_AUTH);
+        return Err(NOT_AUTH.into());
     }
     let mut child = root_command(&sudo, &exe, args, true)
         .stdin(Stdio::null())
         .spawn()
-        .map_err(|_| "Could not restart with sudo.")?;
+        .map_err(|_| "Could not restart with sudo.".to_string())?;
     // If the root version dies at once, this window stays open.
     std::thread::sleep(Duration::from_secs(3));
     match child.try_wait() {
-        Ok(Some(st)) if !st.success() => Err("The root version could not start – this window keeps running without root."),
+        Ok(Some(st)) if !st.success() => Err("The root version could not start – this window keeps running without root.".into()),
         _ => Ok(()),
     }
 }
