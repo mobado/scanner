@@ -91,6 +91,16 @@ pub(crate) fn as_user(ctx: &ScanCtx, uid: u32, gid: u32, program: PathBuf, args:
     Some((setpriv, all))
 }
 
+/// Can the user's session bus be asked at all? Else why not: a check that could not ask must not
+/// look like one that found nothing.
+pub(crate) fn reach_bus(ctx: &ScanCtx, uid: u32, gid: u32, address: &str) -> Result<(), String> {
+    let busctl = find_binary("busctl").ok_or("busctl is not installed")?;
+    let args = vec![format!("--address={address}"), "--auto-start=no".into(), "call".into(), "org.freedesktop.DBus".into(), "/org/freedesktop/DBus".into(), "org.freedesktop.DBus".into(), "GetId".into()];
+    let (program, args) = as_user(ctx, uid, gid, busctl, args).ok_or("setpriv is not installed")?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    crate::external_tools::run_checked(&program, &args, 5).map(|_| ())
+}
+
 /// The program behind a bus name, asked while it is still connected.
 fn caller(ctx: &ScanCtx, uid: u32, gid: u32, address: &str, sender: &str) -> Option<ProcInfo> {
     let args = ["call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", sender];
@@ -167,6 +177,10 @@ pub(crate) fn check_owners(ctx: &ScanCtx, col: &mut Collector) {
         return;
     }
     for (uid, gid, address) in sessions(ctx) {
+        if let Err(why) = reach_bus(ctx, uid, gid, &address) {
+            col.note(format!("Session bus of user {uid}: NOT CHECKED – it could not be asked ({why}), so who answers as the wallet and the desktop portal was not looked at"));
+            continue;
+        }
         let mut usual = Vec::new();
         for (name, _) in OWNERS {
             // a name nobody holds gives no answer

@@ -21,7 +21,7 @@ export buttons).
 | `persistence` | systemd units and timers (system and user), cron, `at`, udev rules, `rc.local`, `ld.so.preload`/`ld.so.conf`, SSH keys (all home folders) and `sshd_config`, TLS keys and added CAs, PAM, shell files, accounts, groups and sudoers, apt software sources and hooks, shell command histories, network and sleep scripts, polkit rules, systemd generators and drop-ins, binfmt_misc, git hooks, dpkg/pip/npm settings, environment files that load code, the boot image (initramfs), kernel hooks and unified kernel images, Podman Quadlets, GnuPG helpers and PKCS#11 libraries, apt settings and signing keys, Python startup files, login and rotation scripts, proxies, files of no package in system folders, local packages, editor plugins (Vim, Neovim, VS Code, JetBrains) and project tasks that run when a folder is opened |
 | `desktop_session` | Autostart, session and login-screen scripts, session D-Bus services and portals, settings of KDE Plasma, GNOME, XFCE and window managers, programs reading the keyboard, remote desktop programs, Flatpak, Snap and AppImage, Wayland or X11, automatic login and sessions, open X servers, typing tools, menu entries, PipeWire, recording, camera and microphone, portal permissions, programs that open links and files. Findings are labelled `[xdg]`, `[kde]`, `[gnome]` …; skipped on servers without a desktop |
 | `updates` | Pending security updates, other updates, reboot needed, old package lists, missing security source, processor microcode and firmware updates |
-| `auth_logs` | Failed logins in the journal / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords, pkexec and polkit approvals |
+| `auth_logs` | Failed logins in the journal (only lines from the programs that write them) / `auth.log`: SSH guessing, unknown users, a success after many failures, logins from the internet, wrong sudo/su/desktop passwords, pkexec and polkit approvals, forged-looking lines |
 | external tools | `debsums` and `lynis` (if installed) |
 
 Every rule is listed in [docs/CHECKS.md](docs/CHECKS.md). What changed between versions is in
@@ -44,6 +44,7 @@ src/
 ├── offscreen.rs        draws the window's picture without a screen (--screenshot when locked)
 ├── elevate.rs          asks for the sudo password and restarts as root
 ├── finding.rs          Finding { severity, module, rule, title, evidence, description, verify }
+├── display.rs          control and direction characters written out before anything is shown
 ├── error.rs            ScanError (thiserror); anyhow is only used in main
 ├── config.rs           whitelist in TOML/JSON with Debian 13 defaults
 ├── sys.rs              all file access goes through a selectable root (/ or a test directory)
@@ -67,6 +68,7 @@ src/
 │   ├── bootchain.rs    kernel start options, GRUB scripts, kernel file, disk errors
 │   ├── debianfs.rs     merged /usr links, diversions
 │   ├── firewall.rs     whether incoming connections are refused, odd allow rules
+│   ├── journal.rs      login messages in the journal, only from the programs that write them
 │   ├── procrights.rs   root-like capabilities of running programs
 │   ├── desktop_session/    the desktop module (labels, server detection)
 │   │   ├── xdg.rs      autostart, session and login-screen scripts
@@ -119,7 +121,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.18.5-1_amd64.deb
+sudo apt install ./scanner_0.19.0-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -369,8 +371,12 @@ the first run saves the baseline. The unit needs no baseline file to exist – t
 and uses it itself (`StateDirectory=scanner`, `LogsDirectory=scanner`), and runs with the deep PID scan.
 
 The service runs with `ProtectSystem=strict` (the whole file system read-only except
-`/var/lib/scanner` and `/var/log/scanner`), `ProtectHome=read-only`, `NoNewPrivileges=yes` and only the read
-capabilities `CAP_DAC_READ_SEARCH`, `CAP_DAC_OVERRIDE` and `CAP_SYS_PTRACE`.
+`/var/lib/scanner` and `/var/log/scanner`), `ProtectHome=read-only`, `NoNewPrivileges=yes` and only these
+capabilities: `CAP_DAC_READ_SEARCH`, `CAP_DAC_OVERRIDE` and `CAP_SYS_PTRACE` to read, `CAP_NET_ADMIN` to list
+the firewall rules, and `CAP_SETUID`/`CAP_SETGID` to ask a person's session bus and sound server as that
+person. Listing every eBPF program would also need `CAP_SYS_ADMIN`, nearly all of root, which is left out:
+add it to `CapabilityBoundingSet` if you want it. A check that could not ask is listed in the notes as
+**NOT CHECKED**, so that an empty check does not look like a clean one.
 `PrivateTmp=no` is deliberate: otherwise the service would not see the real `/tmp`.
 Critical findings give exit code 2 and the service is marked as failed – add
 `OnFailure=` for e-mail or alerts.

@@ -1,10 +1,11 @@
 //! auth_logs: failed and suspicious logins in the system logs.
 //!
 //! Debian 13 keeps logins in the systemd journal; `/var/log/auth.log` exists when rsyslog is
-//! installed. The live system is read through `journalctl` (falling back to the files); a
-//! mounted disk or test root is read from the files.
+//! installed. The live system is read through `journalctl` (falling back to the files), only
+//! lines from the programs that write them (see [`super::journal`]); a mounted disk or test root
+//! is read from the files.
 
-use super::{Collector, ScanCtx};
+use super::{journal, Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{clip, recent_lines, shq};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -195,20 +196,73 @@ pub fn parse_line(line: &str) -> Option<Event> {
     None
 }
 
-/// Read the log lines: the journal on the live system, else the auth.log files.
-fn read_lines(ctx: &ScanCtx, col: &mut Collector) -> Vec<String> {
-    if ctx.sys.is_live() {
-        if let Some(journalctl) = crate::external_tools::find_binary("journalctl") {
-            let since = format!("--since=-{}days", ctx.cfg.log_days.max(1));
-            let args = ["--no-pager", "-q", "-o", "short-iso", "-n", "300000", since.as_str(), "SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10"];
-            match crate::external_tools::run_capture(&journalctl, &args, 120) {
-                Ok(o) if !o.stdout.trim().is_empty() => {
-                    col.note(format!("auth_logs: read the journal for the last {} days", ctx.cfg.log_days.max(1)));
-                    return o.stdout.lines().map(|l| l.to_string()).collect();
+/// Most lines read for each group of senders in the journal.
+const LINES_PER_GROUP: usize = 300_000;
+/// Most of the newest lines of any sender that are looked through for ones that are not counted.
+const OTHER_LINES: usize = 20_000;
+
+/// The log lines to judge.
+struct Logs {
+    lines: Vec<String>,
+    /// Lines of the journal that look like login messages but come from another program.
+    unconfirmed: Vec<(String, String)>,
+    /// Read from `auth.log`, which does not say which program wrote a line.
+    from_files: bool,
+}
+
+/// The journal of the live system, only lines from the programs that write them. `None` when
+/// there is no journal to read.
+fn read_journal(ctx: &ScanCtx, col: &mut Collector) -> Option<Logs> {
+    let journalctl = crate::external_tools::find_binary("journalctl")?;
+    let days = ctx.cfg.log_days.max(1);
+    let since = format!("--since=-{days}days");
+    let mut ask = |matches: &[String], most: usize| {
+        let most = most.to_string();
+        let mut args = vec!["--no-pager", "-q", "-o", "json", "--output-fields=MESSAGE,SYSLOG_IDENTIFIER,_PID,_UID,_EXE,_SYSTEMD_UNIT,_HOSTNAME", "-n", most.as_str(), since.as_str()];
+        args.extend(matches.iter().map(|m| m.as_str()));
+        match crate::external_tools::run_capture(&journalctl, &args, 120) {
+            Ok(o) => {
+                if o.timed_out {
+                    col.note("auth_logs: reading the journal was stopped after 120 s; some lines are missing");
                 }
-                Ok(_) => {}
-                Err(e) => col.note(format!("auth_logs: journalctl could not run: {e}")),
+                o.stdout.lines().filter_map(journal::parse_entry).collect::<Vec<_>>()
             }
+            Err(e) => {
+                col.note(format!("auth_logs: journalctl could not run: {e}"));
+                Vec::new()
+            }
+        }
+    };
+    let others = ask(&journal::any_sender(), OTHER_LINES);
+    if others.is_empty() {
+        return None;
+    }
+    let mut entries = Vec::new();
+    let mut full = Vec::new();
+    for (name, matches) in journal::queries() {
+        let found = ask(&matches, LINES_PER_GROUP);
+        if found.len() >= LINES_PER_GROUP {
+            full.push(name);
+        }
+        entries.extend(found.into_iter().filter(journal::from_real_source));
+    }
+    for name in full {
+        col.note(format!("auth_logs: only the newest {LINES_PER_GROUP} journal lines of {name} were read"));
+    }
+    // root's sudo is in two groups
+    let mut seen = HashSet::new();
+    entries.retain(|e| seen.insert(e.cursor.clone()));
+    entries.sort_by_key(|e| e.time);
+    let unconfirmed = others.iter().filter(|e| !journal::from_real_source(e)).map(|e| (journal::to_line(e), e.exe.clone())).filter(|(line, _)| parse_line(line).is_some()).collect();
+    col.note(format!("auth_logs: read the journal for the last {days} days (only lines from the programs that write them)"));
+    Some(Logs { lines: entries.iter().map(journal::to_line).collect(), unconfirmed, from_files: false })
+}
+
+/// Read the log lines: the journal on the live system, else the auth.log files.
+fn read_logs(ctx: &ScanCtx, col: &mut Collector) -> Logs {
+    if ctx.sys.is_live() {
+        if let Some(logs) = read_journal(ctx, col) {
+            return logs;
         }
     }
     // Rotated file first, so the events stay in order of time.
@@ -231,7 +285,21 @@ fn read_lines(ctx: &ScanCtx, col: &mut Collector) -> Vec<String> {
         col.note(format!("auth_logs: read {} (last {days} days)", used.join(" and ")));
     }
     let recent = recent_lines(lines.iter().map(|l| l.as_str()).collect(), days, ctx.sys.is_live());
-    recent.into_iter().map(|l| l.to_string()).collect()
+    Logs { lines: recent.into_iter().map(|l| l.to_string()).collect(), unconfirmed: Vec::new(), from_files: !used.is_empty() }
+}
+
+/// Login-like lines that some other program wrote: shown, never counted.
+pub fn unconfirmed_lines(lines: &[(String, String)], col: &mut Collector) {
+    if lines.is_empty() {
+        return;
+    }
+    let shown: Vec<String> = lines.iter().rev().take(10).rev().map(|(line, exe)| format!("{}\n   sent by: {}", clip(line, 220), if exe.is_empty() { "a program that had already exited" } else { exe })).collect();
+    col.push(
+        Finding::new(Severity::Low, MODULE, "AUTH-LOG-UNCONFIRMED", format!("{} login message(s) in the journal are not from the program that writes them", lines.len()))
+            .evidence(shown.join("\n"))
+            .description("They look like logins or refused passwords, but the journal does not show that the right program sent them, so they are not counted in any other finding. Any program can write such lines (for example with logger) to raise false alarms; a real program that exits at once can also end up here.")
+            .verify("sudo journalctl --since=-28days -o verbose SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 | less   # compare _EXE and _UID"),
+    );
 }
 
 /// The KDE lock screen asks for a password and listens to the fingerprint reader (or smart
@@ -265,13 +333,21 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
     if !ctx.privileged {
         col.note("auth_logs: without root only your own log messages may be visible");
     }
-    let lines = read_lines(ctx, col);
-    let closed = closed_password_boxes(&lines);
+    let logs = read_logs(ctx, col);
+    let closed = closed_password_boxes(&logs.lines);
     if !closed.is_empty() {
         col.note(format!("auth_logs: {} lock screen \"failure(s)\" are not counted: they are the password box closing after a fingerprint or smart card unlock", closed.len()));
     }
-    let events: Vec<Event> = lines.iter().enumerate().filter(|(i, _)| !closed.contains(i)).filter_map(|(_, l)| parse_line(l)).collect();
+    let events: Vec<Event> = logs.lines.iter().enumerate().filter(|(i, _)| !closed.contains(i)).filter_map(|(_, l)| parse_line(l)).collect();
+    let before = col.findings.len();
     evaluate(&events, ctx.cfg.login_fail_threshold.max(1), col);
+    if logs.from_files {
+        col.note("auth_logs: auth.log does not record which program wrote a line; any local user can add lines (logger), so these findings can be forged");
+        for finding in col.findings.iter_mut().skip(before) {
+            finding.description.push_str(" Read from auth.log, where any local user can write such lines: they may be forged.");
+        }
+    }
+    unconfirmed_lines(&logs.unconfirmed, col);
 }
 
 /// "12 attempts, first … last …" plus the latest log lines.
@@ -374,7 +450,8 @@ fn public_logins(source: &str, list: &[&Event], col: &mut Collector, journal: &d
 
 /// Turn the events into findings.
 pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
-    let journal = |filter: &str| format!("sudo journalctl --since=-28days SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 | grep -F -- {}", shq(filter));
+    // sshd logs as root; _UID=0 leaves out lines that other programs wrote under its name
+    let journal = |filter: &str| format!("sudo journalctl --since=-28days _UID=0 SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 | grep -F -- {}", shq(filter));
 
     // SSH, per source address, in order of time.
     let mut by_source: BTreeMap<&str, Vec<&Event>> = BTreeMap::new();
@@ -447,7 +524,7 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
             Finding::new(Severity::Low, MODULE, "AUTH-SSH-FAILED", "Failed SSH logins")
                 .evidence(lines.join("\n"))
                 .description("A few wrong passwords or user names over SSH – often a typing mistake or a passing scanner.")
-                .verify("sudo journalctl -t sshd -t sshd-session --since=-28days | grep -E 'Failed|Invalid user'"),
+                .verify("sudo journalctl _UID=0 -t sshd -t sshd-session --since=-28days | grep -E 'Failed|Invalid user'"),
         );
     }
     let mut unknown: BTreeMap<&str, usize> = BTreeMap::new();
@@ -463,7 +540,7 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
             Finding::new(level(total, threshold), MODULE, "AUTH-SSH-INVALID-USER", "SSH logins with user names that do not exist")
                 .evidence(format!("{total} attempt(s), {} different name(s):\n{}", unknown.len(), clip(&lines.join("\n"), 900)))
                 .description("Attempts with made-up user names (admin, test, oracle …) are typical of automated scanners trying to break in.")
-                .verify("sudo journalctl -t sshd -t sshd-session --since=-28days | grep 'Invalid user'"),
+                .verify("sudo journalctl _UID=0 -t sshd -t sshd-session --since=-28days | grep 'Invalid user'"),
         );
     }
 
@@ -475,14 +552,14 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
                     .evidence(clip(&e.line, 300))
                     .description("Packages create system accounts when they are installed. If you did not add this account, find out who did.")
                     .verify(format!("getent passwd {}", shq(&e.user)))
-                    .verify("sudo journalctl -t useradd --since=-28days"),
+                    .verify("sudo journalctl _UID=0 -t useradd --since=-28days"),
             ),
             Kind::GroupAdded { group } if crate::modules::persistence::extra::PRIVILEGED_GROUPS.contains(&group.as_str()) => col.push(
                 Finding::new(Severity::Medium, MODULE, "AUTH-GROUP-ADD", format!("{} was added to the powerful group {group}", e.user))
                     .evidence(clip(&e.line, 300))
                     .description("Members of this group have root or near-root power. Make sure this was intended.")
                     .verify(format!("id {}", shq(&e.user)))
-                    .verify("sudo journalctl -t usermod -t gpasswd --since=-28days"),
+                    .verify("sudo journalctl -t usermod -t gpasswd --since=-28days -o verbose   # check _UID and _EXE"),
             ),
             _ => {}
         }
@@ -508,10 +585,10 @@ pub fn evaluate(events: &[Event], threshold: usize, col: &mut Collector) {
     }
     for ((rule, who), (count, list)) in groups {
         let (severity, title, text, check) = match rule {
-            "AUTH-SUDO-FAILED" => (level(count, threshold), format!("Wrong sudo password: {who}"), "Wrong passwords for sudo. Usually typing mistakes; many of them can mean someone with access to the account is guessing.", "sudo journalctl -t sudo --since=-28days | grep 'incorrect password'"),
-            "AUTH-SUDO-DENIED" => (Severity::Medium, format!("sudo refused: {who}"), "This account tried to run something as root without being allowed to. Make sure you know why.", "sudo journalctl -t sudo --since=-28days | grep -E 'NOT in sudoers|not allowed'"),
-            "AUTH-SU-FAILED" => (level(count, threshold), format!("Failed su: {who}"), "A wrong password when switching user with su.", "sudo journalctl -t su --since=-28days"),
-            "AUTH-POLKIT-FAILED" => (level(count, threshold), format!("Wrong password in an administrator dialog: {who}"), "Somebody tried to get administrator rights through a password dialog (polkit) and failed. Many tries, or tries while you were away, deserve a look.", "sudo journalctl -t polkitd --since=-28days | grep FAILED"),
+            "AUTH-SUDO-FAILED" => (level(count, threshold), format!("Wrong sudo password: {who}"), "Wrong passwords for sudo. Usually typing mistakes; many of them can mean someone with access to the account is guessing.", "sudo journalctl _EXE=/usr/bin/sudo --since=-28days | grep 'incorrect password'"),
+            "AUTH-SUDO-DENIED" => (Severity::Medium, format!("sudo refused: {who}"), "This account tried to run something as root without being allowed to. Make sure you know why.", "sudo journalctl _EXE=/usr/bin/sudo --since=-28days | grep -E 'NOT in sudoers|not allowed'"),
+            "AUTH-SU-FAILED" => (level(count, threshold), format!("Failed su: {who}"), "A wrong password when switching user with su.", "sudo journalctl _EXE=/usr/bin/su --since=-28days"),
+            "AUTH-POLKIT-FAILED" => (level(count, threshold), format!("Wrong password in an administrator dialog: {who}"), "Somebody tried to get administrator rights through a password dialog (polkit) and failed. Many tries, or tries while you were away, deserve a look.", "sudo journalctl _SYSTEMD_UNIT=polkit.service --since=-28days | grep FAILED"),
             "AUTH-PKEXEC-DENIED" => (level(count, threshold), format!("pkexec refused: {who}"),"A program asked to run something as root through pkexec (polkit) and was refused. Make sure you know what asked.", "sudo journalctl -t pkexec --since=-28days"),
             _ => (level(count, threshold), format!("Failed logins on this computer: {who}"), "Wrong passwords at the console, desktop login, screen lock or a password dialog. Usually typing mistakes; many in a row, or at times you were away, deserve a look.", "sudo journalctl --since=-28days SYSLOG_FACILITY=10 | grep 'authentication failure'"),
         };

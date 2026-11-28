@@ -100,6 +100,30 @@ pub struct CmdOutput {
     pub timed_out: bool,
 }
 
+impl CmdOutput {
+    /// Why a program that did not succeed says it failed, in a few words, for a note.
+    pub fn reason(&self) -> String {
+        if self.timed_out {
+            return "it did not answer in time".into();
+        }
+        let said = self.stderr.lines().chain(self.stdout.lines()).map(str::trim).find(|l| !l.is_empty());
+        match (said, self.status) {
+            (Some(line), _) => clip(line, 160),
+            (None, Some(code)) => format!("it ended with status {code}"),
+            (None, None) => "it was stopped".into(),
+        }
+    }
+}
+
+/// Run a program and give its output only if it succeeded, else why it did not.
+pub fn run_checked(program: &Path, args: &[&str], timeout_secs: u64) -> Result<String, String> {
+    match run_capture(program, args, timeout_secs) {
+        Ok(out) if out.status == Some(0) => Ok(out.stdout),
+        Ok(out) => Err(out.reason()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Run a program, read stdout/stderr and stop after `timeout_secs`.
 pub fn run_capture(program: &Path, args: &[&str], timeout_secs: u64) -> Result<CmdOutput, ScanError> {
     let tool = program.display().to_string();

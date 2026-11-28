@@ -9,6 +9,7 @@ pub mod homefiles;
 pub mod homeindex;
 pub mod fs_perms;
 pub mod integrity;
+pub mod journal;
 pub mod kernel;
 pub mod kernelstate;
 pub mod firewall;

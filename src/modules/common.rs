@@ -422,11 +422,40 @@ pub fn clip(s: &str, max: usize) -> String {
     }
 }
 
-/// Quote a path for a shell command.
+/// Quote a path or name for a shell command. A name with hidden characters is written as
+/// `$'…'` with escapes, so nothing in a copied command can end the terminal's protection of
+/// pasted text or look like something else. Otherwise single quotes, with quotes and
+/// backslashes outside them, which bash, zsh, dash and fish all read the same way.
 pub fn shq(s: &str) -> String {
-    if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+:@%".contains(c)) {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+:@%".contains(c)) {
+        return s.to_string();
     }
+    if !s.chars().any(crate::display::is_hidden) {
+        let inside: String = s.chars().map(|c| match c {
+            '\'' => "'\\''".to_string(),
+            '\\' => "'\\\\'".to_string(),
+            c => c.to_string(),
+        }).collect();
+        return format!("'{inside}'");
+    }
+    let mut out = String::from("$'");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            // the bytes of the character, so the command means the same in every locale; "!"
+            // too, which an interactive shell may expand
+            c if crate::display::is_hidden(c) || c == '!' => {
+                for byte in c.to_string().bytes() {
+                    out.push_str(&format!("\\x{byte:02x}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
 }

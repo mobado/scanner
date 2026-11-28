@@ -239,18 +239,29 @@ struct UnitRef {
 
 fn check_systemd(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, String)]) {
     let active = active_units(ctx, col);
+    // in systemd's own order of preference: the "control" folders (systemctl set-property) first
     let mut dirs: Vec<(String, &'static str, bool)> = vec![
+        ("/etc/systemd/system.control".into(), "system", true),
+        ("/run/systemd/system.control".into(), "system", true),
         ("/etc/systemd/system".into(), "system", true),
         ("/run/systemd/system".into(), "system", true),
         ("/usr/local/lib/systemd/system".into(), "system", true),
         ("/usr/lib/systemd/system".into(), "system", false),
         ("/lib/systemd/system".into(), "system", false),
         ("/etc/systemd/user".into(), "user", true),
+        ("/etc/xdg/systemd/user".into(), "user", true),
+        ("/run/systemd/user".into(), "user", true),
+        ("/usr/local/lib/systemd/user".into(), "user", true),
+        ("/usr/local/share/systemd/user".into(), "user", true),
         ("/usr/lib/systemd/user".into(), "user", false),
     ];
-    for (_, _, home) in homes {
+    for (_, uid, home) in homes {
+        dirs.push((format!("{home}/.config/systemd/user.control"), "user", true));
         dirs.push((format!("{home}/.config/systemd/user"), "user", true));
         dirs.push((format!("{home}/.local/share/systemd/user"), "user", true));
+        // "systemctl --user --runtime": gone at logout, and the person can write there
+        dirs.push((format!("/run/user/{uid}/systemd/user.control"), "user", true));
+        dirs.push((format!("/run/user/{uid}/systemd/user"), "user", true));
     }
 
     // Step 1: find unit files and enabled units (symlinks in *.wants/*.requires)
@@ -282,7 +293,8 @@ fn check_systemd(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, Stri
                     if let Some(t) = ctx.sys.read_link(&abs) {
                         let target = ctx.sys.resolve_link_target(&abs, &t);
                         let ok_place = STANDARD_UNIT_DIRS.iter().any(|d| target.starts_with(d))
-                            || homes.iter().any(|(_, _, h)| target.starts_with(&format!("{h}/.config/systemd")) || target.starts_with(&format!("{h}/.local/share/systemd")));
+                            || target.starts_with("/etc/xdg/systemd/")
+                            || homes.iter().any(|(_, uid, h)| target.starts_with(&format!("{h}/.config/systemd")) || target.starts_with(&format!("{h}/.local/share/systemd")) || target.starts_with(&format!("/run/user/{uid}/systemd/")));
                         if !ok_place {
                             col.push(
                                 Finding::new(Severity::High, MODULE, "PERS-SYSTEMD-LINK", format!("Enabled unit points to an unusual location: {name}"))
@@ -325,15 +337,21 @@ fn check_systemd(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, Stri
         let is_enabled = enabled.contains(&u.name);
         let is_active = active.as_ref().map(|a| a.contains(&u.name));
         let real_local = u.local && !is_link;
+        // folders that are empty after every logout or boot do not go into the baseline
+        let passing = ["/run/user/", "/run/systemd/user/", "/run/systemd/system.control/"].iter().any(|d| u.abs.starts_with(d));
+        // a unit linked in until logout ("systemctl --user --runtime link") counts like a file
+        let runtime_link = is_link && u.abs.starts_with("/run/user/");
 
         if real_local {
-            record(ctx, col, &u.abs);
+            if !passing {
+                record(ctx, col, &u.abs);
+            }
             check_perms(ctx, col, &u.abs, "PERS-SYSTEMD-PERMS", "systemd unit");
         }
 
         let mut issues = Vec::new();
         // a user's own services naturally point into the home folder
-        let own = u.scope == "user" && (u.abs.starts_with("/home/") || u.abs.starts_with("/root/"));
+        let own = u.scope == "user" && ["/home/", "/root/", "/run/user/"].iter().any(|d| u.abs.starts_with(d));
         for line in exec.iter().chain(envs.iter()) {
             let cmd = line.split_once('=').map(|(_, v)| v.trim_start_matches(['-', '@', ':', '+', '!', '|'])).unwrap_or(line);
             merge_issues(&mut issues, if own { analyze_user_command(cmd, ctx.cfg) } else { analyze_command(cmd, ctx.cfg) });
@@ -394,9 +412,16 @@ fn check_systemd(ctx: &ScanCtx, col: &mut Collector, homes: &[(String, u32, Stri
                     .verify(format!("dpkg -S {}", shq(&u.abs)))
                     .verify("systemctl list-timers --all"),
             );
-        } else if real_local && u.scope == "user" && !u.abs.starts_with("/etc/") && !ctx.cfg.allowed_systemd_units.contains(&u.name) {
+        } else if (real_local || runtime_link) && u.scope == "user" && !u.abs.starts_with("/etc/") && !ctx.cfg.allowed_systemd_units.contains(&u.name) {
+            let place = if u.abs.starts_with("/run/user/") {
+                "systemd user unit that lasts until logout"
+            } else if own {
+                "systemd user unit in a home directory"
+            } else {
+                "Locally added systemd user unit"
+            };
             col.push(
-                Finding::new(if is_enabled { Severity::Medium } else { Severity::Low }, MODULE, "PERS-SYSTEMD-USER", format!("systemd user unit in a home directory: {}", u.name))
+                Finding::new(if is_enabled { Severity::Medium } else { Severity::Low }, MODULE, "PERS-SYSTEMD-USER", format!("{place}: {}", u.name))
                     .evidence(evidence.clone())
                     .description("User units start when the user logs in (or at boot with lingering) and need no root privileges – a common way to survive reboots.")
                     .verify(format!("cat {}", shq(&u.abs)))

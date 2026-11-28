@@ -102,7 +102,19 @@ impl Report {
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string_pretty(self)
+        serde_json::to_string_pretty(self).map(|json| crate::display::json(&json))
+    }
+
+    /// A copy for people to read, with hidden characters written out in every text.
+    pub(crate) fn shown(&self) -> Report {
+        let mut r = self.clone();
+        r.findings.iter_mut().for_each(Finding::make_visible);
+        r.notes = r.notes.iter().map(|n| crate::display::text(n)).collect();
+        for fact in [&mut r.hostname, &mut r.kernel, &mut r.os, &mut r.generated_at, &mut r.scan_root] {
+            *fact = crate::display::line(fact);
+        }
+        r.baseline_compared = r.baseline_compared.map(|b| crate::display::line(&b));
+        r
     }
 
     /// 0 = nothing serious, 1 = at least one High, 2 = at least one Critical.
@@ -130,7 +142,7 @@ impl Report {
             VerdictLevel::Alarm => "ALARM",
         };
         let s = &self.summary;
-        format!("{tag} {}: {} ({} critical, {} high, {} medium, {} low, {} info)", self.hostname, v.headline, s.critical, s.high, s.medium, s.low, s.info)
+        format!("{tag} {}: {} ({} critical, {} high, {} medium, {} low, {} info)", crate::display::line(&self.hostname), v.headline, s.critical, s.high, s.medium, s.low, s.info)
     }
 
     /// A plain-language conclusion for people who do not read every finding.
@@ -188,6 +200,10 @@ impl Report {
 
     /// Readable terminal report. `color` turns on ANSI colours.
     pub fn to_text(&self, color: bool) -> String {
+        self.shown().write_text(color)
+    }
+
+    fn write_text(&self, color: bool) -> String {
         let (bold, dim, reset) = if color { ("\x1b[1m", "\x1b[2m", "\x1b[0m") } else { ("", "", "") };
         let mut o = String::new();
         let line = "═".repeat(78);

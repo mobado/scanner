@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.19.0
+What others write can no longer pose as something else, and checks that fail say so.
+* Login logs: anyone could add lines with `logger` to raise a Critical alarm, or flood the
+  journal so that real lines were never read. Lines now count only when the journal's own
+  fields show that the right program sent them, and each group of programs is read by itself.
+  Others are listed in `AUTH-LOG-UNCONFIRMED` (Low). Findings from `auth.log` say that they
+  may be forged. The suggested `journalctl` commands filter the same way.
+* Control and direction characters in file names, command lines and process names are written
+  out (`\x1b`, `‮`) in the terminal, the HTML and JSON reports, the window and copied text,
+  so a name cannot erase its finding or run pasted text. Commands to copy quote such names
+  with `$'…'`; quoting also works in fish now.
+* A command in `BASE-LISTEN-NEW` put the program's own name into the shell unquoted.
+* Random ports are only ignored for a program known by its full path, so a back door named
+  like `kdeconnectd` is seen. Older baselines get the paths of installed programs after a clean
+  scan as root.
+* The nightly timer may now list the firewall rules (`CAP_NET_ADMIN`) and ask sessions and
+  sound servers (`CAP_SETUID`, `CAP_SETGID`). Checks that could not ask (firewall, port
+  forwarding, eBPF, session bus, portal, recording) say **NOT CHECKED** in the notes, and an
+  unreadable firewall is no longer recorded as switched off.
+* systemd units and drop-ins are also looked for in `system.control`, `user.control`,
+  `/etc/xdg/systemd/user`, `/usr/local/lib/systemd/user`, `/usr/local/share/systemd/user`,
+  `/run/systemd/user` and `/run/user/<uid>/systemd/user`.
+
 ## 0.18.5
 * As root, a baseline that others can change is no longer used. Since 0.18.4 a baseline saved
   to your home folder with `sudo` belongs to you, so a program of yours could add its own

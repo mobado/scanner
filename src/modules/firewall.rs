@@ -266,41 +266,51 @@ pub fn read_iptables(saved: &str, family: &str) -> Ruleset {
     out
 }
 
-/// What `iptables-legacy-save` and its IPv6 twin print. Only asked when the old system has tables
-/// loaded: asking otherwise could make the kernel load them.
-pub(crate) fn legacy_saved(ctx: &ScanCtx) -> Vec<(&'static str, String)> {
+/// What `iptables-legacy-save` and its IPv6 twin print, and why any of them could not be asked.
+/// Only asked when the old system has tables loaded: asking otherwise could make the kernel load
+/// them.
+pub(crate) fn legacy_saved(ctx: &ScanCtx) -> (Vec<(&'static str, String)>, Vec<String>) {
+    let (mut saved, mut failed) = (Vec::new(), Vec::new());
     if !ctx.sys.is_live() || !ctx.privileged {
-        return Vec::new();
+        return (saved, failed);
     }
-    [("ip", "iptables-legacy-save", "/proc/net/ip_tables_names"), ("ip6", "ip6tables-legacy-save", "/proc/net/ip6_tables_names")]
-        .into_iter()
-        .filter(|(_, _, loaded)| ctx.sys.read_string(loaded).map(|t| !t.trim().is_empty()).unwrap_or(false))
-        .filter_map(|(family, program, _)| {
-            let program = crate::external_tools::find_binary(program)?;
-            let out = crate::external_tools::run_capture(&program, &[], 30).ok().filter(|o| o.status == Some(0))?;
-            Some((family, out.stdout))
-        })
-        .collect()
+    for (family, program, loaded) in [("ip", "iptables-legacy-save", "/proc/net/ip_tables_names"), ("ip6", "ip6tables-legacy-save", "/proc/net/ip6_tables_names")] {
+        if !ctx.sys.read_string(loaded).map(|t| !t.trim().is_empty()).unwrap_or(false) {
+            continue;
+        }
+        match crate::external_tools::find_binary(program).ok_or_else(|| "not installed".to_string()).and_then(|p| crate::external_tools::run_checked(&p, &[], 30)) {
+            Ok(text) => saved.push((family, text)),
+            Err(why) => failed.push(format!("{program}: {why}")),
+        }
+    }
+    (saved, failed)
 }
 
-/// The loaded rules, if any of the two systems could be asked.
-fn loaded_rules(ctx: &ScanCtx) -> Option<Ruleset> {
+/// The loaded rules, if any of the two systems could be asked. An error when one of them could
+/// not: what was read of the other is not the whole firewall.
+fn loaded_rules(ctx: &ScanCtx) -> Result<Option<Ruleset>, String> {
     if !ctx.sys.is_live() || !ctx.privileged {
-        return None;
+        return Ok(None);
     }
-    let nft = crate::external_tools::find_binary("nft")
-        .and_then(|nft| crate::external_tools::run_capture(&nft, &["list", "ruleset"], 30).ok())
-        .filter(|o| o.status == Some(0))
-        .map(|o| read_ruleset(&o.stdout));
-    let legacy = legacy_saved(ctx);
+    let (legacy, mut failed) = legacy_saved(ctx);
+    let mut nft = None;
+    if let Some(program) = crate::external_tools::find_binary("nft") {
+        match crate::external_tools::run_checked(&program, &["list", "ruleset"], 30) {
+            Ok(text) => nft = Some(read_ruleset(&text)),
+            Err(why) => failed.insert(0, format!("nft: {why}")),
+        }
+    }
+    if !failed.is_empty() {
+        return Err(failed.join("; "));
+    }
     if nft.is_none() && legacy.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut rules = nft.unwrap_or_default();
     for (family, saved) in legacy {
         rules.merge(read_iptables(&saved, family));
     }
-    Some(rules)
+    Ok(Some(rules))
 }
 
 /// What the settings switch on, without asking the kernel.
@@ -337,7 +347,13 @@ fn open_ports(col: &Collector) -> String {
 }
 
 pub(crate) fn run(ctx: &ScanCtx, col: &mut Collector) {
-    let live = loaded_rules(ctx);
+    let (live, unread) = match loaded_rules(ctx) {
+        Ok(rules) => (rules, false),
+        Err(why) => {
+            col.note(format!("Firewall: NOT CHECKED – the loaded rules could not be read ({why}; this needs root with network administration rights). Only the settings files were looked at, and the rules are not compared with the baseline."));
+            (None, true)
+        }
+    };
     if let Some(rules) = &live {
         col.inventory.firewall_rules = Some(rules.accepts.iter().cloned().collect());
         if !rules.public_allows.is_empty() {
@@ -353,7 +369,7 @@ pub(crate) fn run(ctx: &ScanCtx, col: &mut Collector) {
     let settings = from_settings(ctx);
     let protects = live.as_ref().map(|r| r.protects).unwrap_or(false) || live.is_none() && !settings.is_empty();
     // only a certain answer goes into the baseline
-    if ctx.privileged {
+    if ctx.privileged && !unread {
         col.inventory.boot.insert("firewall".into(), if protects { "on" } else { "off" }.into());
     }
     if protects {
@@ -361,6 +377,8 @@ pub(crate) fn run(ctx: &ScanCtx, col: &mut Collector) {
     }
     let (severity, how) = if live.is_some() {
         (Severity::Low, "the loaded rules refuse no incoming traffic")
+    } else if unread {
+        (Severity::Info, "ufw, nftables and firewalld are not switched on, and the loaded rules could not be read")
     } else if ctx.privileged {
         (Severity::Low, "ufw, nftables and firewalld are not switched on")
     } else {

@@ -24,6 +24,19 @@ pub struct ListenerKey {
     pub proto: String,
     pub port: u16,
     pub process: String,
+    /// The program's full path; empty when it could not be read, and in older baselines.
+    #[serde(default)]
+    pub exe: String,
+}
+
+/// A program's path as it stays from one start to the next: an AppImage is mounted in a folder
+/// with a new name each time, and an upgraded program that still runs is marked "(deleted)".
+fn program_path(exe: &str) -> String {
+    let exe = exe.strip_suffix(" (deleted)").unwrap_or(exe);
+    match exe.strip_prefix("/tmp/.mount_").and_then(|rest| rest.split_once('/')) {
+        Some((_, inside)) => format!("/tmp/.mount_*/{inside}"),
+        None => exe.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -320,7 +333,12 @@ pub fn newly_tracked(path: &str) -> bool {
 
 /// Kinds of files that later versions started to track: in a baseline made by an older
 /// version they are new to the baseline, not suspicious.
-pub const NEWLY_TRACKED: [&str; 76] = [
+pub const NEWLY_TRACKED: [&str; 81] = [
+    "/usr/local/lib/systemd/user/",
+    "/usr/local/share/systemd/user/",
+    "/etc/xdg/systemd/",
+    "/etc/systemd/system.control/",
+    "/.config/systemd/user.control/",
     "/.local/share/applications/",
     "/.gnupg/",
     "/var/lib/dpkg/diversions",
@@ -408,6 +426,7 @@ pub fn listener_keys(inv: &Inventory) -> Vec<ListenerKey> {
             proto: if c.proto.starts_with("tcp") { "tcp".into() } else { "udp".into() },
             port: c.local_port,
             process: c.process.clone().unwrap_or_else(|| "?".into()),
+            exe: c.exe.as_deref().map(program_path).unwrap_or_default(),
         })
         .collect();
     set.into_iter().collect()
@@ -442,7 +461,7 @@ impl Baseline {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), ScanError> {
-        let json = serde_json::to_string_pretty(self).map_err(|e| ScanError::Baseline(e.to_string()))?;
+        let json = crate::display::json(&serde_json::to_string_pretty(self).map_err(|e| ScanError::Baseline(e.to_string()))?);
         crate::saving::save(path, json.as_bytes()).map_err(|e| ScanError::io(path, e))
     }
 
@@ -548,19 +567,24 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
         let old: BTreeSet<(String, u16)> = base.listeners.iter().map(|l| (l.proto.clone(), l.port)).collect();
         // Programs such as KDE Connect, Tailscale or the NFS client pick a random (ephemeral)
         // port at every start. A random port of a program that already listened at baseline
-        // time is not news; any other new port is, grouped per program.
-        let known: BTreeSet<(String, String)> = base.listeners.iter().map(|l| (l.proto.clone(), l.process.clone())).collect();
-        let mut fresh: BTreeMap<String, Vec<ListenerKey>> = BTreeMap::new();
+        // time is not news; any other new port is, grouped per program. The program is known by
+        // its full path: anyone can name a program after another one.
+        let known: BTreeSet<(&str, &str)> = base.listeners.iter().filter(|l| !l.exe.is_empty()).map(|l| (l.proto.as_str(), l.exe.as_str())).collect();
+        // sockets without a readable path, and every entry of an older baseline, only have a
+        // name: that is believed for installed programs (and where there is no path now either)
+        let named: BTreeSet<(&str, &str)> = base.listeners.iter().filter(|l| l.exe.is_empty()).map(|l| (l.proto.as_str(), l.process.as_str())).collect();
+        let mut fresh: BTreeMap<(String, String), Vec<ListenerKey>> = BTreeMap::new();
         for l in listener_keys(inv) {
             if old.contains(&(l.proto.clone(), l.port)) {
                 continue;
             }
-            if l.port >= 32768 && known.contains(&(l.proto.clone(), l.process.clone())) {
+            let installed = l.exe.is_empty() || l.exe.starts_with("/usr/");
+            if l.port >= 32768 && (known.contains(&(l.proto.as_str(), l.exe.as_str())) || (installed && named.contains(&(l.proto.as_str(), l.process.as_str())))) {
                 continue;
             }
-            fresh.entry(l.process.clone()).or_default().push(l);
+            fresh.entry((l.process.clone(), l.exe.clone())).or_default().push(l);
         }
-        for (process, list) in fresh {
+        for ((process, exe), list) in fresh {
             let fixed = list.iter().any(|l| l.port < 32768);
             let ports: Vec<String> = list.iter().map(|l| format!("{}/{}", l.proto, l.port)).collect();
             out.push(
@@ -570,17 +594,21 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
                     "BASE-LISTEN-NEW",
                     format!("New listening port(s) since the baseline: {} ({process})", ports.join(", ")),
                 )
-                .evidence(format!("{} owned by {process}\n(missing from {src})", ports.join(", ")))
+                .evidence(format!("{} owned by {process}{}\n(missing from {src})", ports.join(", "), if exe.is_empty() { String::new() } else { format!(" ({exe})") }))
                 .description(if fixed {
                     "A service listens on a port that did not exist when the baseline was created."
                 } else {
                     "A program that did not listen at baseline time now listens on random ports. Check that you know it."
                 })
-                .verify(format!("ss -tulpn | grep '{process}'")),
+                // the program chose its name itself, so it is quoted
+                .verify(format!("ss -tulpn | grep -F -- {}", shq(&process))),
             );
         }
     } else {
         notes.push("Listening ports were not compared with the baseline (net_proc did not run in both scans)".into());
+    }
+    if both("net_proc") && base.firewall_rules.is_some() && inv.firewall_rules.is_none() {
+        notes.push("The firewall rules were NOT compared with the baseline: they could not be read in this scan.".into());
     }
 
     // Desktop files are recorded by desktop_session (by persistence in older versions).

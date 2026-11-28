@@ -41,7 +41,11 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
-# Read rights are enough: read every file and other processes' /proc/<pid>/fd and environ.
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_PTRACE
+# Read every file and other processes' /proc/<pid>/fd and environ. CAP_NET_ADMIN is what nft and
+# iptables-legacy-save need to list the firewall rules, and CAP_SETUID/CAP_SETGID let setpriv ask
+# a person's session bus and sound server as that person. Listing every eBPF program would also
+# need CAP_SYS_ADMIN, which is nearly all of root and is left out: the report then says that the
+# eBPF check was incomplete. Add it to this line if you decide otherwise.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_PTRACE CAP_NET_ADMIN CAP_SETUID CAP_SETGID
 AmbientCapabilities=
 UMask=0077

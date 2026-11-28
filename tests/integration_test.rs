@@ -581,7 +581,7 @@ fn many_ports_of_one_program_become_one_finding() {
 fn random_ports_of_a_known_program_are_not_new_listeners() {
     use scanner::baseline::ListenerKey;
     use scanner::modules::net_proc::Connection;
-    let key = |proto: &str, port: u16, process: &str| ListenerKey { proto: proto.into(), port, process: process.into() };
+    let key = |proto: &str, port: u16, process: &str| ListenerKey { proto: proto.into(), port, process: process.into(), exe: String::new() };
     let conn = |proto: &str, port: u16, process: &str| Connection {
         proto: proto.into(),
         local_addr: "0.0.0.0".into(),

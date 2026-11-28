@@ -181,8 +181,14 @@ fn check_recording(ctx: &ScanCtx, col: &mut Collector) {
         let args = vec![format!("XDG_RUNTIME_DIR=/run/user/{uid}"), dump.display().to_string()];
         let Some((program, args)) = wallet::as_user(ctx, uid, gid, env.clone(), args) else { continue };
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let Ok(out) = crate::external_tools::run_capture(&program, &args, 15) else { continue };
-        for r in recordings(&out.stdout) {
+        let out = match crate::external_tools::run_checked(&program, &args, 15) {
+            Ok(out) => out,
+            Err(why) => {
+                col.note(format!("Recording: NOT CHECKED – the sound server of user {uid} could not be asked ({why})"));
+                continue;
+            }
+        };
+        for r in recordings(&out) {
             let process = r.pid.and_then(|pid| read_proc(ctx.sys, pid));
             let exe = process.as_ref().and_then(|p| p.exe_path()).unwrap_or("").to_string();
             let name = process.as_ref().map(|p| p.display_name()).unwrap_or_else(|| r.app.clone());
@@ -273,6 +279,10 @@ fn check_permissions(ctx: &ScanCtx, col: &mut Collector) {
     }
     let Some(busctl) = crate::external_tools::find_binary("busctl") else { return };
     for (uid, gid, address) in wallet::sessions(ctx) {
+        if let Err(why) = wallet::reach_bus(ctx, uid, gid, &address) {
+            col.note(format!("Portal permissions: NOT CHECKED – the session bus of user {uid} could not be asked ({why})"));
+            continue;
+        }
         let call = |method: &str, signature: &str, args: &[&str]| -> Option<String> {
             let mut all: Vec<String> = [
                 &format!("--address={address}"), "--auto-start=no", "--json=short", "call", "org.freedesktop.impl.portal.PermissionStore",

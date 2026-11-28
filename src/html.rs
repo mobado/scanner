@@ -9,6 +9,10 @@ fn esc(s: &str) -> String {
 
 impl Report {
     pub fn to_html(&self) -> String {
+        self.shown().write_html()
+    }
+
+    fn write_html(&self) -> String {
         let v = self.verdict();
         let col = match v.level {
             VerdictLevel::Clean => "#4cb86b",

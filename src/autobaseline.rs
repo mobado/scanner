@@ -164,6 +164,21 @@ fn complete_existing(report: &Report, path: &std::path::Path) -> AutoBaseline {
         base.firewall_rules = report.inventory.firewall_rules.clone();
         added.push("the firewall rules".to_string());
     }
+    // listening ports recorded before their programs' paths were: installed programs get theirs
+    if ran("net_proc") {
+        let now = crate::baseline::listener_keys(&report.inventory);
+        let mut paths = Vec::new();
+        for old in base.listeners.iter().filter(|l| l.exe.is_empty()) {
+            paths.extend(now.iter().filter(|n| n.proto == old.proto && n.process == old.process && n.exe.starts_with("/usr/")).map(|n| crate::baseline::ListenerKey { exe: n.exe.clone(), ..old.clone() }));
+        }
+        if !paths.is_empty() {
+            base.listeners.retain(|l| !(l.exe.is_empty() && paths.iter().any(|p| p.proto == l.proto && p.port == l.port && p.process == l.process)));
+            base.listeners.extend(paths);
+            base.listeners.sort();
+            base.listeners.dedup();
+            added.push("the program paths of listening ports".to_string());
+        }
+    }
     if base.scanner_version != env!("CARGO_PKG_VERSION") && ran("integrity") {
         let fresh: Vec<_> = report.inventory.boot.iter().filter(|(k, _)| k.starts_with("efi_file ") && !base.boot.contains_key(*k)).collect();
         if !fresh.is_empty() {

@@ -180,7 +180,7 @@ every network, to one address, or only to this computer.
 | Rule | Usual level | Meaning |
 |------|-------------|---------|
 | `PERS-SYSTEMD-EXEC` | Critical–Medium | A systemd unit/timer starts a suspicious command |
-| `PERS-SYSTEMD-LOCAL` / `-USER` / `-LINK` / `-PERMS` | Low–High | A locally made unit, a user unit, a link to an odd place, loose permissions |
+| `PERS-SYSTEMD-LOCAL` / `-USER` / `-LINK` / `-PERMS` | Low–High | A locally made unit, a user unit (also one that lasts until logout), a link to an odd place, loose permissions. Looked in: `/etc`, `/run`, `/usr/local/lib` and `/usr/lib` `systemd/{system,user}`, the `system.control` folders of `systemctl set-property`, `/etc/xdg/systemd/user`, `/usr/local/share/systemd/user`, `~/.config/systemd/user` and `user.control`, `~/.local/share/systemd/user` and `/run/user/<uid>/systemd/user` (and `user.control`). Units under `/run/user`, `/run/systemd/user` and `/run/systemd/system.control` are judged but not kept in the baseline |
 | `PERS-CRON-CMD` / `-REBOOT` / `-USER` / `-UNKNOWN` / `-PERMS` | Critical–Low | Suspicious cron jobs and unknown cron files |
 | `PERS-AT-JOBS` | Medium | Pending `at` jobs |
 | `PERS-RC-LOCAL` | Medium+ | `/etc/rc.local` contains commands |
@@ -315,6 +315,14 @@ example on a mounted disk), and never further back than `log_days` days (default
 weeks; for a mounted disk counted from its newest log line). "Many" means at least
 `login_fail_threshold` (default 10).
 
+Anyone may write a log line under any program name (`logger`). In the journal a line therefore
+only counts when the journal's own fields (`_UID`, `_EXE`, `_SYSTEMD_UNIT`, which a sender
+cannot set) show that root, the polkit service, or `sudo`, `su`, `pkexec`, `gpasswd`, the
+polkit helper or a screen lock sent it, the last ones only under their own name. Each group is
+asked for by itself, so a flood of other lines cannot push the real ones out. A program of the
+person can still imitate `sudo`, `su`, `pkexec` and screen locks; their findings are never more
+than Medium. `auth.log` has no such fields, and its findings say that they may be forged.
+
 | Rule | Usual level | Meaning |
 |------|-------------|---------|
 | `AUTH-SSH-SUCCESS-AFTER-FAIL` | **Critical** | An address made 5 or more failed SSH attempts and then logged in |
@@ -332,6 +340,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `AUTH-ADMIN-ACTIONS` | Medium/Low | What was run with `pkexec` and approved in polkit dialogs (Medium for programs from a temporary or home folder) |
 | `AUTH-NEW-USER` | Low | An account was created (from the logs) |
 | `AUTH-GROUP-ADD` | Medium | A user was added to a powerful group (sudo, docker …) |
+| `AUTH-LOG-UNCONFIRMED` | Low | Lines in the journal that look like logins but are not from the program that writes them (forged, or from a program that had already exited); not counted elsewhere |
 
 ## Baseline comparison (`baseline`)
 
@@ -340,7 +349,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-SUID-NEW` | **Critical** | A new SUID/SGID file since the baseline (Low when apt installed it and it matches the package) |
 | `BASE-SUID-CHANGED` | Critical/Medium | A SUID/SGID file changed. Not reported when verified as an apt upgrade; Medium if it matches its package but apt did not touch it; Critical if it differs or no package owns it |
 | `BASE-SUID-PERMS` / `-REMOVED` | High/Low | Changed permissions / file gone |
-| `BASE-LISTEN-NEW` | High/Medium | A new listening port (random ports of known programs are ignored) |
+| `BASE-LISTEN-NEW` | High/Medium | A new listening port. Random ports are ignored only for a program the baseline knows by its full path (older baselines know names, which are then believed for programs under `/usr`) |
 | `BASE-ACCOUNT-NEW` / `-UID` / `-SHELL` / `-GROUP` / `-PASSWORD` / `-REMOVED` | Critical–Low | New accounts, changed user id or shell, new powerful group, a locked system account got a password |
 | `BASE-PERSIST-NEW` / `-CHANGED` / `-REMOVED` | High–Low | A persistence file appeared / changed / disappeared |
 | `BASE-PERSIST-WATCHED` | Info | Files of a kind the older scanner did not record, from no package and unchanged since before the baseline was made: listed once, then watched |

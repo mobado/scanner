@@ -150,10 +150,21 @@ fn main() -> ExitCode {
     match real_main(cli) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
-            eprintln!("scanner: error: {e:#}");
+            // errors may name files, whose names may hide characters that fool a terminal
+            eprintln!("scanner: error: {}", shown(&format!("{e:#}")));
             ExitCode::from(3)
         }
     }
+}
+
+/// Text for the terminal, with hidden characters written out.
+fn shown(text: &str) -> String {
+    scanner::display::text(text)
+}
+
+/// A path for the terminal, on one line.
+fn name(path: &std::path::Path) -> String {
+    scanner::display::line(&path.display().to_string())
 }
 
 fn wants_cli(cli: &Cli) -> bool {
@@ -184,7 +195,7 @@ fn has_display() -> bool {
 fn load_config(path: &Option<PathBuf>) -> Result<(Config, Option<PathBuf>, Option<String>)> {
     if path.is_none() {
         if let Some(why) = scanner::config::default_whitelist_path().and_then(|p| scanner::config::distrust(&p)) {
-            eprintln!("scanner: {why}");
+            eprintln!("scanner: {}", shown(&why));
             return Ok((Config::default(), None, Some(why)));
         }
     }
@@ -219,15 +230,15 @@ fn real_main(cli: Cli) -> Result<u8> {
             return Ok(status.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(3));
         }
         match update_file(path).with_context(|| format!("could not update {}", path.display()))? {
-            Update::Created => println!("Whitelist created: {}", path.display()),
+            Update::Created => println!("Whitelist created: {}", name(path)),
             Update::Added { entries, backup } => {
-                println!("Whitelist updated: {} new default entries added to {} (old file saved as {})", entries.len(), path.display(), backup.display());
+                println!("Whitelist updated: {} new default entries added to {} (old file saved as {})", entries.len(), name(path), name(&backup));
                 for e in entries {
-                    println!("  + {e}");
+                    println!("  + {}", shown(&e));
                 }
             }
-            Update::UpToDate => println!("Whitelist is up to date: {}", path.display()),
-            Update::SwitchedOff => println!("Whitelist left unchanged (add_new_defaults = false): {}", path.display()),
+            Update::UpToDate => println!("Whitelist is up to date: {}", name(path)),
+            Update::SwitchedOff => println!("Whitelist left unchanged (add_new_defaults = false): {}", name(path)),
         }
         return Ok(0);
     }
@@ -260,7 +271,7 @@ fn real_main(cli: Cli) -> Result<u8> {
             // The root version has finished (the window was closed / the report written).
             elevate::Outcome::Ran(code) => return Ok(code),
             elevate::Outcome::Declined(msg) => {
-                eprintln!("scanner: {msg}");
+                eprintln!("scanner: {}", shown(&msg));
                 sudo_note = Some(msg);
             }
         }
@@ -330,7 +341,7 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
     let auto = !cli.no_auto_baseline && cli.baseline_diff.is_none();
     let mut report = scanner::scan::run_scan_auto(&sys, &cfg, &opts, auto, &|msg| {
         if interactive {
-            eprintln!("» {msg}");
+            eprintln!("» {}", shown(msg));
         }
     });
     report.notes.extend(warning);
@@ -343,7 +354,7 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
 
     if let Some(path) = &cli.baseline_save {
         Baseline::from_report(&report).save(path).with_context(|| format!("could not save the baseline {}", path.display()))?;
-        eprintln!("Baseline saved: {} ({} SUID/SGID files, {} persistence files)", path.display(), report.inventory.suid.len(), report.inventory.persistence_files.len());
+        eprintln!("Baseline saved: {} ({} SUID/SGID files, {} persistence files)", name(path), report.inventory.suid.len(), report.inventory.persistence_files.len());
         if scanner::baseline::distrust(path).is_some() {
             eprintln!("Note: others can change that file, so a scan as root will not compare against it. Save it in /var/lib/scanner/ for that.");
         }
@@ -356,7 +367,7 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
             scanner::saving::save(path, text.as_bytes()).with_context(|| format!("could not write {}", path.display()))?;
             eprintln!(
                 "Report saved: {} – {} critical, {} high, {} medium, {} low, {} info",
-                path.display(),
+                name(path),
                 report.summary.critical,
                 report.summary.high,
                 report.summary.medium,

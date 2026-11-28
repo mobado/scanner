@@ -217,7 +217,11 @@ fn check_nat(ctx: &ScanCtx, col: &mut Collector) {
     if !ctx.sys.is_live() || !ctx.privileged {
         return;
     }
-    let rules: Vec<String> = super::firewall::legacy_saved(ctx).iter().flat_map(|(_, saved)| iptables_redirects(saved)).collect();
+    let (saved, failed) = super::firewall::legacy_saved(ctx);
+    for why in &failed {
+        col.note(format!("Port forwarding: NOT CHECKED for the old firewall ({why})"));
+    }
+    let rules: Vec<String> = saved.iter().flat_map(|(_, saved)| iptables_redirects(saved)).collect();
     if !rules.is_empty() {
         col.push(
             Finding::new(Severity::Medium, MODULE, "NET-NAT-REDIRECT", "Old-style iptables rules redirect traffic")
@@ -227,15 +231,10 @@ fn check_nat(ctx: &ScanCtx, col: &mut Collector) {
         );
     }
     let Some(nft) = crate::external_tools::find_binary("nft") else { return };
-    let ruleset = match crate::external_tools::run_capture(&nft, &["list", "ruleset"], 30) {
-        Ok(o) if o.status == Some(0) => o.stdout,
-        Ok(_) => {
-            // the read-only timer service deliberately lacks the network administration right
-            col.note("The firewall rules could not be read (nft needs network administration rights), so port forwarding was not checked");
-            return;
-        }
-        Err(e) => {
-            col.note(format!("nft could not list the firewall rules: {e}"));
+    let ruleset = match crate::external_tools::run_checked(&nft, &["list", "ruleset"], 30) {
+        Ok(text) => text,
+        Err(why) => {
+            col.note(format!("Port forwarding: NOT CHECKED – nft could not list the firewall rules ({why}; this needs root with network administration rights)"));
             return;
         }
     };

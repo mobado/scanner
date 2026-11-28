@@ -174,6 +174,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
     let running_as_root = sys::is_root();
     let privileged = !sys.is_live() || running_as_root;
     let (hostname, kernel, os) = sys::host_facts(sys);
+    let [hostname, kernel, os] = [hostname, kernel, os].map(|fact| crate::display::line(&fact));
     let mut col = Collector::default();
     if !privileged {
         col.note("The scanner is not running as root: other users' processes, /var/spool/cron, /root and some /proc files cannot be read. Run with sudo for a complete scan.");
@@ -291,7 +292,7 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
                 });
                 col.findings.extend(f);
                 col.notes.extend(notes);
-                baseline_compared = Some(format!("{} (created {} on {})", path.display(), b.created_at, b.hostname));
+                baseline_compared = Some(crate::display::line(&format!("{} (created {} on {})", path.display(), b.created_at, b.hostname)));
             }
             Err(e) => col.note(format!("The baseline could not be read: {e}")),
         }
@@ -299,6 +300,9 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
 
     progress("Adding context to the findings …");
     crate::context::add(sys, &processes, &mut col);
+    // names from the system may hide characters that fool a terminal or the reader
+    col.findings.iter_mut().for_each(Finding::make_visible);
+    col.notes = col.notes.iter().map(|n| crate::display::text(n)).collect();
 
     // Whitelist, minimum severity and duplicates
     let mut seen = HashSet::new();

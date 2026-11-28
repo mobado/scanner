@@ -87,16 +87,20 @@ fn check_generators(ctx: &ScanCtx, col: &mut Collector, has_dpkg: bool) {
     }
 }
 
-const DROPIN_DIRS: [&str; 7] = [
-    "/etc/systemd/system", "/etc/systemd/user", "/run/systemd/system", "/usr/local/lib/systemd/system",
-    "/usr/local/lib/systemd/user", "/usr/lib/systemd/system", "/usr/lib/systemd/user",
+const DROPIN_DIRS: [&str; 12] = [
+    "/etc/systemd/system.control", "/run/systemd/system.control", "/etc/systemd/system", "/etc/systemd/user",
+    "/etc/xdg/systemd/user", "/run/systemd/system", "/run/systemd/user", "/usr/local/lib/systemd/system",
+    "/usr/local/lib/systemd/user", "/usr/local/share/systemd/user", "/usr/lib/systemd/system", "/usr/lib/systemd/user",
 ];
 
 fn check_dropins(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, has_dpkg: bool) {
     let mut dirs: Vec<(String, bool)> = DROPIN_DIRS.iter().map(|d| (d.to_string(), false)).collect();
-    for (_, _, home) in homes {
+    for (_, uid, home) in homes {
+        dirs.push((format!("{home}/.config/systemd/user.control"), true));
         dirs.push((format!("{home}/.config/systemd/user"), true));
         dirs.push((format!("{home}/.local/share/systemd/user"), true));
+        dirs.push((format!("/run/user/{uid}/systemd/user.control"), true));
+        dirs.push((format!("/run/user/{uid}/systemd/user"), true));
     }
     let mut found: Vec<(String, bool)> = Vec::new();
     let mut seen = HashSet::new();

@@ -288,7 +288,7 @@ impl ScannerApp {
             let ctx2 = ctx.clone();
             ctx.request_screenshot(move |img| {
                 if let Err(e) = save_png(&path, &img) {
-                    eprintln!("scanner: could not save the screenshot: {e}");
+                    eprintln!("scanner: could not save the screenshot: {}", scanner::display::text(&e));
                 }
                 done.store(true, Ordering::SeqCst);
                 ctx2.request_repaint();
@@ -334,7 +334,7 @@ impl ScannerApp {
             });
         });
         for note in self.sudo_note.iter().chain(&self.scan_warning) {
-            ui.label(RichText::new(note).color(WARN));
+            ui.label(RichText::new(scanner::display::text(note)).color(WARN));
         }
         ui.add_space(6.0);
     }
@@ -746,8 +746,8 @@ impl ScannerApp {
                     ui.label(RichText::new(&c.state).color(if c.listening { ACCENT } else { TEXT }));
                     ui.label(c.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()));
                     ui.label(c.uid.to_string());
-                    ui.label(c.process.clone().unwrap_or_else(|| "unknown".into()));
-                    ui.label(RichText::new(scanner::modules::common::clip(c.cmdline.as_deref().unwrap_or(""), 70)).small().color(MUTED));
+                    ui.label(scanner::display::line(c.process.as_deref().unwrap_or("unknown")));
+                    ui.label(RichText::new(scanner::modules::common::clip(&scanner::display::line(c.cmdline.as_deref().unwrap_or("")), 70)).small().color(MUTED));
                     ui.end_row();
                 }
             });
@@ -768,7 +768,7 @@ impl ScannerApp {
                 ui.end_row();
                 for e in &r.inventory.suid {
                     let known = self.cfg.is_suid_allowed(&e.path);
-                    ui.monospace(&e.path);
+                    ui.monospace(scanner::display::line(&e.path));
                     ui.label(match (e.suid, e.sgid) {
                         (true, true) => "SUID+SGID",
                         (true, false) => "SUID",
@@ -799,15 +799,15 @@ impl ScannerApp {
                 }
                 ui.end_row();
                 for u in &r.inventory.units {
-                    ui.monospace(&u.name);
-                    ui.label(&u.scope);
+                    ui.monospace(scanner::display::line(&u.name));
+                    ui.label(scanner::display::line(&u.scope));
                     ui.label(if u.enabled { "yes" } else { "no" });
                     ui.label(match u.active {
                         Some(true) => "yes",
                         Some(false) => "no",
                         None => "?",
                     });
-                    ui.label(RichText::new(scanner::modules::common::clip(&u.exec.join(" | "), 90)).small().color(MUTED));
+                    ui.label(RichText::new(scanner::modules::common::clip(&scanner::display::line(&u.exec.join(" | ")), 90)).small().color(MUTED));
                     ui.end_row();
                 }
             });
@@ -821,7 +821,7 @@ impl ScannerApp {
                 ui.label("No notes – everything could be read.");
             }
             for n in &r.notes {
-                ui.label(format!("•  {n}"));
+                ui.label(format!("•  {}", scanner::display::text(n)));
             }
             ui.add_space(10.0);
             ui.label(RichText::new(format!("Modules: {}", r.modules.join(", "))).color(MUTED));
@@ -881,7 +881,7 @@ impl ScannerApp {
                 let p = self.progress.lock().map(|p| p.clone()).unwrap_or_default();
                 ui.label(RichText::new(p).color(ACCENT));
             } else {
-                ui.label(RichText::new(&self.status).color(MUTED));
+                ui.label(RichText::new(scanner::display::line(&self.status)).color(MUTED));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let has = self.report.is_some();
@@ -1223,7 +1223,7 @@ fn picture_without_screen_after(wait: std::time::Duration, pictured: Arc<AtomicB
         match saved {
             Ok(()) => std::process::exit(0),
             Err(e) => {
-                eprintln!("scanner: could not save the screenshot: {e}");
+                eprintln!("scanner: could not save the screenshot: {}", scanner::display::text(&e));
                 std::process::exit(1);
             }
         }

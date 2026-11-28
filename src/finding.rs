@@ -144,6 +144,17 @@ impl Finding {
         self
     }
 
+    /// Write out the control and direction characters that names from the system may carry,
+    /// before the finding is shown or copied.
+    pub fn make_visible(&mut self) {
+        self.title = crate::display::line(&self.title);
+        self.evidence = crate::display::text(&self.evidence);
+        self.description = crate::display::text(&self.description);
+        for command in &mut self.verify {
+            *command = crate::display::line(command);
+        }
+    }
+
     pub fn verify_all<I, S>(mut self, cmds: I) -> Self
     where
         I: IntoIterator<Item = S>,

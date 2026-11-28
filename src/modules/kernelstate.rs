@@ -106,24 +106,33 @@ pub fn judge_bpf(programs: &[BpfProgram], network: &[String], col: &mut Collecto
 }
 
 fn check_ebpf(ctx: &ScanCtx, col: &mut Collector) {
-    let mut programs = Vec::new();
+    let programs;
     let mut network = Vec::new();
     let bpftool = (ctx.sys.is_live() && ctx.privileged).then(|| crate::external_tools::find_binary("bpftool")).flatten();
     match &bpftool {
         Some(tool) => {
-            let run = |args: &[&str]| crate::external_tools::run_capture(tool, args, 30).ok().filter(|o| o.status == Some(0)).map(|o| o.stdout);
-            match run(&["-j", "prog", "show"]) {
-                Some(json) => programs = parse_bpftool(&json),
-                None => col.note("bpftool could not list the eBPF programs"),
-            }
-            if let Some(Value::Array(list)) = run(&["-j", "net", "show"]).and_then(|j| serde_json::from_str(&j).ok()) {
-                for part in &list {
-                    for key in ["xdp", "tc", "flow_dissector", "netfilter"] {
-                        for a in part.get(key).and_then(Value::as_array).into_iter().flatten() {
-                            network.push(format!("{key} {a}"));
+            let run = |args: &[&str]| crate::external_tools::run_checked(tool, args, 30);
+            programs = match run(&["-j", "prog", "show"]) {
+                Ok(json) => parse_bpftool(&json),
+                // an empty list must not look like a clean computer
+                Err(why) => {
+                    col.note(format!("eBPF: NOT FULLY CHECKED – bpftool could not list the loaded programs ({why}; it needs the CAP_SYS_ADMIN right, which the nightly timer does not have). Only programs that a process holds open were checked."));
+                    programs_from_proc(ctx)
+                }
+            };
+            match run(&["-j", "net", "show"]) {
+                Ok(json) => {
+                    if let Ok(Value::Array(list)) = serde_json::from_str(&json) {
+                        for part in &list {
+                            for key in ["xdp", "tc", "flow_dissector", "netfilter"] {
+                                for a in part.get(key).and_then(Value::as_array).into_iter().flatten() {
+                                    network.push(format!("{key} {a}"));
+                                }
+                            }
                         }
                     }
                 }
+                Err(why) => col.note(format!("eBPF: NOT CHECKED – programs attached to the network could not be listed ({why})")),
             }
         }
         None => {
