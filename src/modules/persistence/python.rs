@@ -337,6 +337,9 @@ fn check_writable(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, accounts: &
         return;
     }
     let first = found.values().flatten().next().map(|p| p.to_string()).unwrap_or_default();
+    // what lies outside every home is loaded by the system's own Python programs
+    let system = found.values().flatten().any(|place| !homes.iter().any(|(_, _, h)| h != "/" && place.starts_with(&format!("{h}/"))));
+    let who = if system { "in your Python programs, also those run as root" } else { "in the Python programs that use this environment" };
     let lines: Vec<String> = found
         .iter()
         .map(|(why, places)| {
@@ -348,7 +351,7 @@ fn check_writable(ctx: &ScanCtx, col: &mut Collector, homes: &Homes, accounts: &
     col.push(
         Finding::new(Severity::High, MODULE, "PERS-PYTHON-WRITABLE", "Others can change what Python runs at every start")
             .evidence(clip(&lines.join("\n"), 1500))
-            .description("Whoever can write to a folder Python loads from can put a path file or code there, which then runs in your Python programs, also those run as root. A chmod -R 777 or a package installation gone wrong leaves this behind. Remove the extra rights, for example with chmod go-w, setfacl -b or chown.")
+            .description(format!("Whoever can write to a folder Python loads from can put a path file or code there, which then runs {who}. A chmod -R 777 or a package installation gone wrong leaves this behind. Remove the extra rights, for example with chmod go-w, setfacl -b or chown."))
             .verify(format!("namei -l {}", shq(&first)))
             .verify(format!("getfacl {}", shq(&first))),
     );

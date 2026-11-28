@@ -312,7 +312,7 @@ fn explain_packages(sys: &SysRoot, findings: &mut Vec<Finding>, created: SystemT
         kept.push(
             Finding::new(Severity::Medium, crate::baseline::MODULE, PACKAGE_CHANGED, format!("{count} package(s) changed since the baseline without apt installing them from a source"))
                 .evidence(open.join("\n"))
-                .description("apt's history does not show that apt installed these versions from a software source after the baseline, or dpkg's files for them were written again afterwards. Installing a .deb file or using dpkg does this, so does very old history that has been removed. Check each one; when they are yours, save a new baseline.")
+                .description("apt's history does not show that apt installed these versions from a software source after the baseline, or dpkg's files for them were written again afterwards. Installing a .deb file or using dpkg does this, so does very old history that has been removed. Check each one; when they are yours, save a new baseline. A very long list can mean that the system was moved to a new disk or restored from a backup, which makes all of dpkg's files look rewritten: after such a move, check a few and save a new baseline.")
                 .verify(format!("apt-cache policy {}", crate::modules::common::shq(&first.0)))
                 .verify(format!("grep -B4 -A2 '{}:' /var/log/apt/history.log", first.0))
                 .verify(format!("dpkg -V {}", crate::modules::common::shq(&first.0))),

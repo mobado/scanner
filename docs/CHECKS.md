@@ -33,14 +33,14 @@ depending on the evidence (for example a binary deleted from `/usr` is Low, from
 | `NET-SUSP-PORT` | High | A connection to a typical backdoor port (4444, 1337, 31337 …) |
 | `NET-TMP-SOCKET` | Critical | A program from `/tmp`, `/var/tmp`, `/dev/shm` or `/run` holds a network socket |
 | `NET-DELETED-SOCKET` | Medium/Critical | A deleted binary holds a network socket |
-| `NET-LISTEN-UNKNOWN` | Medium–Info | A listening port that is not in the whitelist (grouped per program). Info for the Steam client in a home folder on Steam's ports (27000–27100, 4380) |
+| `NET-LISTEN-UNKNOWN` | Medium–Info | A listening port that is not in the whitelist (grouped per program). Low for Steam's client (`steam`/`steamwebhelper` in a Steam folder, started by Steam's main program) on Steam's ports (27000–27100, 4380); never hidden, as your programs can write to that folder |
 | `NET-ORPHAN-LISTEN` | High/Low | A listening socket without any owner process (Low when the NFS client explains it) |
 | `NET-SS-MISMATCH` | High | `ss` sees a listening port that `/proc/net` hides, in three comparisons in a row (short-lived sockets only get a note) |
 | `NET-HIDDEN-PID` | High | A PID the scheduler knows but `/proc` does not list |
 | `NET-KTHREAD-FAKE` | Critical | A normal process disguised as a kernel thread (`[kworker/…]`) |
 | `NET-KTHREAD-NAME` | Low | A kernel thread with an unknown name (NVIDIA's `vidmem lazy free` is known while its driver is loaded) |
-| `NET-ARGV0-MASK` | High/Medium | `argv[0]` does not match the real binary in `/proc/<pid>/exe` (`/proc/self/exe`, as Chromium, Electron and Steam start helpers, is no disguise) |
-| `NET-OUTBOUND-UNUSUAL` | Medium–Info | An outgoing internet connection on a port that is not in `common_remote_ports`; Info for the Steam client in a home folder on Steam's ports |
+| `NET-ARGV0-MASK` | High/Medium | `argv[0]` does not match the real binary in `/proc/<pid>/exe`. `/proc/self/exe` (how Chromium, Electron and Steam start helpers) is accepted when the process shows `exe` or the program's own name, or runs from `/usr`, `/opt` or `/app` |
+| `NET-OUTBOUND-UNUSUAL` | Medium/Low | An outgoing internet connection on a port that is not in `common_remote_ports`; Low for Steam's client on Steam's ports |
 | `NET-DNS-DIRECT` | Medium | A program talks DNS to a server that is not the system resolver (possible tunnelling) |
 | `NET-RESOLVER` | High/Medium | `resolv.conf` writable or linked oddly, or an unknown public DNS server (`trusted_resolvers`) |
 | `NET-HOSTS-OVERRIDE` | High | `/etc/hosts` redirects Debian, GitHub or security sites |
@@ -144,7 +144,7 @@ every network, to one address, or only to this computer.
 | `PROC-KEY-LIBRARY` | High | SSH, GnuPG, sudo, OpenVPN or a wallet has loaded a library from a temporary or home folder |
 | `PROC-SECRET-CALL` | Critical–Low | A program asked the password wallet (Secret Service, GNOME Keyring, KWallet) for secrets while the scanner listened: full scan (`wallet_watch_secs` = 15) or `--watch-wallet SECS`. Medium for scripts and command line tools, High/Critical from odd folders; installed programs are only named in the notes. Passwords never pass through the scanner (`dbus-monitor --profile` shows who asked for what) |
 | `PROC-IO-URING` | High–Low | A program outside the system folders uses io_uring, which sidesteps system call monitoring |
-| `PROC-NAMESPACE` | High/Medium | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps, Steam and its Steam Linux Runtime), container, Snap or system service explains. A mount namespace alone only counts for programs in home or temporary folders |
+| `PROC-NAMESPACE` | High–Low | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps), container, Snap or system service explains. Spaces of programs that a running Steam client started (also games, and the runtime container that started Steam) are listed as Low. A mount namespace alone only counts for programs in home or temporary folders |
 
 ## File permissions (`fs_perms`)
 
@@ -350,7 +350,7 @@ weeks; for a mounted disk counted from its newest log line). "Many" means at lea
 | `BASE-EDITOR-NEW` | Low | A new editor extension |
 | `BASE-LOCAL-PACKAGE` | Medium | A package that no source offers and that was not installed in this version when the baseline was made, also one that looks like an old Debian package. Packages a release upgrade leaves behind were installed then and stay quiet |
 | `BASE-PACKAGE-REPLACED` | High/Medium | A package's checksum list, install scripts, debconf script (`config`) or triggers (`/var/lib/dpkg/info`) changed while its version stayed the same. High when no source offers the package |
-| `BASE-PACKAGE-CHANGED` | Medium | Packages installed in another version, newly installed or with new files for another architecture, that apt's history does not explain (see below); one finding with the list |
+| `BASE-PACKAGE-CHANGED` | Medium | Packages installed in another version, newly installed or with new files for another architecture, that apt's history does not explain (see below); one finding with the list. After moving the system to a new disk or restoring a backup every package can show here: check a few and save a new baseline |
 | `BASE-FIREWALL-OFF` | High | A firewall that was on is off |
 | `BASE-FIREWALL-RULE` | Medium/Low | A new accept rule since the baseline (root; compared without counters, with the members of named sets). Medium for incoming chains, Low for forwarded and other traffic. In Docker's and libvirt's own chains (not `DOCKER-USER`) private addresses and `veth*`/`br-*` names are ignored, so a new container is not a new rule |
 | `BASE-EFI-FILE-CHANGED` | Medium/Info | A boot file built on this computer (such as a local `grubx64.efi`) changed; Info when `dpkg.log` shows an update of GRUB (or fwupd) after the baseline, and the baseline then takes the new file in |

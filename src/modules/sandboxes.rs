@@ -6,24 +6,76 @@ use super::proc_audit::MODULE;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::procinfo::ProcInfo;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Programs that isolate themselves or others as part of their job (matched as prefixes for
 /// families like `systemd-` and `containerd-`).
-const SANDBOXES: [&str; 43] = [
+const SANDBOXES: [&str; 40] = [
     "systemd", "bwrap", "flatpak", "xdg-", "chrome", "chromium", "brave", "firefox", "thunderbird", "msedge", "vivaldi",
     "opera", "electron", "code", "codium", "slack", "discord", "Discord", "signal-desktop", "spotify", "steam", "pressure-vessel",
     "docker", "containerd", "podman", "conmon", "runc", "crun", "snap", "lxc", "lxd", "incus", "libvirt", "qemu", "waydroid",
     "firejail", "evince", "glycin", "tracker", "localsearch",
-    // the Steam runtime's own container (Steam Linux Runtime)
-    "srt-bwrap", "pv-bwrap", "pv-adverb",
 ];
 
 fn is_sandbox(p: &ProcInfo) -> bool {
     let exe = p.exe_path().unwrap_or("");
     // a copy in a home or temporary folder is not the sandbox its name claims
-    let installed = exe.is_empty() || ["/usr/", "/opt/", "/snap/", "/app/", "/var/lib/flatpak/", "/lib/"].iter().any(|d| exe.starts_with(d)) || is_steam_path(exe);
+    let installed = exe.is_empty() || ["/usr/", "/opt/", "/snap/", "/app/", "/var/lib/flatpak/", "/lib/"].iter().any(|d| exe.starts_with(d));
     installed && p.candidate_names().iter().any(|n| SANDBOXES.iter().any(|s| n.starts_with(s)))
+}
+
+// ---------------------------------------------------------------- Steam
+// Steam lives in a folder the user can write to, so nothing there is trusted outright: what
+// belongs to a running Steam client is reported quietly (Low), never hidden.
+
+/// The parts of the Steam Linux Runtime that start the client inside a container.
+const STEAM_RUNTIME: [&str; 4] = ["srt-bwrap", "pv-bwrap", "pv-adverb", "pressure-vessel-wrap"];
+
+fn named(p: &ProcInfo, names: &[&str]) -> bool {
+    p.candidate_names().iter().any(|n| names.contains(&n.as_str()))
+}
+
+/// Steam's main program: "steam" in a Steam folder.
+fn is_steam_main(p: &ProcInfo) -> bool {
+    p.exe_path().is_some_and(|e| is_steam_path(e) && crate::procinfo::basename(e) == "steam")
+}
+
+/// The process ids a running Steam client starts from: its main program, and the parts of the
+/// runtime container that started it.
+pub(crate) fn steam_roots(processes: &[ProcInfo]) -> BTreeSet<u32> {
+    let by_pid: HashMap<u32, &ProcInfo> = processes.iter().map(|p| (p.pid, p)).collect();
+    let mut roots = BTreeSet::new();
+    for main in processes.iter().filter(|p| is_steam_main(p)) {
+        roots.insert(main.pid);
+        let mut chain = by_pid.get(&main.ppid).copied();
+        for _ in 0..8 {
+            let Some(parent) = chain else { break };
+            if named(parent, &STEAM_RUNTIME) {
+                roots.insert(parent.pid);
+            }
+            chain = by_pid.get(&parent.ppid).copied();
+        }
+    }
+    roots
+}
+
+/// Was the process started by a running Steam client (or is it one of its roots)?
+fn from_steam(p: &ProcInfo, by_pid: &HashMap<u32, &ProcInfo>, roots: &BTreeSet<u32>) -> bool {
+    let mut chain = Some(p);
+    for _ in 0..12 {
+        let Some(current) = chain else { break };
+        if roots.contains(&current.pid) {
+            return true;
+        }
+        chain = by_pid.get(&current.ppid).copied();
+    }
+    false
+}
+
+/// Steam's client or its browser, in a Steam folder and started from Steam's main program.
+pub(crate) fn is_steam_client(p: &ProcInfo, processes: &[ProcInfo]) -> bool {
+    let by_pid: HashMap<u32, &ProcInfo> = processes.iter().map(|q| (q.pid, q)).collect();
+    p.uid != 0 && p.exe_path().is_some_and(is_steam_path) && named(p, &["steam", "steamwebhelper"]) && from_steam(p, &by_pid, &steam_roots(processes))
 }
 
 /// The sandbox of an installed Chromium or Electron app, whatever the app is called: its helper
@@ -121,14 +173,23 @@ pub(crate) fn check_namespaces(ctx: &ScanCtx, col: &mut Collector) {
         let key = differing.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>().join(" ");
         odd.entry(key).or_default().push(p);
     }
+    let steam = steam_roots(ctx.processes);
     for (spaces, processes) in odd.into_iter().take(10) {
         let strange = processes.iter().any(|p| is_odd_place(ctx, p.exe_path().unwrap_or("")));
+        // Steam and its games run in containers of Steam's own runtime
+        let of_steam = processes.iter().all(|p| p.uid != 0 && from_steam(p, &by_pid, &steam));
+        let severity = if of_steam { Severity::Low } else if strange { Severity::High } else { Severity::Medium };
         let first = processes[0];
         let lines: Vec<String> = processes.iter().take(6).map(|p| format!("PID {} UID {} exe={} cmdline=\"{}\"", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 160))).collect();
+        let title = if of_steam { "Steam runs programs in a space of their own" } else { "Programs run in an isolated space of their own" };
         col.push(
-            Finding::new(if strange { Severity::High } else { Severity::Medium }, MODULE, "PROC-NAMESPACE", format!("Programs run in an isolated space of their own: {}", first.display_name()))
+            Finding::new(severity, MODULE, "PROC-NAMESPACE", format!("{title}: {}", first.display_name()))
                 .evidence(format!("{spaces}\n{}{}", lines.join("\n"), if processes.len() > 6 { format!("\n… and {} more", processes.len() - 6) } else { String::new() }))
-                .description("These processes have their own user, network or mount namespace, and no known sandbox, container or service explains it. Any user may create such a space on Debian (unshare) to mount things or run a network that others do not see.")
+                .description(if of_steam {
+                    "These were started by your Steam client, which runs itself and its games in containers. Steam's folder can be written by any program of yours, so they are listed: check that the paths are Steam's."
+                } else {
+                    "These processes have their own user, network or mount namespace, and no known sandbox, container or service explains it. Any user may create such a space on Debian (unshare) to mount things or run a network that others do not see."
+                })
                 .verify(format!("ls -l /proc/{}/ns", first.pid))
                 .verify("lsns")
                 .verify(format!("pstree -asp {}", first.pid)),

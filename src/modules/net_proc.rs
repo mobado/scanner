@@ -4,7 +4,8 @@
 //! Reads /proc/net/{tcp,tcp6,udp,udp6} directly, converts hex to IP/port and
 //! maps socket inodes to /proc/<pid>/fd/* for the exact PID, UID and command line.
 
-use super::common::{clip, is_steam_path, is_steam_port, shq};
+use super::common::{clip, is_steam_port, shq};
+use super::sandboxes::is_steam_client;
 use super::{Collector, ScanCtx};
 use crate::error::{Result, ScanError};
 use crate::finding::{Finding, Severity};
@@ -475,9 +476,10 @@ fn check_socket_owner(
             && (cfg.report_loopback_listeners || !(ip_is_loopback(&s.local.ip()) || ip_is_link_local(&s.local.ip())))
         {
             let user_app = p.uid != 0 && p.exe_path().map(|e| ["/usr/", "/opt/", "/app/", "/snap/"].iter().any(|d| e.starts_with(d))).unwrap_or(false);
-            // the Steam client waiting on Steam's own ports (Remote Play) is ordinary
-            let steam = p.uid != 0 && p.exe_path().is_some_and(is_steam_path) && is_steam_port(s.local.port());
-            let severity = if steam { Severity::Info } else if user_app { Severity::Low } else { Severity::Medium };
+            // the Steam client waiting on Steam's own ports (Remote Play) is ordinary, but its
+            // folder is the user's: it stays in sight as Low
+            let steam = is_steam_port(s.local.port()) && is_steam_client(p, ctx.processes);
+            let severity = if steam || user_app { Severity::Low } else { Severity::Medium };
             col.push(
                 Finding::new(severity, MODULE, "NET-LISTEN-UNKNOWN", format!("Unknown listening port {}/{} ({})", s.proto.family(), s.local.port(), p.display_name()))
                     .evidence(format!("{}\nreachable from {}", proc_evidence(p, s), exposure(&s.local.ip())))
@@ -944,13 +946,22 @@ fn check_masquerade(ctx: &ScanCtx, col: &mut Collector) {
         }
         let a0_clean = argv0.trim_start_matches('-');
         // The whole argv[0] is the exe path (even with spaces in directory names) – nothing disguised.
-        // "/proc/self/exe" is how Chromium, Electron and Steam start their own helpers: it names
-        // no other program.
-        if Some(a0_clean) == p.exe_path() || basename(a0_clean) == exe_b || a0_clean == "/proc/self/exe" {
+        if Some(a0_clean) == p.exe_path() || basename(a0_clean) == exe_b {
             continue;
         }
         let a0_name = basename(a0_clean.split([':', ' ']).next().unwrap_or(a0_clean));
         let allowed = |n: &str| cfg.allowed_argv0_mismatch.iter().any(|a| a == n);
+        if a0_clean == "/proc/self/exe" {
+            if !self_started_helper(p, exe_b) && !allowed(exe_b) {
+                col.push(
+                    Finding::new(masquerade_level(p), MODULE, "NET-ARGV0-MASK", format!("Disguised process name: \"{}\" actually runs {exe_b}", p.comm))
+                        .evidence(format!("PID {} UID {} argv[0]=\"{}\" comm={} exe={}", p.pid, p.uid, clip(argv0, 120), p.comm, p.exe.as_deref().unwrap_or("?")))
+                        .description("The program calls itself \"/proc/self/exe\", as Chromium helpers do, but shows another name in process lists although it is not an installed program. Malware does this to look like something else.")
+                        .verify_all(proc_verify_basic(p.pid)),
+                );
+            }
+            continue;
+        }
         if allowed(exe_b) || allowed(a0_name) || allowed(&p.comm) || names_match(a0_name, exe_b) {
             continue;
         }
@@ -967,14 +978,32 @@ fn check_masquerade(ctx: &ScanCtx, col: &mut Collector) {
                 continue;
             }
         }
-        let sev = if p.uid == 0 || !p.socket_fds.is_empty() { Severity::High } else { Severity::Medium };
         col.push(
-            Finding::new(sev, MODULE, "NET-ARGV0-MASK", format!("Disguised process name: \"{a0_name}\" actually runs {exe_b}"))
+            Finding::new(masquerade_level(p), MODULE, "NET-ARGV0-MASK", format!("Disguised process name: \"{a0_name}\" actually runs {exe_b}"))
                 .evidence(format!("PID {} UID {} argv[0]=\"{}\" exe={}", p.pid, p.uid, clip(argv0, 120), p.exe.as_deref().unwrap_or("?")))
                 .description("The name in the command line does not match the binary in /proc/<pid>/exe. Many services change their title on purpose (add them to allowed_argv0_mismatch), but malware does it to look like system processes.")
                 .verify_all(proc_verify_basic(p.pid)),
         );
     }
+}
+
+/// A disguised program that runs as root or holds a connection weighs more.
+fn masquerade_level(p: &ProcInfo) -> Severity {
+    if p.uid == 0 || !p.socket_fds.is_empty() {
+        Severity::High
+    } else {
+        Severity::Medium
+    }
+}
+
+/// Is a program started as "/proc/self/exe" the helper it appears to be? Chromium, Electron and
+/// Steam start their own helpers so: the process then shows "exe" or the program's own name.
+/// Installed programs may call themselves something else.
+fn self_started_helper(p: &ProcInfo, exe_name: &str) -> bool {
+    // the kernel keeps 15 bytes of a name
+    let own = exe_name.as_bytes().starts_with(p.comm.as_bytes()) && (p.comm.len() == exe_name.len() || p.comm.len() == 15);
+    let installed = p.exe_path().is_some_and(|e| ["/usr/", "/opt/", "/app/"].iter().any(|d| e.starts_with(d)));
+    p.comm == "exe" || own || installed
 }
 
 /// Names that only real kernel threads have – a normal process with these names is trying to hide.

@@ -70,13 +70,57 @@ fn steam_and_its_runtime_are_not_alarms() {
     // 0.0.0.0:27036 listening, and 192.168.1.20:55467 → 198.51.100.68:27021
     let tcp = format!("header\n{}{}", line(0, "00000000:699C", "00000000:0000", "0A", 801), line(1, "1401A8C0:D8AB", "446433C6:698D", "01", 802));
     write(root, "/proc/net/tcp", &tcp);
+    // a game that Steam runs in the container
+    process(root, 4300, 4109, "/home/anna/.steam/debian-installation/steamapps/common/Game/game.x86_64", "game.x86_64", (900, 2, 901));
     let report = scan(root, &[ModuleId::NetProc, ModuleId::ProcAudit]);
     assert!(of(&report, "NET-ARGV0-MASK").is_empty(), "{:?}", of(&report, "NET-ARGV0-MASK"));
-    assert!(of(&report, "PROC-NAMESPACE").is_empty(), "{:?}", of(&report, "PROC-NAMESPACE"));
+    // nothing is hidden: Steam's containers and ports are listed quietly
+    let spaces = of(&report, "PROC-NAMESPACE");
+    assert!(!spaces.is_empty() && spaces.iter().all(|f| f.severity == Severity::Low && f.title.starts_with("Steam runs")), "{spaces:?}");
     for rule in ["NET-LISTEN-UNKNOWN", "NET-OUTBOUND-UNUSUAL"] {
         let found = of(&report, rule);
-        assert_eq!(found.iter().map(|f| f.severity).collect::<Vec<_>>(), vec![Severity::Info], "{rule}: {found:?}");
+        assert_eq!(found.iter().map(|f| f.severity).collect::<Vec<_>>(), vec![Severity::Low], "{rule}: {found:?}");
     }
+}
+
+#[test]
+fn a_back_door_in_steams_folder_is_not_trusted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    process(root, 1, 0, "/usr/lib/systemd/systemd", "init", (1, 2, 3));
+    // in Steam's folder, but not started by Steam: alone, or under a look-alike runtime
+    process(root, 50, 1, &format!("{STEAM}/x/pv-adverb"), "pv-adverb", (50, 51, 52));
+    process(root, 51, 50, &format!("{STEAM}/x/steamwebhelper"), "steamwebhelper", (50, 51, 52));
+    link(root, "/proc/51/fd/7", "socket:[700]");
+    // port 27015, listening on every network
+    write(root, "/proc/net/tcp", "header\n   0: 00000000:6987 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 700 1 0 100 0 0 10 0\n");
+    let report = scan(root, &[ModuleId::NetProc, ModuleId::ProcAudit]);
+    assert_eq!(of(&report, "PROC-NAMESPACE").iter().map(|f| f.severity).collect::<Vec<_>>(), vec![Severity::High]);
+    assert_eq!(of(&report, "NET-LISTEN-UNKNOWN").iter().map(|f| f.severity).collect::<Vec<_>>(), vec![Severity::Medium]);
+}
+
+#[test]
+fn proc_self_exe_only_names_the_program_itself() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    process(root, 1, 0, "/usr/lib/systemd/systemd", "init", (1, 2, 3));
+    let renamed = |pid: u32, exe: &str, comm: &str| {
+        process(root, pid, 1, exe, "/proc/self/exe --type=utility", (1, 2, 3));
+        write(root, &format!("/proc/{pid}/stat"), &format!("{pid} ({comm}) S 1 1 1 0 -1 4194560 0 0\n"));
+        write(root, &format!("/proc/{pid}/status"), &format!("Name:\t{comm}\nPPid:\t1\nUid:\t1000 1000 1000 1000\n"));
+    };
+    // what Chromium helpers look like, and an installed program that renames itself
+    renamed(70, "/home/anna/app/helper", "exe");
+    renamed(71, "/home/anna/app/a-very-long-program-name", "a-very-long-pro");
+    renamed(72, "/usr/lib/app/app", "worker");
+    // a program from the home folder that poses as the sound server
+    renamed(73, "/home/anna/.cache/x/miner", "pulseaudio");
+    renamed(74, "/home/anna/.cache/x/miner", "min");
+    let report = scan(root, &[ModuleId::NetProc]);
+    let found = of(&report, "NET-ARGV0-MASK");
+    let mut names: Vec<&str> = found.iter().filter_map(|f| f.title.split('"').nth(1)).collect();
+    names.sort();
+    assert_eq!(names, vec!["min", "pulseaudio"], "{found:?}");
 }
 
 #[test]

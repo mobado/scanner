@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.2
+* The Steam exceptions of 0.18.1 were too wide: Steam's folder can be written by any program of
+  yours. Ports and connections are now Low (visible), only for `steam`/`steamwebhelper` started
+  by Steam's main program; Steam's containers and games are listed as Low instead of hidden.
+  A program that merely lies in Steam's folder gets no exception.
+* `/proc/self/exe` is only accepted when the process shows `exe` or its own name, or is
+  installed; a home program posing as another is reported again.
+* The Python permission warning only mentions root for system folders; the package change
+  warning explains what a moved or restored system looks like.
+
 ## 0.18.1
 Fewer false alarms on a gaming desktop:
 * Steam's helpers started as `/proc/self/exe` are no longer "disguised process names".
