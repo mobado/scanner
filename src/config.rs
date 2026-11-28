@@ -474,6 +474,36 @@ pub fn user_whitelist_path() -> Option<std::path::PathBuf> {
     Some(std::path::Path::new(&home).join(".config/scanner/whitelist.toml"))
 }
 
+/// Why someone other than root can change what a whitelist file says, so that root must not
+/// obey it: it says which findings to keep quiet about.
+pub fn untrusted(path: &Path) -> Option<String> {
+    let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let why = crate::trust::follow(&full).err()?;
+    let advice = if full == Path::new(SYSTEM_WHITELIST) {
+        format!("Check what it says, then give it back to root: sudo chown root:root {SYSTEM_WHITELIST} && sudo chmod 0644 {SYSTEM_WHITELIST}")
+    } else {
+        format!("To use it as root, check what it says, then install it: sudo install -m 0644 {} {SYSTEM_WHITELIST}", crate::modules::common::shq(&full.display().to_string()))
+    };
+    Some(format!("The whitelist {} was not used, because {why} and another program could use it to hide findings. {advice}", full.display()))
+}
+
+/// Why this process must not use a whitelist: only as root does it matter who can change it.
+pub fn distrust(path: &Path) -> Option<String> {
+    if crate::sys::is_root() {
+        untrusted(path)
+    } else {
+        None
+    }
+}
+
+/// Load a whitelist for a scan: as root only one that nobody but root can change.
+pub fn load_whitelist(path: &Path) -> Result<Config, ScanError> {
+    match distrust(path) {
+        Some(why) => Err(ScanError::Config(why)),
+        None => Config::load(path),
+    }
+}
+
 /// Find the whitelist to use when none is given: the system one, else the personal one.
 pub fn default_whitelist_path() -> Option<std::path::PathBuf> {
     let sys = std::path::PathBuf::from(SYSTEM_WHITELIST);

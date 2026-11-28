@@ -89,7 +89,8 @@ src/
 │   │   └── history.rs  suspicious commands in shell histories
 │   └── common.rs       assessment of command lines (base64, /dev/tcp, curl|sh, nc -e …)
 ├── external_tools.rs   debsums -c and lynis; tools only from system folders, with a timeout
-├── trust.rs            only root may be able to change sudo and what runs as root
+├── trust.rs            only root may be able to change sudo, what runs as root and its whitelist
+├── saving.rs           root writes only where root alone can; elsewhere as the person
 ├── baseline.rs         baseline in JSON and diff (new SUID/SGID files = Critical)
 ├── autobaseline.rs     the automatic baseline: save, complete, take in verified upgrades
 ├── pkgverify.rs        was a changed file changed by apt? (dpkg checksums + dpkg.log)
@@ -118,7 +119,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.18.3-1_amd64.deb
+sudo apt install ./scanner_0.18.4-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -198,6 +199,23 @@ External tools (`ss`, `journalctl`, `debsums` and the others) are only taken fro
 `/usr/sbin`, `/usr/bin`, `/sbin` and `/bin`, also in a scan without root, and `$PATH`
 is set to those folders when the program starts.
 
+**What root writes and obeys:**
+
+- Reports, baselines, pictures and whitelists are written as root only where root alone
+  can change the whole path (such as `/var/log/scanner`). Anywhere else, such as your
+  home folder or `/tmp`, a link planted there could point at `/etc/passwd`, so the file is
+  written by a child process that has dropped to your user first: it belongs to you, and
+  the kernel's ordinary permissions apply. Your user is the one who ran `sudo`, otherwise
+  the owner of the folder. An old file there that belongs to root is not overwritten;
+  remove it first.
+- As root a whitelist is only read if nobody but root can change it. If
+  `/etc/scanner/whitelist.toml` is missing, your personal one is left alone (the defaults
+  are used, with a warning), and `--config` with such a file is an error. Check what it
+  says, then install it: `sudo install -m 0644 my.toml /etc/scanner/whitelist.toml`.
+
+`sh scripts/root-write-test.sh target/release/scanner` tries the planted-link attack in
+a private user namespace, without real root.
+
 **Exit codes:** `0` no high/critical findings · `1` at least one high · `2` at least one critical · `3` error.
 
 Every finding has *evidence* (paths, command lines, file lines) and *concrete
@@ -218,7 +236,8 @@ commands for manual verification*, e.g. `ls -l /proc/1234/exe`, `dpkg -S`,
   root (also used by the nightly timer), otherwise `~/.config/scanner/whitelist.toml` –
   and *Show hidden findings again* undoes it.
 * **Full scan + save report** runs everything (all modules, the deep PID scan and every
-  installed tool) and saves the report as JSON and text.* **Export** as text, JSON or a self-contained **HTML** page.
+  installed tool) and saves the report as JSON and text.
+* **Export** as text, JSON or a self-contained **HTML** page.
 * The **Baseline** box shows whether the automatic baseline is in use; *Save baseline* replaces
   it with the latest scan (for example after updates).
 
@@ -234,7 +253,8 @@ scanner --print-config | sudo tee /etc/scanner/whitelist.toml
 ```
 
 `/etc/scanner/whitelist.toml` is read automatically if it exists, otherwise
-`~/.config/scanner/whitelist.toml` (or pass `--config`).
+`~/.config/scanner/whitelist.toml` (or pass `--config`). As root only a whitelist that
+nobody but root can change is read, so a personal one is not used then.
 
 **The whitelist follows new versions.** New default entries (a newly recognised harmless
 program, a new PAM module …) apply as soon as the newer program loads your file, and

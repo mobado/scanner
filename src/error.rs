@@ -6,7 +6,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ScanError {
-    #[error("could not read {path}: {source}")]
+    #[error("could not read or write {path}: {source}")]
     Io {
         path: PathBuf,
         #[source]

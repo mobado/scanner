@@ -86,7 +86,8 @@ pub struct ScannerApp {
     shot: Option<Shot>,
     /// Result of "Restart with sudo" (runs in its own thread so the window does not freeze).
     sudo_result: Option<Receiver<Result<(), String>>>,
-    /// Why the scanner runs without root; stays in view.
+    /// A warning from the start (why the scanner runs without root, or why a whitelist was not
+    /// used); stays in view.
     sudo_note: Option<String>,
     /// Index of the finding shown in the detail panel.
     selected: Option<usize>,
@@ -416,7 +417,7 @@ impl ScannerApp {
             ui.horizontal(|ui| {
                 if ui.button("Load").clicked() {
                     let p = PathBuf::from(self.cfg_path.trim());
-                    self.status = match Config::load(&p) {
+                    self.status = match scanner::config::load_whitelist(&p) {
                         Ok(c) => {
                             self.cfg = c;
                             format!("Whitelist {} loaded.", p.display())
@@ -646,21 +647,9 @@ impl ScannerApp {
         let path = self.whitelist_target();
         let body = self.cfg.to_toml().map_err(|e| e.to_string())?;
         let text = format!("# Whitelist for scanner (Debian 13 \"Trixie\"), saved from the window.\n# Remove a line from ignore_findings / ignore_rules to show those findings again.\n\n{body}");
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(&path, text).map_err(|e| e.to_string())?;
+        // a personal whitelist is written as the person, also from the window running as root
+        scanner::saving::save(&path, text.as_bytes()).map_err(|e| e.to_string())?;
         scanner::config_update::write_record(&path).map_err(|e| e.to_string())?;
-        if !path.starts_with("/etc") {
-            give_to_sudo_user(&scanner::config_update::record_path(&path));
-        }
-        // A personal whitelist should stay owned by the person, also when saved through sudo.
-        if !path.starts_with("/etc") {
-            give_to_sudo_user(&path);
-            if let Some(dir) = path.parent() {
-                give_to_sudo_user(dir);
-            }
-        }
         self.cfg_path = path.display().to_string();
         Ok(path)
     }
@@ -905,11 +894,8 @@ impl ScannerApp {
         let Some(r) = &self.report else { return };
         let mut path = PathBuf::from(self.export_path.trim());
         path.set_extension("html");
-        self.status = match std::fs::write(&path, r.to_html()) {
-            Ok(()) => {
-                give_to_sudo_user(&path);
-                format!("The report was saved to {}", path.display())
-            }
+        self.status = match scanner::saving::save(&path, r.to_html().as_bytes()) {
+            Ok(()) => format!("The report was saved to {}", path.display()),
             Err(e) => format!("Could not save the report: {e}"),
         };
     }
@@ -921,15 +907,7 @@ impl ScannerApp {
             path.set_extension("txt");
         }
         let text = if json { r.to_json().map_err(|e| e.to_string()) } else { Ok(r.to_text(false)) };
-        let result = text.and_then(|t| {
-            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                give_to_sudo_user(parent);
-            }
-            std::fs::write(&path, t).map_err(|e| e.to_string())?;
-            give_to_sudo_user(&path);
-            Ok(())
-        });
+        let result = text.and_then(|t| scanner::saving::save(&path, t.as_bytes()).map_err(|e| e.to_string()));
         self.status = match result {
             Ok(()) => format!("The report was saved to {}", path.display()),
             Err(e) => format!("Could not save the report: {e}"),
@@ -1139,16 +1117,6 @@ fn default_report_path() -> PathBuf {
     PathBuf::from(home).join("scanner-report.json")
 }
 
-/// When the program runs through sudo: let the file be owned by whoever started it, so it
-/// can be read and removed without root.
-fn give_to_sudo_user(path: &std::path::Path) {
-    let uid = std::env::var("SUDO_UID").ok().and_then(|v| v.parse::<u32>().ok());
-    let gid = std::env::var("SUDO_GID").ok().and_then(|v| v.parse::<u32>().ok());
-    if uid.is_some() && scanner::sys::is_root() {
-        let _ = std::os::unix::fs::chown(path, uid, gid);
-    }
-}
-
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.label(RichText::new(title.to_uppercase()).small().strong().color(ACCENT));
     ui.add_space(2.0);
@@ -1184,12 +1152,7 @@ fn save_png(path: &std::path::Path, img: &egui::ColorImage) -> Result<(), String
     for px in &img.pixels {
         bytes.extend_from_slice(&px.to_srgba_unmultiplied());
     }
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-    }
-    image::save_buffer(path, &bytes, w as u32, h as u32, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())
+    crate::offscreen::save_rgba(path, &bytes, w as u32, h as u32)
 }
 
 pub fn run(cfg: Config, cfg_path: Option<PathBuf>, screenshot: Option<PathBuf>, sudo_note: Option<String>) -> anyhow::Result<()> {

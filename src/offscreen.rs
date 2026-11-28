@@ -147,11 +147,12 @@ pub fn save_picture(
             pixels.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
         }
     }
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    // written beside the target and renamed, so a half-written picture never appears there
-    let part = path.with_extension("part.png");
-    image::save_buffer(&part, &pixels, width, height, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
-    std::fs::rename(&part, path).map_err(|e| e.to_string())
+    save_rgba(path, &pixels, width, height)
+}
+
+/// Save RGBA pixels as a PNG, written like every other file the scanner saves.
+pub fn save_rgba(path: &std::path::Path, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::write_buffer_with_format(&mut png, pixels, width, height, image::ExtendedColorType::Rgba8, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    scanner::saving::save(path, png.get_ref()).map_err(|e| e.to_string())
 }

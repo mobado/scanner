@@ -124,7 +124,7 @@ pub fn write_record(file: &Path) -> Result<(), ScanError> {
     }
     let path = record_path(file);
     let json = serde_json::to_string_pretty(&all).map_err(|e| ScanError::Config(e.to_string()))?;
-    std::fs::write(&path, json).map_err(|e| ScanError::io(path, e))
+    crate::saving::save(&path, json.as_bytes()).map_err(|e| ScanError::io(path, e))
 }
 
 #[derive(Debug, PartialEq)]
@@ -167,14 +167,11 @@ fn edit_toml(text: &str, additions: &[(&str, Vec<Value>)]) -> Result<String, Sca
 /// Create or update a whitelist file with the defaults of this version.
 pub fn update_file(path: &Path) -> Result<Update, ScanError> {
     if !path.exists() {
-        if let Some(dir) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir).map_err(|e| ScanError::io(dir, e))?;
-        }
         let body = Config::default().to_toml()?;
         let text = format!(
             "# Whitelist for scanner (Debian 13 \"Trixie\").\n# New default entries are added automatically when scanner is upgraded; your own changes\n# are kept, and entries you remove stay removed. Set add_new_defaults = false to stop that.\n# '*' in allowed_suid and fs_exclude_paths matches one name (not '/').\n\n{body}"
         );
-        std::fs::write(path, text).map_err(|e| ScanError::io(path, e))?;
+        crate::saving::save(path, text.as_bytes()).map_err(|e| ScanError::io(path, e))?;
         write_record(path)?;
         return Ok(Update::Created);
     }
@@ -210,8 +207,8 @@ pub fn update_file(path: &Path) -> Result<Update, ScanError> {
     let mut backup = path.as_os_str().to_owned();
     backup.push(".bak");
     let backup = PathBuf::from(backup);
-    std::fs::write(&backup, &text).map_err(|e| ScanError::io(&backup, e))?;
-    std::fs::write(path, new_text).map_err(|e| ScanError::io(path, e))?;
+    crate::saving::save(&backup, text.as_bytes()).map_err(|e| ScanError::io(&backup, e))?;
+    crate::saving::save(path, new_text.as_bytes()).map_err(|e| ScanError::io(path, e))?;
     write_record(path)?;
     let entries = additions.iter().flat_map(|(f, v)| v.iter().map(move |v| format!("{f}: {}", show(v)))).collect();
     Ok(Update::Added { entries, backup })

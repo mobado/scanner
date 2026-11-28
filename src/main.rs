@@ -178,15 +178,23 @@ fn has_display() -> bool {
 }
 
 /// Load the whitelist: --config, else /etc/scanner/whitelist.toml, else
-/// ~/.config/scanner/whitelist.toml. Returns the path that was read, if any.
-fn load_config(path: &Option<PathBuf>) -> Result<(Config, Option<PathBuf>)> {
+/// ~/.config/scanner/whitelist.toml. Returns the path that was read, if any, and a warning when
+/// root left a whitelist alone because others can change it (one given with --config is an error
+/// then, since the scan was asked to use it).
+fn load_config(path: &Option<PathBuf>) -> Result<(Config, Option<PathBuf>, Option<String>)> {
+    if path.is_none() {
+        if let Some(why) = scanner::config::default_whitelist_path().and_then(|p| scanner::config::distrust(&p)) {
+            eprintln!("scanner: {why}");
+            return Ok((Config::default(), None, Some(why)));
+        }
+    }
     let chosen = path.clone().or_else(scanner::config::default_whitelist_path);
     match chosen {
         Some(p) => {
-            let cfg = Config::load(&p).with_context(|| format!("could not read the whitelist {}", p.display()))?;
-            Ok((cfg, Some(p)))
+            let cfg = scanner::config::load_whitelist(&p).with_context(|| format!("could not read the whitelist {}", p.display()))?;
+            Ok((cfg, Some(p), None))
         }
-        None => Ok((Config::default(), None)),
+        None => Ok((Config::default(), None, None)),
     }
 }
 
@@ -197,6 +205,19 @@ fn real_main(cli: Cli) -> Result<u8> {
     }
     if let Some(path) = &cli.update_config {
         use scanner::config_update::{update_file, Update};
+        // A whitelist where someone else can change the folder is updated as that user, so that
+        // root neither reads nor writes through a link planted there.
+        if let Some(user) = scanner::saving::writer(path)? {
+            use std::os::unix::process::CommandExt;
+            let status = std::process::Command::new("/proc/self/exe")
+                .arg("--update-config")
+                .arg(std::path::absolute(path)?)
+                .gid(user.gid)
+                .uid(user.uid)
+                .status()
+                .with_context(|| format!("could not update {} as user id {}", path.display(), user.uid))?;
+            return Ok(status.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(3));
+        }
         match update_file(path).with_context(|| format!("could not update {}", path.display()))? {
             Update::Created => println!("Whitelist created: {}", path.display()),
             Update::Added { entries, backup } => {
@@ -250,8 +271,9 @@ fn real_main(cli: Cli) -> Result<u8> {
     if use_gui {
         #[cfg(feature = "gui")]
         {
-            let (cfg, cfg_path) = load_config(&cli.config)?;
-            gui::run(cfg, cfg_path, cli.screenshot.clone(), sudo_note)?;
+            let (cfg, cfg_path, warning) = load_config(&cli.config)?;
+            // both stay in view at the top of the window
+            gui::run(cfg, cfg_path, cli.screenshot.clone(), sudo_note.or(warning))?;
             return Ok(0);
         }
         #[cfg(not(feature = "gui"))]
@@ -291,7 +313,7 @@ fn parse_opts(cli: &Cli) -> Result<ScanOptions> {
 }
 
 fn cli_scan(cli: &Cli) -> Result<u8> {
-    let (cfg, _) = load_config(&cli.config)?;
+    let (cfg, _, warning) = load_config(&cli.config)?;
     let opts = parse_opts(cli)?;
     if !cli.root.is_dir() {
         bail!("the root {} is not a directory", cli.root.display());
@@ -305,6 +327,7 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
             eprintln!("» {msg}");
         }
     });
+    report.notes.extend(warning);
     if cli.baseline_diff.is_some() {
         if report.baseline_compared.is_none() {
             bail!("the baseline could not be compared");
@@ -321,7 +344,7 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
     let text = if cli.summary { report.summary_line() } else if cli.html { report.to_html() } else if cli.json { report.to_json()? } else { report.to_text(color) };
     match &cli.output {
         Some(path) => {
-            std::fs::write(path, &text).with_context(|| format!("could not write {}", path.display()))?;
+            scanner::saving::save(path, text.as_bytes()).with_context(|| format!("could not write {}", path.display()))?;
             eprintln!(
                 "Report saved: {} – {} critical, {} high, {} medium, {} low, {} info",
                 path.display(),

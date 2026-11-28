@@ -283,7 +283,8 @@ pub fn run_self_test(progress: &dyn Fn(&str)) -> Result<SelfTestResult> {
     progress("Scanning the sandbox and saving a baseline …");
     let first = run_scan(&sys, &cfg, &opts, &|_| {});
     let baseline_path = dir.path().join("baseline.json");
-    Baseline::from_report(&first).save(&baseline_path)?;
+    // written directly: the folder is this run's own, also when it runs as root
+    fs::write(&baseline_path, serde_json::to_vec(&Baseline::from_report(&first))?)?;
 
     progress("Adding new artefacts and comparing with the baseline …");
     add_post_baseline_artifacts(&root)?;

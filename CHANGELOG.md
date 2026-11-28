@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.18.4
+Another program of yours could get root through files the scanner saved as root:
+* A link planted as `~/scanner-report.json` (or any report, baseline, screenshot or whitelist
+  path) made root overwrite the file it pointed to, and the window then gave it to you, so
+  `/etc/passwd` could be taken over. Root now writes only where root alone can change the whole
+  path; everything else is written by a child process that has dropped to your user first, and
+  nothing is handed over with `chown` any more.
+* `--update-config` on a file in such a place runs entirely as that user.
+* As root, a whitelist that others can change is no longer read (for example your personal one
+  when `/etc/scanner/whitelist.toml` is missing): the defaults are used with a warning, and
+  `--config` with such a file is an error.
+* Files in your home folder that an older version left owned by root are not overwritten;
+  remove them first.
+
 ## 0.18.3
 Another program of yours could use the root question to steal your password or get root:
 * sudo is only `/usr/bin/sudo`, checked to be owned by root, set-uid and not writable by others.

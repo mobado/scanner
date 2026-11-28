@@ -443,7 +443,7 @@ impl Baseline {
 
     pub fn save(&self, path: &Path) -> Result<(), ScanError> {
         let json = serde_json::to_string_pretty(self).map_err(|e| ScanError::Baseline(e.to_string()))?;
-        std::fs::write(path, json).map_err(|e| ScanError::io(path, e))
+        crate::saving::save(path, json.as_bytes()).map_err(|e| ScanError::io(path, e))
     }
 
     pub fn load(path: &Path) -> Result<Baseline, ScanError> {

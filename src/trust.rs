@@ -1,10 +1,13 @@
-//! What the scanner runs with root rights must be something only root can change: `sudo` itself
-//! and the program that is started through it. Otherwise any program of the user could put its
-//! own code in their place and get root the next time the scanner asks for it.
+//! What the scanner runs with root rights, or obeys as root, must be something only root can
+//! change: `sudo` itself, the program that is started through it and the whitelist. Otherwise any
+//! program of the user could put its own code in their place and get root the next time the
+//! scanner asks for it. The same test decides who writes a file (see [`crate::saving`]).
 
 use crate::modules::persistence::python::{parse_acl, AclEntry};
+use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Does a group have anyone besides root: a listed member, an account with it as main group, or
 /// this process? A group that isn't in `/etc/group` counts as having others. Debian lets the
@@ -48,32 +51,82 @@ pub fn judge(place: &str, uid: u32, gid: u32, mode: u32, acl: &[AclEntry], other
         .next()
 }
 
-/// The first reason why someone other than root could change `path`: the file itself or any
-/// folder above it, also along the links it goes through.
-pub fn changeable_by_others(path: &Path) -> Option<String> {
+/// The names in a path, with `..` kept.
+fn parts(path: &Path) -> impl DoubleEndedIterator<Item = OsString> + '_ {
+    let kept: Vec<OsString> = path.components().filter(|c| matches!(c, Component::Normal(_) | Component::ParentDir)).map(|c| c.as_os_str().to_os_string()).collect();
+    kept.into_iter()
+}
+
+/// Follows `path` the way the kernel does, through every link, and judges `/`, each folder and
+/// the file it ends in. `Ok(true)`: all of it exists and only root can change it. `Ok(false)`:
+/// the same up to a part that does not exist yet, which therefore only root can create.
+/// `Err`: why someone else can change where the path leads or what is there.
+pub fn follow(path: &Path) -> Result<bool, String> {
+    let shown = path.display();
     if !path.is_absolute() {
-        return Some(format!("{} is not a full path", path.display()));
+        return Err(format!("{shown} is not a full path"));
     }
-    let Ok(real) = std::fs::canonicalize(path) else { return Some(format!("{} cannot be checked", path.display())) };
     let group = std::fs::read_to_string("/etc/group").unwrap_or_default();
     let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
     let own = own_groups();
-    // the folders as written (a link in a folder others can write to can be swapped) and the
-    // real ones
-    for place in path.ancestors().skip(1).chain(real.ancestors()) {
-        let shown = place.display().to_string();
-        let Ok(meta) = std::fs::metadata(place) else { return Some(format!("{shown} cannot be checked")) };
+    let check = |place: &Path| -> Result<(), String> {
+        let name = place.display().to_string();
+        let meta = std::fs::symlink_metadata(place).map_err(|_| format!("{name} cannot be checked"))?;
         let mut value = [0u8; 4096];
         let acl = rustix::fs::getxattr(place, "system.posix_acl_access", &mut value[..])
             .ok()
             .and_then(|length| parse_acl(value.get(..length)?))
             .unwrap_or_default();
         let others = group_has_others(meta.gid(), &group, &passwd, &own);
-        if let Some(why) = judge(&shown, meta.uid(), meta.gid(), meta.mode(), &acl, others) {
-            return Some(why);
+        judge(&name, meta.uid(), meta.gid(), meta.mode(), &acl, others).map_or(Ok(()), Err)
+    };
+    let mut here = PathBuf::from("/");
+    check(&here)?;
+    let mut rest: VecDeque<OsString> = parts(path).collect();
+    let mut links = 0;
+    while let Some(part) = rest.pop_front() {
+        if part == ".." {
+            here.pop();
+            continue;
+        }
+        let next = here.join(&part);
+        match std::fs::symlink_metadata(&next) {
+            // a link is as safe as the folder it lies in, which has been judged; where it leads
+            // is followed
+            Ok(meta) if meta.file_type().is_symlink() => {
+                links += 1;
+                let target = std::fs::read_link(&next).ok().filter(|_| links <= 40).ok_or_else(|| format!("{shown} cannot be checked"))?;
+                if target.is_absolute() {
+                    here = PathBuf::from("/");
+                }
+                for part in parts(&target).rev() {
+                    rest.push_front(part);
+                }
+            }
+            Ok(_) => {
+                check(&next)?;
+                here = next;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if rest.iter().any(|p| p == "..") {
+                    return Err(format!("{shown} goes back out of a folder that does not exist"));
+                }
+                return Ok(false);
+            }
+            Err(_) => return Err(format!("{} cannot be checked", next.display())),
         }
     }
-    None
+    Ok(true)
+}
+
+/// The first reason why someone other than root could change `path`: the file itself or any
+/// folder above it, also along the links it goes through.
+pub fn changeable_by_others(path: &Path) -> Option<String> {
+    match follow(path) {
+        Ok(true) => None,
+        Ok(false) => Some(format!("{} cannot be checked", path.display())),
+        Err(why) => Some(why),
+    }
 }
 
 /// Why this `sudo` must not be used: it has to be root's own set-uid program.

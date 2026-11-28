@@ -34,6 +34,10 @@ The password is only asked for when
 (never one found in PATH) is root's set\-uid program, and only root can change the scanner and
 every folder above it; otherwise the scanner says why and runs without root. External tools are
 only taken from /usr/sbin, /usr/bin, /sbin and /bin.
+.PP
+As root, files are only written as root where root alone can change the whole path; elsewhere,
+such as a home folder or /tmp, they are written as the user who ran sudo (else the owner of the
+folder). A whitelist that others can change is not read as root.
 .SH OPTIONS
 .TP
 .B \-\-cli
