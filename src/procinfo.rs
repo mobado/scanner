@@ -81,22 +81,45 @@ impl ProcInfo {
 
     /// Code this process runs from places the user's programs can write to, or from memory (see
     /// [`crate::modules::persistence::keys::odd_libraries`]): a library slipped into it, a plugin,
-    /// `LD_PRELOAD`. Not the program file itself, nor an AppImage's own mounted files. Empty when
-    /// the maps cannot be read.
-    pub fn foreign_code(&self, sys: &SysRoot) -> Vec<String> {
-        let Ok(maps) = sys.read_string(format!("/proc/{}/maps", self.pid)) else { return Vec::new() };
+    /// `LD_PRELOAD`. Not the program file itself, nor an AppImage's own mounted files, a
+    /// browser's video module where that browser puts it, or Qt's compiled QML in the programs
+    /// that use it. `None` when the memory maps cannot be read: nothing is known then.
+    pub fn foreign_code(&self, sys: &SysRoot) -> Option<Vec<String>> {
+        let (mut code, maps) = self.code_from_writable_places(sys)?;
+        // the name of a memory file is chosen by whoever makes it, so only a few installed
+        // programs that compile QML may run memory files with Qt's name
+        let installed = self.exe_path().is_some_and(|e| e.starts_with("/usr/") && !e.starts_with("/usr/local/"));
+        let compiles_qml = installed && self.is_program(&QML_PROGRAMS) && crate::modules::persistence::keys::loads_qml(&maps);
+        let module = browser_module_of(self, sys);
+        code.retain(|path| {
+            let file = path.strip_suffix(" (deleted)").unwrap_or(path);
+            !(compiles_qml && path.starts_with("/memfd:JITCode:")) && !module.as_ref().is_some_and(|m| m.accepts(file))
+        });
+        Some(code)
+    }
+
+    /// [`Self::foreign_code`] without the exceptions: for programs that handle keys and for
+    /// whoever answers as the password wallet.
+    pub fn foreign_code_strict(&self, sys: &SysRoot) -> Option<Vec<String>> {
+        self.code_from_writable_places(sys).map(|(code, _)| code)
+    }
+
+    fn code_from_writable_places(&self, sys: &SysRoot) -> Option<(Vec<String>, String)> {
+        // every running program has memory mappings: nothing to read means nothing was seen
+        let maps = sys.read_string(format!("/proc/{}/maps", self.pid)).ok().filter(|m| !m.trim().is_empty())?;
         let exe = self.exe_path();
         let own_mount = exe.and_then(|e| e.strip_prefix("/tmp/.mount_")?.split_once('/')).map(|(name, _)| format!("/tmp/.mount_{name}/"));
         let mut code = crate::modules::persistence::keys::odd_libraries(&maps);
         code.retain(|path| Some(path.strip_suffix(" (deleted)").unwrap_or(path)) != exe && !own_mount.as_deref().is_some_and(|m| path.starts_with(m)));
-        code
+        Some((code, maps))
     }
 
-    /// [`Self::is_program`], and the process runs no foreign code: an installed program with such
-    /// code in it does that code's bidding, whatever its file is. Use this for every exception in
-    /// the sensitive checks (saved passwords, the wallet, the keyboard).
+    /// [`Self::is_program`], and the process is seen to run no foreign code: an installed program
+    /// with such code in it does that code's bidding, whatever its file is. One whose code cannot
+    /// be seen does not count as clean either. Use this for every exception in the sensitive
+    /// checks (saved passwords, the wallet, the keyboard).
     pub fn is_clean_program<S: AsRef<str>>(&self, ctx: &ScanCtx, names: &[S]) -> bool {
-        self.is_program(names) && self.foreign_code(ctx.sys).is_empty()
+        self.is_program(names) && self.foreign_code(ctx.sys).is_some_and(|code| code.is_empty())
     }
 
     /// Every name the process goes by: exe name, comm and argv[0]. The process chooses the last
@@ -124,6 +147,55 @@ impl ProcInfo {
 
 pub fn basename(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
+}
+
+/// Installed programs whose QML is compiled to machine code in memory files while they run.
+const QML_PROGRAMS: [&str; 17] = [
+    "plasmashell", "kwin_wayland", "kwin_x11", "systemsettings", "krunner", "kscreenlocker_greet",
+    "ksmserver-logout-greeter", "ksplashqml", "plasma-discover", "plasma-systemmonitor", "kinfocenter",
+    "plasmawindowed", "spectacle", "sddm-greeter", "sddm-greeter-qt6", "xdg-desktop-portal-kde",
+    "polkit-kde-authentication-agent-1",
+];
+
+/// Browsers that fetch the Widevine module (protected video) into their profile and load it:
+/// (program file, profile folder in the user's home).
+const BROWSER_PROFILES: [(&str, &str); 9] = [
+    ("/opt/google/chrome/chrome", ".config/google-chrome"),
+    ("/opt/google/chrome-beta/chrome", ".config/google-chrome-beta"),
+    ("/opt/google/chrome-unstable/chrome", ".config/google-chrome-unstable"),
+    // the Flatpak of Google Chrome
+    ("/app/extra/chrome", ".var/app/com.google.Chrome/config/google-chrome"),
+    ("/usr/lib/chromium/chromium", ".config/chromium"),
+    ("/opt/brave.com/brave/brave", ".config/BraveSoftware/Brave-Browser"),
+    ("/opt/microsoft/msedge/msedge", ".config/microsoft-edge"),
+    ("/opt/vivaldi/vivaldi-bin", ".config/vivaldi"),
+    ("/opt/vivaldi-snapshot/vivaldi-bin", ".config/vivaldi-snapshot"),
+];
+
+/// Where one browser, run by one user, keeps its video module.
+pub struct BrowserModule {
+    /// The folder holding one sub-folder per version.
+    pub folder: String,
+}
+
+impl BrowserModule {
+    /// Is `path` exactly `<folder>/<version>/_platform_specific/linux_<arch>/libwidevinecdm.so`?
+    pub fn accepts(&self, path: &str) -> bool {
+        let Some(rest) = path.strip_prefix(&self.folder).and_then(|r| r.strip_prefix('/')) else { return false };
+        let parts: Vec<&str> = rest.split('/').collect();
+        matches!(parts.as_slice(), [version, "_platform_specific", platform, "libwidevinecdm.so"]
+            if !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.') && version.starts_with(|c: char| c.is_ascii_digit())
+            && ["linux_x64", "linux_arm64", "linux_arm"].contains(platform))
+    }
+}
+
+/// The video module folder of this process, if it is one of those browsers: its own profile in
+/// the home of the user it runs as.
+pub fn browser_module_of(p: &ProcInfo, sys: &SysRoot) -> Option<BrowserModule> {
+    let exe = p.exe_path()?;
+    let profile = BROWSER_PROFILES.iter().find(|(program, _)| *program == exe)?.1;
+    let home = read_accounts(sys).into_iter().find(|a| a.uid == p.uid)?.home;
+    (home.len() > 1).then(|| BrowserModule { folder: format!("{}/{profile}/WidevineCdm", home.trim_end_matches('/')) })
 }
 
 /// Interpreters and shells: what they do is decided by the script or command they are given.

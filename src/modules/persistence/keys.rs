@@ -182,34 +182,42 @@ const KEY_PROGRAMS: [&str; 14] = ["ssh", "ssh-agent", "ssh-add", "sshd", "gpg", 
 /// Places the user's own programs can write to, and memory files that never were on a disk.
 const WRITABLE_PLACES: [&str; 7] = ["/tmp/", "/var/tmp/", "/dev/shm/", "/run/user/", "/home/", "/root/", "/memfd:"];
 
-/// Code in a `/proc/<pid>/maps` listing that runs from such a place: every executable mapping,
-/// whatever the file is called. Qt compiles QML to machine code in memory files it names
-/// "JITCode:…"; those are left out in a program that has the installed Qt QML library loaded.
-pub fn odd_libraries(maps: &str) -> Vec<String> {
+/// The files of the executable mappings in a `/proc/<pid>/maps` listing.
+fn executable_files(maps: &str) -> impl Iterator<Item = &str> {
     // address perms offset dev inode path
-    let code = || {
-        maps.lines().filter_map(|line| {
-            let executable = line.split_whitespace().nth(1).is_some_and(|rights| rights.contains('x'));
-            line.find('/').filter(|_| executable).map(|at| &line[at..])
-        })
-    };
-    let qml = code().any(|path| (path.starts_with("/usr/") || path.starts_with("/app/")) && path.rsplit('/').next().is_some_and(|name| name.starts_with("libQt") && name.contains("Qml.so")));
-    let out: BTreeSet<String> = code()
-        .filter(|path| WRITABLE_PLACES.iter().any(|place| path.starts_with(place)) && !(qml && path.starts_with("/memfd:JITCode:")))
-        .map(str::to_string)
-        .collect();
+    maps.lines().filter_map(|line| {
+        let executable = line.split_whitespace().nth(1).is_some_and(|rights| rights.contains('x'));
+        line.find('/').filter(|_| executable).map(|at| &line[at..])
+    })
+}
+
+/// Code in a `/proc/<pid>/maps` listing that runs from such a place: every executable mapping,
+/// whatever the file is called. No exceptions: those depend on the program
+/// ([`crate::procinfo::ProcInfo::foreign_code`]).
+pub fn odd_libraries(maps: &str) -> Vec<String> {
+    let out: BTreeSet<String> = executable_files(maps).filter(|path| WRITABLE_PLACES.iter().any(|place| path.starts_with(place))).map(str::to_string).collect();
     out.into_iter().collect()
 }
 
+/// Is the installed Qt QML library among the code a process runs?
+pub fn loads_qml(maps: &str) -> bool {
+    executable_files(maps).any(|path| path.starts_with("/usr/") && path.rsplit('/').next().is_some_and(|name| name.starts_with("libQt") && name.contains("Qml.so")))
+}
+
 pub(crate) fn check_loaded(ctx: &ScanCtx, col: &mut Collector) {
-    for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread()) {
+    let mut unread = Vec::new();
+    for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread() && p.state != 'Z') {
         let name = p.display_name();
         // here a name picks what to look at, so every name counts: a library inside a key
         // program could rename the process to get out of sight
         if !p.candidate_names().iter().any(|n| KEY_PROGRAMS.contains(&n.as_str())) {
             continue;
         }
-        let odd = p.foreign_code(ctx.sys);
+        // key programs get no exceptions: any such code counts
+        let Some(odd) = p.foreign_code_strict(ctx.sys) else {
+            unread.push(format!("{name} (PID {})", p.pid));
+            continue;
+        };
         if !odd.is_empty() {
             col.push(
                 Finding::new(Severity::High, crate::modules::proc_audit::MODULE, "PROC-KEY-LIBRARY", format!("{name} runs code from an odd place"))
@@ -218,6 +226,9 @@ pub(crate) fn check_loaded(ctx: &ScanCtx, col: &mut Collector) {
                     .verify(format!("grep -E ' r.x. .*(/tmp/|/shm/|/run/user/|/home/|/root/|/memfd:)' /proc/{}/maps", p.pid)),
             );
         }
+    }
+    if !unread.is_empty() {
+        col.note(format!("Code in key programs: NOT CHECKED for {} process(es) whose memory maps could not be read (other users' without root, or they ended): {}", unread.len(), clip(&unread.join(", "), 400)));
     }
 }
 

@@ -163,10 +163,12 @@ fn check_injection(ctx: &ScanCtx, col: &mut Collector) {
         if !typing && !uinput || expected {
             continue;
         }
-        // an expected user of the virtual keyboard that runs foreign code is no longer excused
-        let tainted = uinput && !typing && system && p.is_program(&UINPUT_USERS);
+        // an expected user of the virtual keyboard that runs foreign code is no longer excused;
+        // nor is one whose code cannot be seen
+        let unexcused = (uinput && !typing && system && p.is_program(&UINPUT_USERS)).then(|| p.foreign_code(ctx.sys));
+        let tainted = unexcused.as_ref().is_some_and(|code| code.is_some());
         let severity = if odd || tainted { Severity::High } else if !system || uinput { Severity::Medium } else { Severity::Low };
-        let foreign = if tainted { foreign_note(ctx, p) } else { String::new() };
+        let foreign = unexcused.as_ref().map(foreign_note).unwrap_or_default();
         finding(col, severity, "DESK-INPUT-INJECT", format!("A program can type and click for you: {name}"),
             format!("PID {} UID {} exe={}\ncmdline=\"{}\"{}{foreign}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), if uinput { "\nholds /dev/uinput (a virtual keyboard)" } else { "" }),
             "It can send key presses and mouse clicks, also under Wayland. Automation and remote-control tools do this; a program you do not know could run commands as you. A tool written in a script language runs as python3 or similar and cannot be recognised by its file: hide the finding if it is yours.",&format!("ls -l /proc/{}/fd | grep uinput", p.pid));

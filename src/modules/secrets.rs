@@ -6,7 +6,9 @@ use super::common::{analyze_command, clip, risky_home_place, shq};
 use super::{Collector, ScanCtx};
 use crate::config::Config;
 use crate::finding::{Finding, Severity};
-use crate::procinfo::{is_program_path, ProcInfo};
+use crate::modules::persistence::keys::odd_libraries;
+use crate::procinfo::{browser_module_of, is_program_path, ProcInfo};
+use crate::sys::sha256_file;
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
 
@@ -43,9 +45,49 @@ fn rightful(store: &str) -> &'static [&'static str] {
     }
 }
 
-/// Lines for the evidence of a program that lost an exception: the foreign code it runs.
-pub(crate) fn foreign_note(ctx: &ScanCtx, p: &ProcInfo) -> String {
-    format!("\nruns code from a place your programs can write to, so its name earns it nothing:\n{}", clip(&p.foreign_code(ctx.sys).join("\n"), 600))
+/// Lines for the evidence of an expected program that lost its exception: the foreign code it
+/// runs (`Some`), or that its code could not be seen (`None`).
+pub(crate) fn foreign_note(code: &Option<Vec<String>>) -> String {
+    match code {
+        Some(files) => format!("\nruns code from a place your programs can write to, so its name earns it nothing:\n{}", clip(&files.join("\n"), 600)),
+        None => "\nits memory maps could not be read (it may have ended), so it cannot be shown to run only its own code".into(),
+    }
+}
+
+/// How much more an expected program weighs without its exception: `seen` when foreign code was
+/// found in it, `unseen` when nothing could be seen.
+pub(crate) fn without_exception(code: &Option<Vec<String>>, seen: Severity, unseen: Severity) -> Severity {
+    if code.is_some() {
+        seen
+    } else {
+        unseen
+    }
+}
+
+/// Browsers running the video module from the person's profile: accepted, and shown, since any
+/// program of theirs could put its own file there.
+fn check_browser_modules(ctx: &ScanCtx, col: &mut Collector) {
+    // module path → the processes running it
+    let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread()) {
+        let Some(module) = browser_module_of(p, ctx.sys) else { continue };
+        let Ok(maps) = ctx.sys.read_string(format!("/proc/{}/maps", p.pid)) else { continue };
+        for path in odd_libraries(&maps) {
+            if module.accepts(path.strip_suffix(" (deleted)").unwrap_or(&path)) {
+                found.entry(path).or_default().push(format!("{} (PID {})", p.display_name(), p.pid));
+            }
+        }
+    }
+    for (path, processes) in found {
+        let file = path.strip_suffix(" (deleted)").unwrap_or(&path);
+        let hash = sha256_file(&ctx.sys.path(file), 128 * 1024 * 1024).map(|h| format!("\nsha256 {h}")).unwrap_or_default();
+        col.push(
+            Finding::new(Severity::Info, super::proc_audit::MODULE, "PROC-BROWSER-MODULE", format!("A browser runs the video module from your profile: {file}"))
+                .evidence(format!("{path}{hash}\n{} process(es): {}", processes.len(), clip(&processes.join(", "), 300)))
+                .description("Chrome and browsers built like it download the Widevine module for protected video (Netflix, Spotify) into your profile and run it. It is accepted at exactly this place in the browser's own profile. A program of yours could replace the file there, so it is listed: it should change only when the browser updates it.")
+                .verify(format!("ls -l --time-style=full-iso {}", shq(file))),
+        );
+    }
 }
 
 /// How worrying it is that this program has the store open. `None` for its rightful users, who
@@ -82,11 +124,11 @@ fn check_open_stores(ctx: &ScanCtx, col: &mut Collector) {
                 Some(_) => true,
             };
             let severity = match judged {
-                _ if !clean => Severity::Critical,
+                _ if !clean => without_exception(&p.foreign_code(ctx.sys), Severity::Critical, Severity::High),
                 Some(severity) => severity,
                 None => continue,
             };
-            let foreign = if clean { String::new() } else { foreign_note(ctx, p) };
+            let foreign = if clean { String::new() } else { foreign_note(&p.foreign_code(ctx.sys)) };
             col.push(
                 Finding::new(severity, super::proc_audit::MODULE, "PROC-SECRET-ACCESS", format!("{} has the {store} open", p.display_name()))
                     .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\n{}{foreign}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), clip(&files.into_iter().collect::<Vec<_>>().join("\n"), 600)))
@@ -298,6 +340,7 @@ fn check_environments(ctx: &ScanCtx, col: &mut Collector) {
 
 pub(crate) fn check_processes(ctx: &ScanCtx, col: &mut Collector) {
     check_open_stores(ctx, col);
+    check_browser_modules(ctx, col);
     check_environments(ctx, col);
 }
 

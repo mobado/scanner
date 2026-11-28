@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.3
+* Chrome and browsers like it load the Widevine video module from the profile in the home
+  folder, which 0.19.2 would have reported as Critical code in the process holding the cookies.
+  It is now accepted at exactly that path, for that browser and user, and listed as
+  `PROC-BROWSER-MODULE` (Info). Not yet tried on a computer where Chrome has downloaded it.
+* A program whose memory maps cannot be read no longer counts as clean (its finding says it
+  could not be checked); key programs that could not be read are listed as **NOT CHECKED**.
+* Qt's `JITCode:` memory files are only accepted in installed programs known to compile QML,
+  never for key programs or the password wallet.
+
 ## 0.19.2
 * An installed program with foreign code in it no longer gets its exception in the sensitive
   checks (saved passwords and cookies, who answers as the wallet, keyboard readers, the virtual

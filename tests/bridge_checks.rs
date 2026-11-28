@@ -52,6 +52,8 @@ fn fake_process(root: &Path, pid: u32, ppid: u32, exe: &str, cmdline: &str) {
     write(root, &format!("/proc/{pid}/stat"), &format!("{pid} ({name}) S {ppid} 1 1 0 -1 4194560 0 0\n"));
     write(root, &format!("/proc/{pid}/status"), &format!("Name:\t{name}\nPPid:\t{ppid}\nUid:\t1000 1000 1000 1000\n"));
     write(root, &format!("/proc/{pid}/cmdline"), cmdline);
+    // a program that runs only installed code
+    write(root, &format!("/proc/{pid}/maps"), "7f00-7f01 r-xp 0 08:01 1 /usr/lib/x86_64-linux-gnu/libc.so.6\n");
     link(root, &format!("/proc/{pid}/exe"), exe);
 }
 

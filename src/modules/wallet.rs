@@ -5,7 +5,7 @@
 
 use super::common::{clip, risky_home_place};
 use super::proc_audit::MODULE;
-use super::secrets::foreign_note;
+use super::secrets::{foreign_note, without_exception};
 use super::{Collector, ScanCtx};
 use crate::config::Config;
 use crate::external_tools::{find_binary, run_capture};
@@ -178,9 +178,14 @@ pub fn judge_owner(cfg: &Config, name: &str, exe: &str) -> Option<Severity> {
 pub fn judge_holder(ctx: &ScanCtx, uid: u32, name: &str, p: &ProcInfo) -> Option<Finding> {
     let judged = judge_owner(ctx.cfg, name, p.exe_path().unwrap_or(""));
     let usual = OWNERS.iter().find(|o| o.0 == name)?.1;
-    let clean = judged.is_some() || p.is_clean_program(ctx, usual);
+    // whoever holds a name of the password wallet gets no exceptions for the code it runs
+    let code = if name == "org.freedesktop.portal.Desktop" { p.foreign_code(ctx.sys) } else { p.foreign_code_strict(ctx.sys) };
+    let clean = judged.is_some() || code.as_ref().is_some_and(|c| c.is_empty()) && p.is_program(usual);
     let (severity, title, foreign) = match judged {
-        _ if !clean => (Severity::High, format!("The program answering as {name} runs foreign code: {}", p.display_name()), foreign_note(ctx, p)),
+        _ if !clean => {
+            let what = if code.is_some() { "runs foreign code" } else { "cannot be checked" };
+            (without_exception(&code, Severity::High, Severity::Medium), format!("The program answering as {name} {what}: {}", p.display_name()), foreign_note(&code))
+        }
         Some(severity) => (severity, format!("An unusual program answers as {name}: {}", p.display_name()), String::new()),
         None => return None,
     };
@@ -250,9 +255,14 @@ pub(crate) fn watch(ctx: &ScanCtx, col: &mut Collector) {
                 continue;
             };
             let (mut severity, mut why) = judge_caller(ctx.cfg, &p.candidate_names(), p.exe.as_deref().unwrap_or(""));
-            // being installed counts for nothing while the program runs foreign code
-            if severity == Severity::Low && !p.foreign_code(ctx.sys).is_empty() {
-                (severity, why) = (Severity::High, "an installed program that runs code from a place your programs can write to");
+            // being installed counts for nothing while the program runs foreign code, or when
+            // its code cannot be seen
+            if severity == Severity::Low {
+                match p.foreign_code(ctx.sys) {
+                    Some(code) if !code.is_empty() => (severity, why) = (Severity::High, "an installed program that runs code from a place your programs can write to"),
+                    None => (severity, why) = (Severity::Medium, "an installed program whose code could not be checked (it may have ended)"),
+                    Some(_) => {}
+                }
             }
             if severity == Severity::Low {
                 normal.insert(p.display_name());

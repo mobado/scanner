@@ -36,10 +36,12 @@ pub(super) fn check_input(ctx: &ScanCtx, col: &mut Collector) {
         if !spying && (devices.is_empty() || expected) {
             continue;
         }
-        // an expected reader that runs foreign code is no longer excused, and weighs more
-        let tainted = system && p.is_program(&INPUT_READERS) && !expected;
+        // an expected reader that runs foreign code is no longer excused, and weighs more; nor
+        // is one whose code cannot be seen
+        let unexcused = (system && p.is_program(&INPUT_READERS) && !expected).then(|| p.foreign_code(ctx.sys));
+        let tainted = unexcused.as_ref().is_some_and(|code| code.is_some());
         let severity = if spying || !system || tainted { Severity::High } else { Severity::Medium };
-        let foreign = if tainted { foreign_note(ctx, p) } else { String::new() };
+        let foreign = unexcused.as_ref().map(foreign_note).unwrap_or_default();
         col.push(
             Finding::new(severity, super::MODULE, "PROC-INPUT-READER", format!("Program reads the keyboard or mouse directly: {name}"))
                 .evidence(format!(

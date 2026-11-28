@@ -153,6 +153,7 @@ fn keyboard_readers_and_session_type() {
         write(root, &format!("/proc/{pid}/status"), &format!("Name:\t{comm}\nUid:\t{uid} {uid} {uid} {uid}\n"));
         write(root, &format!("/proc/{pid}/cmdline"), cmd);
         write(root, &format!("/proc/{pid}/environ"), "XDG_SESSION_TYPE=x11\0XDG_CURRENT_DESKTOP=XFCE\0");
+        write(root, &format!("/proc/{pid}/maps"), "7f00-7f01 r-xp 0 08:01 1 /usr/lib/x86_64-linux-gnu/libc.so.6\n");
         symlink(exe, root.join(format!("proc/{pid}/exe"))).expect("link");
         fs::create_dir_all(root.join(format!("proc/{pid}/fd"))).expect("mkdir");
         if pid != 12 {

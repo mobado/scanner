@@ -24,12 +24,22 @@ of the virtual keyboard) the right file is not enough: the program must also run
 place your programs can write to (`/tmp`, `/var/tmp`, `/dev/shm`, `/run/user`, home folders) or
 from memory (`memfd`) – every executable mapping in `/proc/<pid>/maps` counts, whatever its
 name. A program with such code in it (`LD_PRELOAD`, a plugin, a slipped-in library) loses the
-exception and its finding weighs more. Qt's QML compiler uses memory files named `JITCode:…`;
-they are accepted in programs that have the installed Qt QML library loaded.
+exception and its finding weighs more. A program whose maps cannot be read does not count as
+clean either; its finding says so. Two exceptions:
+
+* Chrome, Chromium, Brave, Edge and Vivaldi run the Widevine video module from their profile:
+  accepted only as `<home>/<the browser's profile>/WidevineCdm/<version>/_platform_specific/`
+  `linux_<arch>/libwidevinecdm.so`, for that browser's own program file and the user it runs as
+  (default profile folders only), and listed as `PROC-BROWSER-MODULE`.
+* Qt compiles QML in memory files it names `JITCode:…`. Whoever makes a memory file names it, so
+  these are accepted only in installed programs known to compile QML (Plasma, KWin, System
+  Settings, KRunner, the lock and login screens, Discover and the like) that have the Qt QML
+  library loaded, and never for programs that handle keys or answer as the password wallet.
 
 This is not proof of identity: code written straight into a program's memory with `ptrace`
-leaves no mapping to see (see `KERN-PTRACE-SCOPE`), code can pose as Qt's compiler inside a Qt
-program, and a program can show a path of its own making from a mount namespace it created.
+leaves no mapping to see (see `KERN-PTRACE-SCOPE`), code can still pose as Qt's compiler inside
+one of the QML programs or as a browser's video module, and a program can show a path of its own
+making from a mount namespace it created.
 
 ## Levels and context
 
@@ -162,7 +172,8 @@ every network, to one address, or only to this computer.
 | `PROC-TRACED` | Critical–Low | A process is being traced (`TracerPid`): Critical when an unknown program traces sshd, sudo, a browser, a key agent …; Low for an installed debugger on an ordinary program |
 | `PROC-HIDDEN-MOUNT` | Critical–Medium | A mount over `/proc/<pid>` (hides a process), or over parts of `/etc`, `/usr/bin`, libraries … |
 | `PROC-LD-LIBRARY-PATH` | High/Low | `LD_LIBRARY_PATH` points to a temporary (High) or relative folder (AppImages are skipped) |
-| `PROC-SECRET-ACCESS` | Critical–Low | A program other than the browser (or wallet program) has saved passwords or cookies (`Cookies`, `Login Data`, `logins.json`, `key4.db` …) or a keyring/KWallet file open. Low for backup, search and antivirus programs; Critical from a temporary, download or hidden folder, and when one of the accepted programs runs foreign code |
+| `PROC-SECRET-ACCESS` | Critical–Low | A program other than the browser (or wallet program) has saved passwords or cookies (`Cookies`, `Login Data`, `logins.json`, `key4.db` …) or a keyring/KWallet file open. Low for backup, search and antivirus programs; Critical from a temporary, download or hidden folder, and when one of the accepted programs runs foreign code (High when its code cannot be read) |
+| `PROC-BROWSER-MODULE` | Info | A browser runs the Widevine video module from its profile (accepted); path, checksum and processes |
 | `PROC-ENV-INJECT` | High–Low | A running program has a variable that loads code: `NODE_OPTIONS=--require`, `PYTHONSTARTUP`, `BASH_ENV`, `LD_AUDIT`, `PERL5OPT`, `RUBYOPT`, `-javaagent`, library paths in temporary folders … |
 | `PROC-SSH-SOCKET` | Medium | `SSH_AUTH_SOCK` points somewhere key agents do not normally put their socket |
 | `PROC-ENV-SECRETS` | Medium/Low | Programs carry API keys, tokens or passwords in their environment (**names only**, values are never reported); Medium when a browser, viewer or temporary program has one |

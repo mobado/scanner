@@ -30,6 +30,7 @@ fn impostor(root: &Path, pid: u32, exe: &str, claims: &str, args: &str) {
     write(root, &format!("/proc/{pid}/stat"), &format!("{pid} ({claims}) S 1 1 1 0 -1 4194560 0 0\n"));
     write(root, &format!("/proc/{pid}/status"), &format!("Name:\t{claims}\nPPid:\t1\nUid:\t1000 1000 1000 1000\nCapEff:\t0000000000080000\n"));
     write(root, &format!("/proc/{pid}/cmdline"), &format!("{claims}\0{args}"));
+    write(root, &format!("/proc/{pid}/maps"), &map("r-xp", "/usr/lib/x86_64-linux-gnu/libc.so.6"));
     link(root, &format!("/proc/{pid}/exe"), exe);
 }
 
@@ -100,13 +101,105 @@ fn every_executable_mapping_from_a_writable_place_counts() {
     ]
     .concat();
     assert_eq!(odd_libraries(&maps), ["/dev/shm/a b.so (deleted)", "/home/anna/.cache/data.bin", "/memfd:stage2 (deleted)", "/run/user/1000/x.so"]);
-    // Qt's compiler for QML works in memory files, in programs that have Qt's QML library
+    // the list itself makes no exceptions
+    assert_eq!(odd_libraries(&map("r-xp", "/memfd:JITCode:QtQml (deleted)")).len(), 1);
+}
+
+/// A context over a made-up root, for asking about single processes.
+fn context<'a>(sys: &'a SysRoot, cfg: &'a Config) -> ScanCtx<'a> {
+    ScanCtx { sys, cfg, deep_pid_scan: false, wallet_watch_secs: 0, privileged: true, processes: &[] }
+}
+
+#[test]
+fn qt_compiler_memory_is_accepted_only_where_qml_is_compiled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
     let jit = map("r-xp", "/memfd:JITCode:QtQml (deleted)");
-    assert_eq!(odd_libraries(&jit).len(), 1, "without Qt the name proves nothing");
-    let qt = jit.clone() + &map("r-xp", "/usr/lib/x86_64-linux-gnu/libQt6Qml.so.6.8.2");
-    assert!(odd_libraries(&qt).is_empty());
-    let fake = jit + &map("r-xp", "/home/anna/libQt6Qml.so.6");
-    assert_eq!(odd_libraries(&fake).len(), 2);
+    let qml = map("r-xp", "/usr/lib/x86_64-linux-gnu/libQt6Qml.so.6.8.2");
+    write(root, "/proc/1/maps", &(jit.clone() + &qml));
+    // the same name without Qt, and with a library of one's own by Qt's name
+    write(root, "/proc/2/maps", &jit);
+    write(root, "/proc/3/maps", &(jit.clone() + &map("r-xp", "/home/anna/libQt6Qml.so.6")));
+    // another memory file in plasmashell
+    write(root, "/proc/4/maps", &(map("r-xp", "/memfd:stage2 (deleted)") + &qml));
+    let sys = SysRoot::new(root);
+    let code = |pid: u32, exe: &str| {
+        let p = ProcInfo { pid, exe: Some(exe.into()), ..ProcInfo::default() };
+        (p.foreign_code(&sys).expect("read").len(), p.foreign_code_strict(&sys).expect("read").len())
+    };
+    assert_eq!(code(1, "/usr/bin/plasmashell"), (0, 1));
+    assert_eq!(code(1, "/usr/bin/kwin_wayland"), (0, 1));
+    // any other Qt program, a copy in a home folder, key programs and wallets
+    for exe in ["/usr/bin/some-qt-app", "/home/anna/plasmashell", "/usr/bin/ksecretd", "/usr/bin/kwalletd6", "/usr/bin/ssh"] {
+        assert_eq!(code(1, exe), (1, 1), "{exe}");
+    }
+    assert_eq!(code(2, "/usr/bin/plasmashell"), (1, 1));
+    assert_eq!(code(3, "/usr/bin/plasmashell").0, 2);
+    assert_eq!(code(4, "/usr/bin/plasmashell").0, 1);
+}
+
+#[test]
+fn what_cannot_be_seen_does_not_count_as_clean() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/proc/5/maps", "");
+    let (cfg, sys) = (Config::default(), SysRoot::new(root));
+    let ctx = context(&sys, &cfg);
+    // no maps file, and an empty one (the program is ending)
+    for pid in [4, 5] {
+        let p = ProcInfo { pid, exe: Some("/usr/bin/ksecretd".into()), ..ProcInfo::default() };
+        assert_eq!(p.foreign_code(&sys), None);
+        assert!(!p.is_clean_program(&ctx, &["ksecretd"]));
+        let found = judge_holder(&ctx, 1000, "org.freedesktop.secrets", &p).expect("reported");
+        assert_eq!(found.severity, Severity::Medium, "not known to be tainted either");
+        assert!(found.title.contains("cannot be checked") && found.evidence.contains("could not be read"));
+    }
+    // in the scan: the browser holding its cookies, unseen
+    let cookies = "/home/anna/.mozilla/firefox/x.default/cookies.sqlite";
+    impostor(root, 90, "/usr/lib/firefox-esr/firefox-esr", "firefox-esr", "");
+    fs::remove_file(root.join("proc/90/maps")).expect("remove");
+    link(root, "/proc/90/fd/3", cookies);
+    let report = scan(root, &[ModuleId::ProcAudit]);
+    let found: Vec<Severity> = report.findings.iter().filter(|f| f.rule == "PROC-SECRET-ACCESS").map(|f| f.severity).collect();
+    assert_eq!(found, [Severity::High]);
+}
+
+#[test]
+fn chromes_video_module_is_accepted_only_where_chrome_puts_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/etc/passwd", "anna:x:1000:1000::/home/anna:/bin/bash\nbo:x:1001:1001::/home/bo:/bin/bash\n");
+    let cookies = "/home/anna/.config/google-chrome/Default/Cookies";
+    let module = "/home/anna/.config/google-chrome/WidevineCdm/4.10.2891.0/_platform_specific/linux_x64/libwidevinecdm.so";
+    write(root, module, "widevine");
+    let libc = map("r-xp", "/usr/lib/x86_64-linux-gnu/libc.so.6");
+    let process = |pid: u32, exe: &str, library: &str| {
+        impostor(root, pid, exe, "chrome", "");
+        link(root, &format!("/proc/{pid}/fd/3"), cookies);
+        write(root, &format!("/proc/{pid}/maps"), &(libc.clone() + &map("r-xp", library)));
+    };
+    let chrome = "/opt/google/chrome/chrome";
+    // the real case, also after an update removed the old file
+    process(10, chrome, module);
+    process(11, chrome, &format!("{module} (deleted)"));
+    // anything else: another file name, another folder, no version, another user's or another
+    // browser's profile, and another program
+    process(20, chrome, &module.replace("libwidevinecdm.so", "libevil.so"));
+    process(21, chrome, "/home/anna/.cache/WidevineCdm/4.10.2891.0/_platform_specific/linux_x64/libwidevinecdm.so");
+    process(22, chrome, &module.replace("4.10.2891.0", "x"));
+    process(23, chrome, &module.replace("4.10.2891.0", "4.1/../../.."));
+    process(24, chrome, &module.replace("/home/anna", "/home/bo"));
+    process(25, chrome, &module.replace("google-chrome/", "chromium/"));
+    process(26, "/usr/lib/firefox-esr/firefox-esr", module);
+    let report = scan(root, &[ModuleId::ProcAudit]);
+    let mut reported: Vec<u32> = report.findings.iter().filter(|f| f.rule == "PROC-SECRET-ACCESS").map(|f| f.evidence[4..6].parse().expect("pid")).collect();
+    reported.sort();
+    assert_eq!(reported, [20, 21, 22, 23, 24, 25, 26]);
+    // and the accepted module is shown
+    let shown: Vec<_> = report.findings.iter().filter(|f| f.rule == "PROC-BROWSER-MODULE").collect();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(shown.iter().all(|f| f.severity == Severity::Info));
+    assert!(shown.iter().any(|f| f.evidence.contains("sha256 ") && f.evidence.contains("PID 10")));
 }
 
 #[test]
