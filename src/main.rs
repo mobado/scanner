@@ -300,6 +300,12 @@ fn parse_opts(cli: &Cli) -> Result<ScanOptions> {
             bail!("the baseline file {} does not exist", b.display());
         }
     }
+    // as root only a baseline that nobody but root can change, as with --config
+    for b in cli.baseline_compare.iter().chain(&cli.baseline_diff) {
+        if let Some(why) = scanner::baseline::distrust(b).filter(|_| b.exists()) {
+            bail!("{why}");
+        }
+    }
     if let Some(b) = &cli.baseline_diff {
         if let Err(e) = Baseline::load(b) {
             bail!("cannot show changes: {e}. Save a baseline first (sudo scanner --cli --baseline-save FILE), or run as root to use the automatic one");
@@ -338,6 +344,9 @@ fn cli_scan(cli: &Cli) -> Result<u8> {
     if let Some(path) = &cli.baseline_save {
         Baseline::from_report(&report).save(path).with_context(|| format!("could not save the baseline {}", path.display()))?;
         eprintln!("Baseline saved: {} ({} SUID/SGID files, {} persistence files)", path.display(), report.inventory.suid.len(), report.inventory.persistence_files.len());
+        if scanner::baseline::distrust(path).is_some() {
+            eprintln!("Note: others can change that file, so a scan as root will not compare against it. Save it in /var/lib/scanner/ for that.");
+        }
     }
 
     let color = !cli.no_color && cli.output.is_none() && std::io::stdout().is_terminal();

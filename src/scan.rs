@@ -135,7 +135,14 @@ pub fn run_scan_auto(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, auto: bool
     if auto && live && opts.baseline_compare.is_none() {
         opts.baseline_compare = crate::autobaseline::default_if_exists();
     }
+    // As root, never compare against a baseline that others can change. The command line and the
+    // window refuse such a file before they get here; this holds for every caller.
+    let refused = opts.baseline_compare.as_deref().and_then(baseline::distrust);
+    if refused.is_some() {
+        opts.baseline_compare = None;
+    }
     let mut report = run_scan(sys, cfg, &opts, progress);
+    report.notes.extend(refused);
     // Bring verified upgrades into the automatic baseline, so it follows the system.
     if auto && live && report.running_as_root && report.baseline_compared.is_some() && opts.baseline_compare == Some(crate::autobaseline::default_path()) {
         match crate::autobaseline::refresh_upgraded(&report, &crate::autobaseline::default_path()) {

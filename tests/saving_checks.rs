@@ -1,6 +1,7 @@
 //! Root must not write through a link another program planted, nor obey a whitelist it can edit.
 //! These tests run as an ordinary user and only touch their own temporary folders.
 
+use scanner::baseline;
 use scanner::config::{distrust, untrusted, SYSTEM_WHITELIST};
 use scanner::saving::{invoking_user, owner_of, save, save_as, writer, User};
 use scanner::trust::follow;
@@ -77,6 +78,24 @@ fn without_root_files_are_written_directly() {
     }
     save(&path, b"report").expect("save");
     assert_eq!(fs::read(&path).expect("read"), b"report");
+}
+
+#[test]
+fn a_baseline_others_can_change_is_not_for_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // the copy gets a name of its own, so following the advice never replaces the automatic one
+    let own = dir.path().join("baseline.json");
+    fs::write(&own, "{}").expect("write");
+    let why = baseline::untrusted(&own).expect("changeable");
+    assert!(why.contains("was not used") && why.contains("sudo install -D -m 0600"), "{why}");
+    assert!(why.contains("/var/lib/scanner/saved-baseline.json"), "{why}");
+    assert!(!why.contains(" /var/lib/scanner/baseline.json"), "{why}");
+    let named = baseline::untrusted(&dir.path().join("saved-before.json")).expect("changeable");
+    assert!(named.contains("/var/lib/scanner/saved-before.json") && !named.contains("saved-saved-"), "{named}");
+    assert_eq!(baseline::untrusted(Path::new("/usr/bin/true")), None);
+    if me(dir.path()).uid != 0 {
+        assert_eq!(baseline::distrust(&own), None, "without root the person's own file is fine");
+    }
 }
 
 #[test]

@@ -89,6 +89,8 @@ pub struct ScannerApp {
     /// A warning from the start (why the scanner runs without root, or why a whitelist was not
     /// used); stays in view.
     sudo_note: Option<String>,
+    /// Why the last scan was not started (a baseline that others can change).
+    scan_warning: Option<String>,
     /// Index of the finding shown in the detail panel.
     selected: Option<usize>,
 }
@@ -137,6 +139,7 @@ impl ScannerApp {
             shot: shot.map(|path| Shot { path, frames: 0, requested: false, done: Arc::new(AtomicBool::new(false)) }),
             sudo_result: None,
             sudo_note,
+            scan_warning: None,
             selected: None,
         };
         app.start_scan(egui_ctx);
@@ -167,6 +170,12 @@ impl ScannerApp {
         };
         if opts.modules.is_empty() && opts.tools.is_empty() {
             self.status = "Choose at least one module or tool.".into();
+            return;
+        }
+        self.scan_warning = opts.baseline_compare.as_deref().filter(|p| p.exists()).and_then(scanner::baseline::distrust);
+        if self.scan_warning.is_some() {
+            self.auto_export = false;
+            self.status = "The scan was not started: see the warning about the baseline at the top.".into();
             return;
         }
         let root = if self.root_path.trim().is_empty() { "/".to_string() } else { self.root_path.trim().to_string() };
@@ -324,7 +333,7 @@ impl ScannerApp {
                 }
             });
         });
-        if let Some(note) = &self.sudo_note {
+        for note in self.sudo_note.iter().chain(&self.scan_warning) {
             ui.label(RichText::new(note).color(WARN));
         }
         ui.add_space(6.0);
@@ -387,7 +396,8 @@ impl ScannerApp {
                 None => ui.label(RichText::new("The baseline is made automatically by the first scan as root.").small().color(MUTED)),
             };
             ui.label(RichText::new("A baseline helps most when it is saved on a freshly installed computer you trust: later scans then show only what changed.").small().color(MUTED));
-            ui.label(RichText::new("Compare with another file (empty = the automatic baseline)").small().color(MUTED));
+            let which = if self.is_root { "Compare with another file that only root can change, e.g. in /var/lib/scanner (empty = the automatic baseline)" } else { "Compare with another file (empty = the automatic baseline)" };
+            ui.label(RichText::new(which).small().color(MUTED));
             ui.add(egui::TextEdit::singleline(&mut self.baseline_compare).hint_text(scanner::autobaseline::DEFAULT_PATH).desired_width(f32::INFINITY));
             ui.label(RichText::new("Save the latest scan as the new baseline (e.g. after updates)").small().color(MUTED));
             ui.add(egui::TextEdit::singleline(&mut self.baseline_save).desired_width(f32::INFINITY));
@@ -398,8 +408,9 @@ impl ScannerApp {
                     self.status = match Baseline::from_report(r).save(&path) {
                         Ok(()) => {
                             let missing: Vec<&str> = ModuleId::CORE.iter().filter(|m| !r.modules.iter().any(|x| x == m.id())).map(|m| m.id()).collect();
+                            let others = if scanner::baseline::distrust(&path).is_some() { " – others can change that file, so a scan as root will not compare against it; save it in /var/lib/scanner/ for that" } else { "" };
                             format!(
-                                "Baseline saved to {} ({} SUID/SGID files, {} persistence files){}",
+                                "Baseline saved to {} ({} SUID/SGID files, {} persistence files){}{others}",
                                 path.display(),
                                 r.inventory.suid.len(),
                                 r.inventory.persistence_files.len(),

@@ -119,7 +119,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.18.4-1_amd64.deb
+sudo apt install ./scanner_0.18.5-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -212,9 +212,12 @@ is set to those folders when the program starts.
   `/etc/scanner/whitelist.toml` is missing, your personal one is left alone (the defaults
   are used, with a warning), and `--config` with such a file is an error. Check what it
   says, then install it: `sudo install -m 0644 my.toml /etc/scanner/whitelist.toml`.
+- The same goes for a baseline: whatever it lists counts as having been there all along,
+  so as root `--baseline-compare`, `--baseline-diff` and *Compare with* in the window
+  refuse a file that others can change. Keep baselines in `/var/lib/scanner/`.
 
-`sh scripts/root-write-test.sh target/release/scanner` tries the planted-link attack in
-a private user namespace, without real root.
+`sh scripts/root-write-test.sh target/release/scanner` tries these attacks in a private
+user namespace, without real root.
 
 **Exit codes:** `0` no high/critical findings · `1` at least one high · `2` at least one critical · `3` error.
 
@@ -297,7 +300,10 @@ automatically. New SUID/SGID files since then are *Critical*.
   that do not match their package, that no package owns, or that apt did not touch (for example
   a SUID bit set by hand) are still flagged. A new SUID program installed by apt is shown as Low.
 * `--no-auto-baseline` turns the automatic baseline off; `--baseline-compare FILE` compares
-  with another file.
+  with another file. As root it has to be a file only root can change:
+  `sudo scanner --cli --baseline-save /var/lib/scanner/saved-before.json`, later
+  `sudo scanner --cli --baseline-compare /var/lib/scanner/saved-before.json`. A baseline in
+  your home folder is yours (also when saved with `sudo`), so root refuses it.
 
 The steps below are the manual way, for a machine you want to verify more strictly:
 
@@ -326,7 +332,8 @@ After `apt upgrade` nothing needs to be done: verified upgrades are recognised (
 
 ```sh
 sudo scanner --baseline-diff                         # against the automatic baseline
-scanner --baseline-diff my-baseline.json --cli       # against a file you saved
+sudo scanner --baseline-diff /var/lib/scanner/saved-before.json   # against one you saved there
+scanner --no-sudo --baseline-diff my-baseline.json   # against your own file, without root
 ```
 
 Only the differences are listed (new SUID files, new or changed services and startup files,

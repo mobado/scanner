@@ -1,6 +1,7 @@
 #!/bin/sh
-# Tries the planted-link attack against the real program, without real root: in a private user
-# namespace the program believes it is root, and the "person who used sudo" is another user id.
+# Tries attacks through files (a planted link, an edited whitelist or baseline) against the real
+# program, without real root: in a private user namespace the program believes it is root, and
+# the "person who used sudo" is another user id.
 # Everything happens in a new temporary folder, which is removed afterwards.
 #
 #   sh scripts/root-write-test.sh target/release/scanner
@@ -46,9 +47,19 @@ run --update-config "$d/home/new/whitelist.toml" || true
 check "--update-config in a home folder runs as the person" [ "$(stat -c %u "$d/home/new/whitelist.toml" 2>/dev/null)" = 1000 ]
 run --update-config "$d/home/whitelist.toml.link" || true
 check "--update-config through a planted link changes nothing" untouched
-run --cli --modules kernel --no-auto-baseline --config "$d/home/new/whitelist.toml" && refused=0 || refused=1
-check "a whitelist the person can change is refused as root" [ "$refused" = 1 ]
-check "... with the reason" grep -q "was not used" "$d/out"
+code=0
+scan --config "$d/home/new/whitelist.toml" || code=$?
+check "a whitelist the person can change is refused as root" [ "$code" = 3 ]
+check "... with the reason" grep -q "The whitelist $d/home/new/whitelist.toml was not used" "$d/out"
+scan --baseline-save "$d/home/base.json" || true
+check "a baseline saved there belongs to the person" [ "$(stat -c %u "$d/home/base.json" 2>/dev/null)" = 1000 ]
+check "... with a note that root will not compare with it" grep -q "will not compare" "$d/out"
+for option in --baseline-compare --baseline-diff; do
+    code=0
+    scan "$option" "$d/home/base.json" || code=$?
+    check "$option with a baseline the person can change is refused" [ "$code" = 3 ]
+    check "... with the reason" grep -q "The baseline $d/home/base.json was not used" "$d/out"
+done
 check "the self-test works as root" run --self-test
 
 [ "$failed" = 0 ] && echo "All checks passed." || echo "Some checks FAILED."

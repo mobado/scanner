@@ -14,7 +14,6 @@
 set -eu
 
 SCANNER="${SCANNER:-scanner}"
-WORK="$(mktemp -d /var/tmp/scanner-vmtest.XXXXXX)"
 PASS=0
 FAIL=0
 
@@ -35,6 +34,9 @@ fi
 if ! grep -q '^13' /etc/debian_version 2>/dev/null && ! grep -qi trixie /etc/os-release; then
     echo "Warning: this does not look like Debian 13 – continuing anyway."
 fi
+
+# a folder only root can change: as root the scanner compares with no other baseline
+WORK="$(mktemp -d /var/lib/scanner-vmtest.XXXXXX)"
 
 SLEEP_PID=""
 HTTP_PID=""

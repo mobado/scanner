@@ -37,7 +37,8 @@ only taken from /usr/sbin, /usr/bin, /sbin and /bin.
 .PP
 As root, files are only written as root where root alone can change the whole path; elsewhere,
 such as a home folder or /tmp, they are written as the user who ran sudo (else the owner of the
-folder). A whitelist that others can change is not read as root.
+folder). A whitelist or baseline that others can change is not used as root; keep your own
+baselines in /var/lib/scanner.
 .SH OPTIONS
 .TP
 .B \-\-cli
@@ -83,7 +84,8 @@ Info is ordinary desktop activity; it is listed on one line each and never chang
 Save a baseline of SUID/SGID files, listening ports and persistence files.
 .TP
 .BI \-\-baseline\-compare " FILE"
-Compare with a saved baseline. Without it the automatic baseline is used.
+Compare with a saved baseline. Without it the automatic baseline is used. As root the file
+must be one that only root can change.
 .TP
 .B \-\-no\-auto\-baseline
 Do not save or use the automatic baseline.

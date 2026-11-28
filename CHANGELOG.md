@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.5
+* As root, a baseline that others can change is no longer used. Since 0.18.4 a baseline saved
+  to your home folder with `sudo` belongs to you, so a program of yours could add its own
+  service, package or firewall rule to it and a later comparison would take it as always
+  there. `--baseline-compare`, `--baseline-diff` and *Compare with* in the window now refuse
+  such a file and say how to keep one in `/var/lib/scanner/`; saving one elsewhere warns.
+  The automatic baseline is not affected.
+* `scripts/sandbox-vm-test.sh` works again: it keeps its files in a folder only root can change.
+
 ## 0.18.4
 Another program of yours could get root through files the scanner saved as root:
 * A link planted as `~/scanner-report.json` (or any report, baseline, screenshot or whitelist

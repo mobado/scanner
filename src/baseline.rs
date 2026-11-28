@@ -456,6 +456,41 @@ impl Baseline {
     }
 }
 
+/// Why someone other than root can change a baseline, so that root must not compare against it:
+/// whatever it lists counts as having been there all along.
+pub fn untrusted(path: &Path) -> Option<String> {
+    let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let why = crate::trust::follow(&full).err()?;
+    let own = Path::new(crate::autobaseline::DEFAULT_PATH).parent().unwrap_or(Path::new("/var/lib/scanner"));
+    let quoted = |p: &Path| crate::modules::common::shq(&p.display().to_string());
+    let advice = if full.starts_with(own) {
+        format!("Check it, then give it back to root: sudo chown root:root {0} && sudo chmod 0600 {0}", quoted(&full))
+    } else {
+        // a name of its own, so that the automatic baseline is never overwritten
+        let name = full.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "baseline.json".into());
+        let copy = own.join(if name.starts_with("saved-") { name } else { format!("saved-{name}") });
+        format!(
+            "Only if you are sure nothing has changed it, install a copy for root and compare with that: sudo install -D -m 0600 {} {1}. Safer: save new baselines there from the start (sudo scanner --cli --baseline-save {1}).",
+            quoted(&full),
+            quoted(&copy)
+        )
+    };
+    Some(format!(
+        "The baseline {} was not used, because {why}: a program could have added its own service, package or firewall rule to it, which would then look as if it had always been there. {advice}",
+        full.display()
+    ))
+}
+
+/// Why this process must not compare against a baseline: only as root does it matter who can
+/// change it.
+pub fn distrust(path: &Path) -> Option<String> {
+    if crate::sys::is_root() {
+        untrusted(path)
+    } else {
+        None
+    }
+}
+
 /// Compare the current inventory against the baseline. Only categories scanned
 /// both then and now are compared; the others give a note.
 pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec<Finding>, Vec<String>) {
