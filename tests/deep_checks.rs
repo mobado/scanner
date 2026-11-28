@@ -103,11 +103,15 @@ fn unexplained_files_in_a_boot_image() {
 
 #[test]
 fn tracing_mounts_and_process_lists() {
-    assert_eq!(judge_trace("sshd", "/usr/sbin/sshd", "inject", "/tmp/inject"), Some(Severity::Critical));
-    assert_eq!(judge_trace("sudo", "/usr/bin/sudo", "strace", "/usr/bin/strace"), Some(Severity::High));
-    assert_eq!(judge_trace("myapp", "/home/a/myapp", "gdb", "/usr/bin/gdb"), Some(Severity::Low));
-    assert_eq!(judge_trace("myapp", "/home/a/myapp", "gdb", "/tmp/gdb"), Some(Severity::High));
-    assert_eq!(judge_trace("firefox-esr", "/usr/lib/firefox-esr/firefox-esr", "crashhelper", "/usr/lib/firefox-esr/crashhelper"), None);
+    assert_eq!(judge_trace("sshd", "/usr/sbin/sshd", "/tmp/inject"), Some(Severity::Critical));
+    assert_eq!(judge_trace("sudo", "/usr/bin/sudo", "/usr/bin/strace"), Some(Severity::High));
+    assert_eq!(judge_trace("myapp", "/home/a/myapp", "/usr/bin/gdb"), Some(Severity::Low));
+    assert_eq!(judge_trace("myapp", "/home/a/myapp", "/tmp/gdb"), Some(Severity::High));
+    assert_eq!(judge_trace("firefox-esr", "/usr/lib/firefox-esr/firefox-esr", "/usr/lib/firefox-esr/crashhelper"), None);
+    // Wine's server watches Wine programs; a program that only has its name does not get that
+    assert_eq!(judge_trace("wine64-preloader", "/home/a/proton/files/bin/wine64-preloader", "/home/a/proton/files/bin/wineserver"), None);
+    assert_eq!(judge_trace("ssh-agent", "/usr/bin/ssh-agent", "/home/a/wineserver"), Some(Severity::Critical));
+    assert_eq!(judge_trace("myapp", "/home/a/myapp", "/home/a/wineserver"), Some(Severity::High));
 
     let (point, root, kind, _) = parse_mount("40 27 8:1 /tmp/empty /proc/1234 rw shared:1 - ext4 /dev/sda1 rw").expect("mount");
     assert_eq!(judge_mount(&point, &root, &kind).map(|m| m.0), Some(Severity::Critical));

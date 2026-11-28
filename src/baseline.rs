@@ -513,6 +513,12 @@ pub fn distrust(path: &Path) -> Option<String> {
 /// Compare the current inventory against the baseline. Only categories scanned
 /// both then and now are compared; the others give a note.
 pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec<Finding>, Vec<String>) {
+    compare_with(base, inv, modules_now, &|_, _| false)
+}
+
+/// [`compare`], leaving out new listening ports of the programs `trusted(name, program file)`
+/// accepts.
+pub fn compare_with(base: &Baseline, inv: &Inventory, modules_now: &[String], trusted: &dyn Fn(&str, &str) -> bool) -> (Vec<Finding>, Vec<String>) {
     let mut out = Vec::new();
     let mut notes = Vec::new();
     let both = |m: &str| base.modules.iter().any(|x| x == m) && modules_now.iter().any(|x| x == m);
@@ -585,6 +591,10 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
             fresh.entry((l.process.clone(), l.exe.clone())).or_default().push(l);
         }
         for ((process, exe), list) in fresh {
+            // new ports of a program the person trusts (its name and program file) are not news
+            if trusted(&process, &exe) {
+                continue;
+            }
             let fixed = list.iter().any(|l| l.port < 32768);
             let ports: Vec<String> = list.iter().map(|l| format!("{}/{}", l.proto, l.port)).collect();
             out.push(
@@ -595,11 +605,14 @@ pub fn compare(base: &Baseline, inv: &Inventory, modules_now: &[String]) -> (Vec
                     format!("New listening port(s) since the baseline: {} ({process})", ports.join(", ")),
                 )
                 .evidence(format!("{} owned by {process}{}\n(missing from {src})", ports.join(", "), if exe.is_empty() { String::new() } else { format!(" ({exe})") }))
-                .description(if fixed {
-                    "A service listens on a port that did not exist when the baseline was created."
-                } else {
-                    "A program that did not listen at baseline time now listens on random ports. Check that you know it."
-                })
+                .description(format!(
+                    "{} A program is recognised by its file. Where that cannot be read (kernel threads and programs that have ended; in a scan without root, every other user's program), random ports are matched by the name alone, as for an installed program.",
+                    if fixed {
+                        "A service listens on a port that did not exist when the baseline was created."
+                    } else {
+                        "A program that did not listen at baseline time now listens on random ports. Check that you know it."
+                    }
+                ))
                 // the program chose its name itself, so it is quoted
                 .verify(format!("ss -tulpn | grep -F -- {}", shq(&process))),
             );

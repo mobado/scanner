@@ -20,8 +20,9 @@ const SANDBOXES: [&str; 40] = [
 fn is_sandbox(p: &ProcInfo) -> bool {
     let exe = p.exe_path().unwrap_or("");
     // a copy in a home or temporary folder is not the sandbox its name claims
-    let installed = exe.is_empty() || ["/usr/", "/opt/", "/snap/", "/app/", "/var/lib/flatpak/", "/lib/"].iter().any(|d| exe.starts_with(d));
-    installed && p.candidate_names().iter().any(|n| SANDBOXES.iter().any(|s| n.starts_with(s)))
+    let installed = ["/usr/", "/opt/", "/snap/", "/app/", "/var/lib/flatpak/", "/lib/"].iter().any(|d| exe.starts_with(d));
+    // only the program file's name counts, and never an interpreter's
+    installed && p.program_name().is_some_and(|n| SANDBOXES.iter().any(|s| n.starts_with(s)))
 }
 
 // ---------------------------------------------------------------- Steam
@@ -30,10 +31,6 @@ fn is_sandbox(p: &ProcInfo) -> bool {
 
 /// The parts of the Steam Linux Runtime that start the client inside a container.
 const STEAM_RUNTIME: [&str; 4] = ["srt-bwrap", "pv-bwrap", "pv-adverb", "pressure-vessel-wrap"];
-
-fn named(p: &ProcInfo, names: &[&str]) -> bool {
-    p.candidate_names().iter().any(|n| names.contains(&n.as_str()))
-}
 
 /// Steam's main program: "steam" in a Steam folder.
 fn is_steam_main(p: &ProcInfo) -> bool {
@@ -50,7 +47,7 @@ pub(crate) fn steam_roots(processes: &[ProcInfo]) -> BTreeSet<u32> {
         let mut chain = by_pid.get(&main.ppid).copied();
         for _ in 0..8 {
             let Some(parent) = chain else { break };
-            if named(parent, &STEAM_RUNTIME) {
+            if parent.is_program(&STEAM_RUNTIME) {
                 roots.insert(parent.pid);
             }
             chain = by_pid.get(&parent.ppid).copied();
@@ -75,26 +72,34 @@ fn from_steam(p: &ProcInfo, by_pid: &HashMap<u32, &ProcInfo>, roots: &BTreeSet<u
 /// Steam's client or its browser, in a Steam folder and started from Steam's main program.
 pub(crate) fn is_steam_client(p: &ProcInfo, processes: &[ProcInfo]) -> bool {
     let by_pid: HashMap<u32, &ProcInfo> = processes.iter().map(|q| (q.pid, q)).collect();
-    p.uid != 0 && p.exe_path().is_some_and(is_steam_path) && named(p, &["steam", "steamwebhelper"]) && from_steam(p, &by_pid, &steam_roots(processes))
+    p.uid != 0 && p.exe_path().is_some_and(is_steam_path) && p.is_program(&["steam", "steamwebhelper"]) && from_steam(p, &by_pid, &steam_roots(processes))
 }
 
+/// Files that lie beside the program in every Chromium, Electron and CEF app.
+const CHROMIUM_FILES: [&str; 5] = ["resources.pak", "chrome_100_percent.pak", "icudtl.dat", "v8_context_snapshot.bin", "snapshot_blob.bin"];
+
 /// The sandbox of an installed Chromium or Electron app, whatever the app is called: its helper
-/// processes are started with "--type=zygote", "--type=renderer" and the like.
-fn is_chromium_sandbox(p: &ProcInfo) -> bool {
+/// processes are started with "--type=zygote", "--type=renderer" and the like. Any program can
+/// be given such an option, so its folder also has to hold Chromium's files (Qt keeps those
+/// elsewhere and names its helper).
+fn is_chromium_sandbox(ctx: &ScanCtx, p: &ProcInfo) -> bool {
     let exe = p.exe_path().unwrap_or("");
     let installed = ["/usr/", "/opt/", "/snap/", "/app/"].iter().any(|d| exe.starts_with(d)) && !exe.starts_with("/usr/local/");
     let by_hand = p.candidate_names().iter().any(|n| n == "unshare" || n == "nsenter");
+    let folder = exe.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    let chromium = p.is_program(&["QtWebEngineProcess"]) || p.program_name().is_some() && CHROMIUM_FILES.iter().any(|f| ctx.sys.exists(format!("{folder}/{f}")));
     // Chromium rewrites its command line, so the options may be one long word
-    installed && !by_hand && p.cmdline_str().contains(" --type=")
+    installed && !by_hand && chromium && p.cmdline_str().contains(" --type=")
 }
 
 /// A packaged user service that systemd started with isolation settings.
 fn is_sandboxed_user_service(p: &ProcInfo, parent: Option<&ProcInfo>, cgroup: &str) -> bool {
     let exe = p.exe_path().unwrap_or("");
     let installed = exe.starts_with("/usr/") && !exe.starts_with("/usr/local/");
-    let from_systemd = parent.map(|q| q.candidate_names().iter().any(|n| n == "systemd")).unwrap_or(false);
+    let from_systemd = parent.is_some_and(|q| q.is_program(&["systemd"]) && q.exe_path().is_some_and(|e| e.starts_with("/usr/") || e.starts_with("/lib/")));
     let by_hand = p.candidate_names().iter().any(|n| n == "unshare" || n == "nsenter");
-    installed && from_systemd && !by_hand && cgroup.contains("/user@") && cgroup.trim().ends_with(".service")
+    // anyone can start a service of their own, so an interpreter in one explains nothing
+    installed && p.program_name().is_some() && from_systemd && !by_hand && cgroup.contains("/user@") && cgroup.trim().ends_with(".service")
 }
 
 fn is_odd_place(ctx: &ScanCtx, exe: &str) -> bool {
@@ -160,7 +165,7 @@ pub(crate) fn check_namespaces(ctx: &ScanCtx, col: &mut Collector) {
             // systemd (the system's and each user's) is above every program, so as an ancestor
             // it explains nothing
             let manager = current.pid != p.pid && current.candidate_names().iter().any(|n| n == "systemd");
-            if current.pid != 1 && !manager && (is_sandbox(current) || is_chromium_sandbox(current)) {
+            if current.pid != 1 && !manager && (is_sandbox(current) || is_chromium_sandbox(ctx, current)) {
                 explained = true;
                 break;
             }

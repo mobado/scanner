@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.19.1
+Programs were approved by names they choose themselves: `exec -a firefox sqlite3 …/cookies.sqlite`
+or a Python script renaming itself passed as the browser, as the password wallet and more.
+* Wherever a name earns an exception, only the program file now counts, never `comm` or
+  `argv[0]`, and never an interpreter, shell or loader: saved passwords and cookies, who answers
+  as the wallet or portal, keyboard readers, typing tools, camera and microphone, CPU use,
+  root-like rights, packet sniffers, direct DNS, trusted listening ports (also in baseline
+  comparisons), debuggers and Wine's server, sandboxes and namespaces, Steam, eBPF holders,
+  OpenVPN and the renamed-process list.
+* Chromium's `--type=` option explains a sandbox only for a program whose folder holds
+  Chromium's files.
+* Tools written in a script language (for example `solaar` or `input-remapper`) can no longer
+  be recognised and may show up; hide the finding if it is yours.
+* Without root, services whose program file cannot be read are listed as **NOT CHECKED**.
+* `BASE-LISTEN-NEW` says how sockets without a readable program file are matched.
+
 ## 0.19.0
 What others write can no longer pose as something else, and checks that fail say so.
 * Login logs: anyone could add lines with `logger` to raise a Critical alarm, or flood the

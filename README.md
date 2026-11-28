@@ -121,7 +121,7 @@ Download `scanner_<version>-1_amd64.deb` from the
 [Releases page](https://github.com/mobado/scanner/releases) and install it:
 
 ```sh
-sudo apt install ./scanner_0.19.0-1_amd64.deb
+sudo apt install ./scanner_0.19.1-1_amd64.deb
 ```
 
 You then find **Scanner** in the application menu, `scanner` works in the terminal and
@@ -268,7 +268,8 @@ and upgrade). Your own entries, settings and comments are kept, the previous fil
 `whitelist.toml.bak`, and entries you remove stay removed (remembered in
 `whitelist.defaults.json`). Set `add_new_defaults = false` to use exactly your own lists.
 Important fields: `allowed_listen_ports` (`"tcp/22"` or a range `"udp/1714-1764"`),
-`allowed_listen_processes` (trusted programs under `/usr`), `allowed_suid` (supports `*`),
+`allowed_listen_processes` (trusted programs under `/usr`, by the name of the program file;
+never an interpreter), `allowed_suid` (supports `*`),
 `allowed_capability_files`, `trusted_apt_hosts`, `high_cpu_percent` (0 = off),
 `high_cpu_minutes`, `cpu_heavy_programs`, `download_dirs`, `tunnel_programs`, `remote_desktop_programs`,
 `allowed_systemd_units`, `allowed_cron_files`, `allowed_ssh_key_comments`,

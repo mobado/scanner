@@ -65,7 +65,21 @@ impl ProcInfo {
         self.exe_path().map(basename)
     }
 
-    /// Names we compare against shell/interpreter lists: exe name, comm and argv[0].
+    /// The name of the program's own file, unless it runs whatever it is handed (an
+    /// interpreter, a shell or the loader). Only `/proc/<pid>/exe` counts, which the kernel
+    /// sets: a process chooses its `comm` (prctl) and `argv[0]` (`exec -a`) itself.
+    pub fn program_name(&self) -> Option<&str> {
+        self.exe_basename().filter(|name| !runs_any_code(name))
+    }
+
+    /// Is the program's own file one of these? Use this wherever a name earns an exception; never
+    /// `candidate_names` or `display_name`. Where the file lies is for the caller to judge.
+    pub fn is_program<S: AsRef<str>>(&self, names: &[S]) -> bool {
+        self.exe_path().is_some_and(|exe| is_program_path(exe, names))
+    }
+
+    /// Every name the process goes by: exe name, comm and argv[0]. The process chooses the last
+    /// two itself, so they may only add suspicion (known malware, shells), never take it away.
     pub fn candidate_names(&self) -> Vec<String> {
         let mut v = Vec::new();
         if let Some(b) = self.exe_basename() {
@@ -89,6 +103,26 @@ impl ProcInfo {
 
 pub fn basename(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
+}
+
+/// Interpreters and shells: what they do is decided by the script or command they are given.
+const ANY_CODE: [&str; 33] = [
+    "python", "pypy", "perl", "ruby", "node", "nodejs", "deno", "bun", "bash", "rbash", "sh", "dash", "zsh", "ksh",
+    "mksh", "csh", "tcsh", "fish", "busybox", "toybox", "php", "lua", "luajit", "tclsh", "wish", "expect", "awk",
+    "gawk", "mawk", "nawk", "java", "guile", "gjs",
+];
+
+/// Does this program file run whatever code it is handed? "python3.13" is python; the dynamic
+/// loader (`ld-linux …`) runs any program.
+pub fn runs_any_code(name: &str) -> bool {
+    let stem = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    ANY_CODE.contains(&name) || ANY_CODE.contains(&stem) || ["ld-linux", "ld.so", "ld-musl"].iter().any(|loader| name.starts_with(loader))
+}
+
+/// Is the program file at `exe` one of these? Never for interpreters, whatever the list says.
+pub fn is_program_path<S: AsRef<str>>(exe: &str, names: &[S]) -> bool {
+    let name = basename(exe.strip_suffix(" (deleted)").unwrap_or(exe));
+    !runs_any_code(name) && names.iter().any(|n| n.as_ref() == name)
 }
 
 /// All numeric directories in /proc (visible PIDs).

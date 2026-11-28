@@ -7,6 +7,7 @@ use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
 use crate::modules::common::{capped, clip, shq};
 use crate::pkgverify::{verify_paths, Verdict};
+use crate::procinfo::ProcInfo;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,7 +21,7 @@ const WATCHING: [(u64, &str); 11] = [
 
 /// Programs that load eBPF as part of their normal work.
 const KNOWN_LOADERS: [&str; 17] = [
-    "systemd", "systemd-network", "NetworkManager", "tailscaled", "dockerd", "containerd", "cilium-agent", "falco",
+    "systemd", "systemd-networkd", "NetworkManager", "tailscaled", "dockerd", "containerd", "cilium-agent", "falco",
     "tetragon", "osqueryd", "firewalld", "snapd", "bpftrace", "bpftool", "below", "scx_loader", "gamemoded",
 ];
 
@@ -59,6 +60,36 @@ pub fn parse_bpftool(json: &str) -> Vec<BpfProgram> {
         .collect()
 }
 
+/// What to call a process that holds a program: the name of its installed program file, which is
+/// what the list of known loaders is about. A process chooses its other names itself, so for
+/// anything else both are shown and neither counts as known.
+fn holder_name(p: &ProcInfo) -> String {
+    let installed = p.exe_path().is_some_and(|e| ["/usr/", "/opt/", "/snap/", "/lib/"].iter().any(|d| e.starts_with(d)));
+    match p.program_name().filter(|_| installed) {
+        Some(name) => name.to_string(),
+        None => format!("{} ({})", p.comm, p.exe_path().unwrap_or("program file unknown")),
+    }
+}
+
+/// Replace the process names `bpftool` reports with the names of their program files.
+fn holders_by_file(programs: &mut [BpfProgram], json: &str, processes: &[ProcInfo]) {
+    let Ok(Value::Array(list)) = serde_json::from_str::<Value>(json) else { return };
+    for program in programs {
+        let Some(entry) = list.iter().find(|p| p.get("id").and_then(Value::as_u64) == Some(program.id)) else { continue };
+        program.holders = entry
+            .get("pids")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|x| {
+                let pid = x.get("pid").and_then(Value::as_u64)?;
+                let process = processes.iter().find(|p| u64::from(p.pid) == pid);
+                Some(process.map(holder_name).unwrap_or_else(|| format!("{} (program file unknown)", x.get("comm").and_then(Value::as_str).unwrap_or("?"))))
+            })
+            .collect();
+    }
+}
+
 /// The watching programs that processes hold open, from /proc/<pid>/fdinfo.
 fn programs_from_proc(ctx: &ScanCtx) -> Vec<BpfProgram> {
     let mut found: BTreeMap<u64, BpfProgram> = BTreeMap::new();
@@ -75,8 +106,9 @@ fn programs_from_proc(ctx: &ScanCtx) -> Vec<BpfProgram> {
             let own = p.pid == 1 && *kind == "lsm" && p.exe_path() == Some("/usr/lib/systemd/systemd");
             let name = if own { "restrict_filesystems" } else { "" };
             let entry = found.entry(id).or_insert_with(|| BpfProgram { id, kind: kind.to_string(), name: name.to_string(), holders: Vec::new() });
-            if !entry.holders.contains(&p.comm) {
-                entry.holders.push(p.comm.clone());
+            let holder = holder_name(p);
+            if !entry.holders.contains(&holder) {
+                entry.holders.push(holder);
             }
         }
     }
@@ -113,7 +145,11 @@ fn check_ebpf(ctx: &ScanCtx, col: &mut Collector) {
         Some(tool) => {
             let run = |args: &[&str]| crate::external_tools::run_checked(tool, args, 30);
             programs = match run(&["-j", "prog", "show"]) {
-                Ok(json) => parse_bpftool(&json),
+                Ok(json) => {
+                    let mut listed = parse_bpftool(&json);
+                    holders_by_file(&mut listed, &json, ctx.processes);
+                    listed
+                }
                 // an empty list must not look like a clean computer
                 Err(why) => {
                     col.note(format!("eBPF: NOT FULLY CHECKED – bpftool could not list the loaded programs ({why}; it needs the CAP_SYS_ADMIN right, which the nightly timer does not have). Only programs that a process holds open were checked."));

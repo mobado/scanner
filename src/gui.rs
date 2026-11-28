@@ -688,8 +688,12 @@ impl ScannerApp {
         };
         if let Some(r) = &mut self.report {
             let cfg = &self.cfg;
+            // trust covers the installed program: while another one of the same name listens,
+            // its finding has to stay
+            let connections = &r.inventory.connections;
+            let installed_only = |name: &str| connections.iter().filter(|c| c.listening && c.process.as_deref() == Some(name)).all(|c| cfg.is_listen_process_allowed(name, c.exe.as_deref()));
             r.findings.retain(|f| {
-                let trusted_process = matches!(&action, HideAction::Process(n) if f.rule == "NET-LISTEN-UNKNOWN" && process_in_title(&f.title).as_deref() == Some(n.as_str()));
+                let trusted_process = matches!(&action, HideAction::Process(n) if f.rule == "NET-LISTEN-UNKNOWN" && process_in_title(&f.title).as_deref() == Some(n.as_str()) && installed_only(n));
                 !cfg.suppresses(f) && !trusted_process
             });
             r.finalize();

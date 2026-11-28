@@ -138,10 +138,11 @@ fn programs_and_libraries_that_handle_keys() {
     let maps = "7f00 r-xp 0 08:01 1 /usr/lib/libc.so.6\n7f01 r-xp 0 08:01 2 /home/anna/.x/evil.so\n7f02 r--p 0 08:01 3 /home/anna/notes.txt\n";
     assert_eq!(odd_libraries(maps), vec!["/home/anna/.x/evil.so"]);
     let cfg = Config::default();
-    let owner = |n: &str, exe: &str| judge_owner(&cfg, "org.freedesktop.secrets", &[n.to_string()], exe);
-    assert_eq!(owner("ksecretd", "/usr/bin/ksecretd"), None);
-    assert_eq!(owner("ksecretd", "/home/anna/ksecretd"), Some(Severity::High));
-    assert_eq!(owner("other", "/usr/bin/other"), Some(Severity::Medium));
+    let owner = |exe: &str| judge_owner(&cfg, "org.freedesktop.secrets", exe);
+    assert_eq!(owner("/usr/bin/ksecretd"), None);
+    assert_eq!(owner("/home/anna/ksecretd"), Some(Severity::High));
+    assert_eq!(owner("/usr/bin/other"), Some(Severity::Medium));
+    assert_eq!(owner("/usr/bin/python3.13"), Some(Severity::Medium), "whatever it calls itself");
 
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();

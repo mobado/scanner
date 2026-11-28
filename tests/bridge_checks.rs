@@ -63,11 +63,10 @@ fn only_the_browser_should_open_its_saved_passwords() {
     assert_eq!(secret_store("/home/anna/.local/share/keyrings/login.keyring"), Some("password wallet"));
     assert_eq!(secret_store("/home/anna/project/Cookies"), None);
     let cfg = Config::default();
-    let names = |n: &str| vec![n.to_string()];
-    assert_eq!(judge_reader(&cfg, "browser passwords or cookies", &names("firefox-esr"), "/usr/lib/firefox-esr/firefox-esr"), None);
-    assert_eq!(judge_reader(&cfg, "browser passwords or cookies", &names("firefox"), "/tmp/firefox"), Some(Severity::Critical));
-    assert_eq!(judge_reader(&cfg, "browser passwords or cookies", &names("rsync"), "/usr/bin/rsync"), Some(Severity::Low));
-    assert_eq!(judge_reader(&cfg, "password wallet", &names("python3"), "/usr/bin/python3"), Some(Severity::High));
+    assert_eq!(judge_reader(&cfg, "browser passwords or cookies", "/usr/lib/firefox-esr/firefox-esr"), None);
+    assert_eq!(judge_reader(&cfg, "browser passwords or cookies", "/tmp/firefox"), Some(Severity::Critical));
+    assert_eq!(judge_reader(&cfg, "browser passwords or cookies", "/usr/bin/rsync"), Some(Severity::Low));
+    assert_eq!(judge_reader(&cfg, "password wallet", "/usr/bin/python3"), Some(Severity::High));
 
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -201,6 +200,7 @@ fn io_uring_and_unexplained_namespaces() {
     spaces(21, 500, 2, 501);
     // the sandbox of an installed Electron app
     fake_process(root, 24, 20, "/usr/lib/some-app/some-app", "/usr/lib/some-app/some-app --type=zygote");
+    write(root, "/usr/lib/some-app/resources.pak", "");
     spaces(24, 550, 551, 3);
     let report = scan(root, &[ModuleId::ProcAudit]);
     assert_eq!(levels(&report, "PROC-IO-URING"), vec![Severity::High]);

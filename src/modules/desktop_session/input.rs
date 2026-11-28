@@ -31,7 +31,7 @@ pub(super) fn check_input(ctx: &ScanCtx, col: &mut Collector) {
             .filter_map(|fd| ctx.sys.read_link(format!("/proc/{}/fd/{fd}", p.pid)))
             .filter(|t| t.starts_with("/dev/input/event") || t.starts_with("/dev/input/mice") || t.starts_with("/dev/input/mouse"))
             .collect();
-        let expected = system && (INPUT_READERS.contains(&name.as_str()) || INPUT_READERS.contains(&p.comm.as_str()));
+        let expected = system && p.is_program(&INPUT_READERS);
         if !spying && (devices.is_empty() || expected) {
             continue;
         }
@@ -46,7 +46,7 @@ pub(super) fn check_input(ctx: &ScanCtx, col: &mut Collector) {
                     clip(&p.cmdline_str(), 300),
                     clip(&devices.join(", "), 300)
                 ))
-                .description("A program that reads the input devices sees everything typed, passwords included, under both Wayland and X11. Key remappers and game or mouse tools do this on purpose; check that you installed this one.")
+                .description("A program that reads the input devices sees everything typed, passwords included, under both Wayland and X11. Key remappers and game or mouse tools do this on purpose; check that you installed this one. A program written in a script language runs as python3 or similar and cannot be recognised by its file: hide the finding if it is yours.")
                 .verify(format!("ls -l /proc/{}/fd | grep input", p.pid))
                 .verify(format!("ps -o pid,user,etime,cmd -p {}", p.pid)),
         );

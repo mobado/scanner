@@ -74,7 +74,7 @@ pub fn run(ctx: &ScanCtx, col: &mut Collector) {
             // compilers installed by rustup live in the home folder but are installed programs
             let system = STANDARD_PREFIXES.iter().any(|d| exe.starts_with(d)) || exe.contains("/.rustup/toolchains/") || is_appimage_mount(ctx.sys, exe);
             // browsers, compilers, players and indexers are busy by nature (only the installed ones)
-            let heavy = system && names.iter().any(|n| cfg.cpu_heavy_programs.contains(n));
+            let heavy = system && p.is_program(&cfg.cpu_heavy_programs);
             // an installed program has to stay busy much longer than an unknown one
             let needed = if system { f64::from(cfg.high_cpu_minutes) * 60.0 } else { CPU_MIN_SECONDS };
             if !heavy && cfg.high_cpu_percent > 0 && alive >= needed && percent >= f64::from(cfg.high_cpu_percent) {

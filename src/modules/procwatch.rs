@@ -5,7 +5,7 @@ use super::common::{clip, shq};
 use super::proc_audit::MODULE;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
-use crate::procinfo::{status_field, ProcInfo};
+use crate::procinfo::{basename, is_program_path, status_field, ProcInfo};
 
 /// Programs that hold passwords or keys, or decide who may log in.
 const SENSITIVE: [&str; 24] = [
@@ -16,17 +16,20 @@ const SENSITIVE: [&str; 24] = [
 
 const DEBUGGERS: [&str; 10] = ["gdb", "lldb", "lldb-server", "strace", "ltrace", "rr", "perf", "valgrind", "dlv", "delve"];
 
-/// How worrying it is that `tracer` traces `tracee`. `None` for the normal cases.
-pub fn judge_trace(tracee: &str, tracee_exe: &str, tracer: &str, tracer_exe: &str) -> Option<Severity> {
+/// How worrying it is that the program in `tracer_exe` traces `tracee`. `None` for the normal
+/// cases, which the tracer earns by its program file only.
+pub fn judge_trace(tracee: &str, tracee_exe: &str, tracer_exe: &str) -> Option<Severity> {
     let folder = |p: &str| p.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
-    // browsers watch their own parts, Wine its programs
+    // browsers watch their own parts, Wine its programs (also Steam's own Wine in the home
+    // folder, but only on Wine programs, and never on one that holds keys or logins)
+    let sensitive = SENSITIVE.contains(&tracee);
+    let wine = !sensitive && is_program_path(tracer_exe, &["wineserver"]) && (tracer_exe.starts_with("/usr/") || tracer_exe.starts_with("/opt/") || basename(tracee_exe).starts_with("wine"));
     let own_family = (!tracee_exe.is_empty() && tracee_exe.starts_with("/usr/") && folder(tracee_exe) == folder(tracer_exe) && !["/usr/bin", "/usr/sbin"].contains(&folder(tracee_exe).as_str()))
-        || tracer == "wineserver";
+        || wine;
     if own_family {
         return None;
     }
-    let sensitive = SENSITIVE.contains(&tracee);
-    let debugger = DEBUGGERS.contains(&tracer) && tracer_exe.starts_with("/usr/");
+    let debugger = tracer_exe.starts_with("/usr/") && is_program_path(tracer_exe, &DEBUGGERS);
     Some(match (sensitive, debugger) {
         (true, false) => Severity::Critical,
         (true, true) => Severity::High,
@@ -45,7 +48,7 @@ pub(crate) fn check_tracing(ctx: &ScanCtx, col: &mut Collector) {
         let tracer: Option<&ProcInfo> = ctx.processes.iter().find(|t| t.pid == tracer_pid || t.tgid == tracer_pid);
         let name = tracer.map(|t| t.display_name()).unwrap_or_else(|| "a process that is not listed".into());
         let tracer_exe = tracer.and_then(|t| t.exe_path()).unwrap_or("");
-        let Some(severity) = judge_trace(&p.display_name(), p.exe_path().unwrap_or(""), &name, tracer_exe) else { continue };
+        let Some(severity) = judge_trace(&p.display_name(), p.exe_path().unwrap_or(""), tracer_exe) else { continue };
         col.push(
             Finding::new(severity, MODULE, "PROC-TRACED", format!("{} is being traced by {name}", p.display_name()))
                 .evidence(format!(

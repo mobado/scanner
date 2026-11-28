@@ -193,7 +193,8 @@ fn check_recording(ctx: &ScanCtx, col: &mut Collector) {
             let exe = process.as_ref().and_then(|p| p.exe_path()).unwrap_or("").to_string();
             let name = process.as_ref().map(|p| p.display_name()).unwrap_or_else(|| r.app.clone());
             let odd = !exe.is_empty() && (ctx.cfg.is_temp_path(&exe) || risky_home_place(&exe, ctx.cfg).is_some());
-            let tool = RECORDERS.contains(&name.as_str());
+            // a name only adds suspicion here, so every one the process goes by counts
+            let tool = RECORDERS.contains(&name.as_str()) || process.as_ref().is_some_and(|p| p.candidate_names().iter().any(|n| RECORDERS.contains(&n.as_str())));
             if !odd && !tool {
                 normal.insert(format!("{} ({}{})", r.app, r.kind, if r.of_speakers { ", of the speakers" } else { "" }));
                 continue;
@@ -214,7 +215,10 @@ fn check_devices(ctx: &ScanCtx, col: &mut Collector) {
     let mut normal = BTreeSet::new();
     for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread()) {
         let name = p.display_name();
-        if ["pipewire", "wireplumber", "pulseaudio", "pipewire-pulse", "systemd", "systemd-logind", "kwin_wayland", "gnome-shell"].contains(&name.as_str()) {
+        // the sound server and the desktop itself, when it is their installed program file
+        let desktop = p.exe_path().is_some_and(|e| e.starts_with("/usr/") && !e.starts_with("/usr/local/"))
+            && p.is_program(&["pipewire", "wireplumber", "pulseaudio", "pipewire-pulse", "systemd", "systemd-logind", "kwin_wayland", "gnome-shell"]);
+        if desktop {
             continue;
         }
         let devices: BTreeSet<String> = ctx

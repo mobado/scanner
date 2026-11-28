@@ -137,7 +137,7 @@ fn look_alikes_are_still_reported() {
     write(root, "/proc/net/tcp", "header\n   0: 00000000:699C 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 700 1 0 100 0 0 10 0\n");
     let report = scan(root, &[ModuleId::NetProc, ModuleId::ProcAudit]);
     assert_eq!(of(&report, "PROC-NAMESPACE").len(), 1);
-    assert_eq!(of(&report, "NET-ARGV0-MASK").len(), 0, "sshd is allowed to retitle itself");
+    assert_eq!(of(&report, "NET-ARGV0-MASK").len(), 1, "only the installed sshd may retitle itself");
     assert!(of(&report, "NET-LISTEN-UNKNOWN").iter().all(|f| f.severity == Severity::Medium));
 }
 

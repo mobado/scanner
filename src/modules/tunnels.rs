@@ -72,7 +72,9 @@ pub fn wireguard_peers(dump: &str) -> Vec<(String, String, String, String)> {
 
 fn check_interfaces(ctx: &ScanCtx, col: &mut Collector) {
     let configs = network_config(ctx);
-    let openvpn = ctx.processes.iter().any(|p| p.display_name() == "openvpn");
+    // a running OpenVPN explains its tunnel: the installed program, or (when its file cannot be
+    // read) a process of root's, which only root can start
+    let openvpn = ctx.processes.iter().any(|p| p.is_program(&["openvpn"]) && p.exe_path().is_some_and(|e| e.starts_with("/usr/")) || p.uid == 0 && p.comm == "openvpn");
     for name in ctx.sys.dir_names("/sys/class/net") {
         if KERNEL_DEFAULT.contains(&name.as_str()) || MANAGED.iter().any(|m| name.starts_with(m)) {
             continue;

@@ -51,7 +51,7 @@ pub fn judge_caller(cfg: &Config, names: &[String], exe: &str) -> (Severity, &'s
         return (Severity::High, "it runs from a download, cache or hidden folder, or its file is gone");
     }
     // "python3.13" is python
-    if names.iter().any(|n| GENERAL_TOOLS.contains(&n.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')) || GENERAL_TOOLS.contains(&n.as_str())) {
+    if crate::procinfo::runs_any_code(crate::procinfo::basename(exe.trim_end_matches(" (deleted)"))) || names.iter().any(|n| GENERAL_TOOLS.contains(&n.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')) || GENERAL_TOOLS.contains(&n.as_str())) {
         return (Severity::Medium, "it is a script or command line tool, which any script can use");
     }
     let installed = ["/usr/", "/opt/", "/snap/", "/app/"].iter().any(|d| exe.starts_with(d)) && !exe.starts_with("/usr/local/");
@@ -152,17 +152,18 @@ fn listen(ctx: &ScanCtx, uid: u32, gid: u32, address: &str, secs: u64) -> Option
 /// Names on the session bus that receive passwords or hand out files and the screen, with the
 /// programs that normally provide them.
 const OWNERS: [(&str, &[&str]); 4] = [
-    ("org.freedesktop.secrets", &["gnome-keyring-daemon", "gnome-keyring-d", "ksecretd", "kwalletd5", "kwalletd6", "keepassxc", "oo7-daemon"]),
+    ("org.freedesktop.secrets", &["gnome-keyring-daemon", "ksecretd", "kwalletd5", "kwalletd6", "keepassxc", "oo7-daemon"]),
     ("org.kde.kwalletd6", &["ksecretd", "kwalletd6"]),
     ("org.kde.kwalletd5", &["ksecretd", "kwalletd5", "kwalletd6"]),
-    ("org.freedesktop.portal.Desktop", &["xdg-desktop-portal", "xdg-desktop-por"]),
+    ("org.freedesktop.portal.Desktop", &["xdg-desktop-portal"]),
 ];
 
-/// How worrying it is that this program answers to the name. `None` for the usual providers.
-pub fn judge_owner(cfg: &Config, name: &str, program: &[String], exe: &str) -> Option<Severity> {
+/// How worrying it is that this program answers to the name. `None` for the usual providers,
+/// known by their program file only.
+pub fn judge_owner(cfg: &Config, name: &str, exe: &str) -> Option<Severity> {
     let usual = OWNERS.iter().find(|o| o.0 == name)?.1;
     let installed = ["/usr/", "/opt/", "/app/", "/snap/"].iter().any(|d| exe.starts_with(d)) && !exe.starts_with("/usr/local/");
-    if installed && program.iter().any(|p| usual.contains(&p.as_str())) {
+    if installed && crate::procinfo::is_program_path(exe, usual) {
         None
     } else if !installed || cfg.is_temp_path(exe) || risky_home_place(exe, cfg).is_some() {
         Some(Severity::High)
@@ -185,7 +186,7 @@ pub(crate) fn check_owners(ctx: &ScanCtx, col: &mut Collector) {
         for (name, _) in OWNERS {
             // a name nobody holds gives no answer
             let Some(p) = caller(ctx, uid, gid, &address, name) else { continue };
-            match judge_owner(ctx.cfg, name, &p.candidate_names(), p.exe_path().unwrap_or("")) {
+            match judge_owner(ctx.cfg, name, p.exe_path().unwrap_or("")) {
                 None => usual.push(format!("{name}: {}", p.display_name())),
                 Some(severity) => col.push(
                     Finding::new(severity, MODULE, "PROC-SECRET-SERVICE", format!("An unusual program answers as {name}: {}", p.display_name()))

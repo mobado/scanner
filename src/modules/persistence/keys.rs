@@ -177,7 +177,7 @@ fn check_modules(ctx: &ScanCtx, col: &mut Collector, homes: &Homes) {
 }
 
 /// Programs that hold keys or ask for passwords.
-const KEY_PROGRAMS: [&str; 13] = ["ssh", "ssh-agent", "ssh-add", "sshd", "gpg", "gpg2", "gpg-agent", "scdaemon", "openvpn", "sudo", "su", "gnome-keyring-d", "ksecretd"];
+const KEY_PROGRAMS: [&str; 14] = ["ssh", "ssh-agent", "ssh-add", "sshd", "gpg", "gpg2", "gpg-agent", "scdaemon", "openvpn", "sudo", "su", "gnome-keyring-daemon", "gnome-keyring-d", "ksecretd"];
 
 /// Libraries in a `/proc/<pid>/maps` listing that come from temporary or home folders.
 pub fn odd_libraries(maps: &str) -> Vec<String> {
@@ -197,7 +197,9 @@ pub fn odd_libraries(maps: &str) -> Vec<String> {
 pub(crate) fn check_loaded(ctx: &ScanCtx, col: &mut Collector) {
     for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread()) {
         let name = p.display_name();
-        if !KEY_PROGRAMS.contains(&name.as_str()) && !KEY_PROGRAMS.contains(&p.comm.as_str()) {
+        // here a name picks what to look at, so every name counts: a library inside a key
+        // program could rename the process to get out of sight
+        if !p.candidate_names().iter().any(|n| KEY_PROGRAMS.contains(&n.as_str())) {
             continue;
         }
         let Ok(maps) = ctx.sys.read_string(format!("/proc/{}/maps", p.pid)) else { continue };

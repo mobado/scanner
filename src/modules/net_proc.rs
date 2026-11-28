@@ -471,7 +471,7 @@ fn check_socket_owner(
         } else if first_owner_of_listener
             && !cfg.is_listen_allowed(s.proto.family(), s.local.port())
             && !cfg.is_listen_process_allowed(&p.display_name(), p.exe_path())
-            && !(p.display_name() == "dnsmasq" && p.exe_path().map(|e| e.starts_with("/usr/")).unwrap_or(false) && p.cmdline_str().contains("--conf-file=/var/lib/libvirt/dnsmasq/"))
+            && !(p.is_program(&["dnsmasq"]) && p.exe_path().map(|e| e.starts_with("/usr/")).unwrap_or(false) && p.cmdline_str().contains("--conf-file=/var/lib/libvirt/dnsmasq/"))
             // only this machine (loopback) or only the directly attached link (fe80::)
             && (cfg.report_loopback_listeners || !(ip_is_loopback(&s.local.ip()) || ip_is_link_local(&s.local.ip())))
         {
@@ -950,9 +950,8 @@ fn check_masquerade(ctx: &ScanCtx, col: &mut Collector) {
             continue;
         }
         let a0_name = basename(a0_clean.split([':', ' ']).next().unwrap_or(a0_clean));
-        let allowed = |n: &str| cfg.allowed_argv0_mismatch.iter().any(|a| a == n);
         if a0_clean == "/proc/self/exe" {
-            if !self_started_helper(p, exe_b) && !allowed(exe_b) {
+            if !self_started_helper(p, exe_b) {
                 col.push(
                     Finding::new(masquerade_level(p), MODULE, "NET-ARGV0-MASK", format!("Disguised process name: \"{}\" actually runs {exe_b}", p.comm))
                         .evidence(format!("PID {} UID {} argv[0]=\"{}\" comm={} exe={}", p.pid, p.uid, clip(argv0, 120), p.comm, p.exe.as_deref().unwrap_or("?")))
@@ -962,11 +961,15 @@ fn check_masquerade(ctx: &ScanCtx, col: &mut Collector) {
             }
             continue;
         }
-        if allowed(exe_b) || allowed(a0_name) || allowed(&p.comm) || names_match(a0_name, exe_b) {
+        // the list approves program files, installed ones (or Steam's own client): argv[0] and
+        // comm are whatever the process says
+        let trusted_place = p.exe_path().is_some_and(|e| ["/usr/", "/opt/", "/snap/", "/app/"].iter().any(|d| e.starts_with(d))) || is_steam_client(p, ctx.processes);
+        if (trusted_place && p.is_program(&cfg.allowed_argv0_mismatch)) || names_match(a0_name, exe_b) {
             continue;
         }
-        // Versioned installs: ~/.local/share/<name>/versions/1.2.3
-        if p.exe_path().map(|e| e.contains(&format!("/{a0_name}/")) || e.contains(&format!("/{a0_name}-"))).unwrap_or(false) {
+        // Versioned installs: ~/.local/share/<name>/versions/1.2.3 – but not when the name is an
+        // installed program's, which this then only pretends to be
+        if p.exe_path().map(|e| e.contains(&format!("/{a0_name}/")) || e.contains(&format!("/{a0_name}-"))).unwrap_or(false) && resolve_argv0(ctx, a0_name).is_none() {
             continue;
         }
         // Interpreters run scripts: argv[0] can be the script name

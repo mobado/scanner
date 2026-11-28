@@ -19,6 +19,7 @@ const EXPECTED: [&str; 34] = [
     "systemd", "systemd-networkd", "systemd-network", "systemd-resolved", "systemd-resolve", "systemd-timesyncd",
     "systemd-timesyn", "systemd-oomd", "rtkit-daemon", "dnsmasq", "avahi-daemon", "chronyd", "NetworkManager", "ping",
     "dumpcap", "gnome-keyring-daemon", "gnome-keyring-d", "kwin_wayland", "ksysguardd", "ksgrd_network_helper",
+    // (shortened names are how the kernel shows them, for processes whose file cannot be read)
     "ksgrd_network_h", "dbus-daemon", "polkitd", "named", "unbound", "squid", "haproxy", "tor", "openvpn", "ntpd", "lldpd",
     "mtr-packet", "fping", "wpa_supplicant",
 ];
@@ -31,6 +32,7 @@ pub fn dangerous_capabilities(mask: u64) -> Vec<&'static str> {
 pub(crate) fn check(ctx: &ScanCtx, col: &mut Collector) {
     let user_space = |who: &str| ctx.sys.read_link(format!("/proc/{who}/ns/user"));
     let host = user_space("1").or_else(|| user_space("self"));
+    let mut unread: Vec<String> = Vec::new();
     for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread()) {
         let Ok(status) = ctx.sys.read_string(format!("/proc/{}/status", p.pid)) else { continue };
         // "Uid: real effective …": a set-uid program runs as root and has every right anyway
@@ -57,8 +59,13 @@ pub(crate) fn check(ctx: &ScanCtx, col: &mut Collector) {
         let system = ["/usr/", "/lib/", "/bin/", "/sbin/", "/snap/"].iter().any(|d| exe.starts_with(d)) && !exe.starts_with("/usr/local/");
         // rights that a shell passes on to everything it starts
         let shell = names.iter().any(|n| ctx.cfg.is_shell(n) || ctx.cfg.is_interpreter(n));
-        // without root, another user's program file can't be read: its name has to do
-        if (system || exe.is_empty()) && !shell && names.iter().any(|n| EXPECTED.contains(&n.as_str())) {
+        if system && !shell && p.is_program(&EXPECTED) {
+            continue;
+        }
+        // without root, another user's program file can't be read, and a name proves nothing:
+        // the ones that may well be services are listed in a note instead of judged
+        if exe.is_empty() && !ctx.privileged && !shell && names.iter().any(|n| EXPECTED.contains(&n.as_str())) {
+            unread.push(format!("{} (PID {})", p.display_name(), p.pid));
             continue;
         }
         let severity = if odd || shell { Severity::High } else if system || exe.is_empty() { Severity::Low } else { Severity::Medium };
@@ -71,5 +78,8 @@ pub(crate) fn check(ctx: &ScanCtx, col: &mut Collector) {
                 .verify(format!("grep Cap /proc/{}/status", p.pid))
                 .verify("capsh --decode=<value>   # package libcap2-bin"),
         );
+    }
+    if !unread.is_empty() {
+        col.note(format!("Rights of running programs: NOT CHECKED for {} process(es) of other users whose program file can only be read as root: {}", unread.len(), clip(&unread.join(", "), 400)));
     }
 }

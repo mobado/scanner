@@ -4,6 +4,22 @@ Every finding has a stable **rule id**. Use it in `ignore_rules` (whitelist) to 
 whole rule off, or look it up here. Severities are the usual level; some rules go up or down
 depending on the evidence (for example a binary deleted from `/usr` is Low, from `/home` High).
 
+## Which program is it?
+
+A process chooses its short name (`comm`, with `prctl`) and its `argv[0]` (with `exec -a`)
+itself. Wherever a name earns an exception (who may read saved passwords, answer as the
+wallet, read the keyboard, hold root-like rights, use a lot of CPU, listen on a trusted port,
+create a sandbox …), only the program file counts (`/proc/<pid>/exe`, which the kernel sets),
+and never an interpreter's or shell's (`python3`, `perl`, `node`, `sh`, the loader …), which
+runs whatever it is handed. A tool of yours written in a script language therefore shows up and
+can be hidden. Where a name points to trouble (known malware, shells, tunnel tools), every name
+the process goes by is looked at. Where a program file cannot be read (without root, other
+users' processes), notes say what was **NOT CHECKED**.
+
+This is not proof of identity: a program can still run its own code inside a trusted one (for
+example with `LD_PRELOAD`, which is reported separately), or show a path of its own making
+from a mount namespace it created.
+
 ## Levels and context
 
 | Level | Meaning |
@@ -144,7 +160,7 @@ every network, to one address, or only to this computer.
 | `PROC-KEY-LIBRARY` | High | SSH, GnuPG, sudo, OpenVPN or a wallet has loaded a library from a temporary or home folder |
 | `PROC-SECRET-CALL` | Critical–Low | A program asked the password wallet (Secret Service, GNOME Keyring, KWallet) for secrets while the scanner listened: full scan (`wallet_watch_secs` = 15) or `--watch-wallet SECS`. Medium for scripts and command line tools, High/Critical from odd folders; installed programs are only named in the notes. Passwords never pass through the scanner (`dbus-monitor --profile` shows who asked for what) |
 | `PROC-IO-URING` | High–Low | A program outside the system folders uses io_uring, which sidesteps system call monitoring |
-| `PROC-NAMESPACE` | High–Low | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps), container, Snap or system service explains. Spaces of programs that a running Steam client started (also games, and the runtime container that started Steam) are listed as Low. A mount namespace alone only counts for programs in home or temporary folders |
+| `PROC-NAMESPACE` | High–Low | Processes in their own user, network or mount namespace that no known sandbox (Flatpak, bubblewrap, browsers, Electron apps – whose folder holds Chromium's files), container, Snap or system service explains. Spaces of programs that a running Steam client started (also games, and the runtime container that started Steam) are listed as Low. A mount namespace alone only counts for programs in home or temporary folders |
 
 ## File permissions (`fs_perms`)
 

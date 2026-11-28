@@ -251,7 +251,10 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
         progress("Comparing against the baseline …");
         match Baseline::load(path) {
             Ok(b) => {
-                let (mut f, notes) = baseline::compare(&b, &col.inventory, &modules_run);
+                // new ports of a program you trust in the whitelist (installed under /usr) are
+                // not news
+                let trusted = |name: &str, exe: &str| cfg.is_listen_process_allowed(name, Some(exe));
+                let (mut f, notes) = baseline::compare_with(&b, &col.inventory, &modules_run, &trusted);
                 // Changes that apt explains (verified against the package) are not reported.
                 progress("Checking changed files against dpkg …");
                 let apt = crate::pkgverify::apply(sys, &mut f, &b.created_at);
@@ -283,13 +286,6 @@ pub fn run_scan(sys: &SysRoot, cfg: &Config, opts: &ScanOptions, progress: &dyn 
                 updated_packages = apt.packages;
                 // both kinds go into the automatic baseline
                 upgraded_files = apt.upgraded.into_iter().chain(apt.matching).map(|(p, _)| p).chain(apt.rewritten).collect();
-                // New ports of a program you trust in the whitelist (installed under /usr) are not news.
-                f.retain(|x| {
-                    x.rule != "BASE-LISTEN-NEW"
-                        || !crate::modules::net_group::process_in_title(&x.title)
-                            .map(|name| cfg.allowed_listen_processes.contains(&name))
-                            .unwrap_or(false)
-                });
                 col.findings.extend(f);
                 col.notes.extend(notes);
                 baseline_compared = Some(crate::display::line(&format!("{} (created {} on {})", path.display(), b.created_at, b.hostname)));

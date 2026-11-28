@@ -398,7 +398,8 @@ impl Config {
 
     /// Is this a trusted program for listening ports? Only when its exe is under /usr.
     pub fn is_listen_process_allowed(&self, name: &str, exe: Option<&str>) -> bool {
-        exe.map(|e| e.starts_with("/usr/")).unwrap_or(false) && self.allowed_listen_processes.iter().any(|p| p == name)
+        // the name has to be the installed program file's own
+        exe.is_some_and(|e| e.starts_with("/usr/") && crate::procinfo::is_program_path(e, &[name])) && self.allowed_listen_processes.iter().any(|p| p == name)
     }
 
     /// The key used to hide one finding ("RULE|title").

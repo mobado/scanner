@@ -153,10 +153,10 @@ fn check_packet_sockets(ctx: &ScanCtx, col: &mut Collector) {
             let exe = p.exe_path().unwrap_or("");
             let installed = exe.starts_with("/usr/") && !exe.starts_with("/usr/local/");
             let name = p.display_name();
-            if (installed && NETWORK_SERVICES.contains(&name.as_str())) || !seen.insert(p.pid) {
+            if (installed && p.is_program(&NETWORK_SERVICES)) || !seen.insert(p.pid) {
                 continue;
             }
-            let capture = installed && ["tcpdump", "dumpcap", "tshark", "wireshark"].contains(&name.as_str());
+            let capture = installed && p.is_program(&["tcpdump", "dumpcap", "tshark", "wireshark"]);
             col.push(
                 Finding::new(if capture { Severity::Medium } else { Severity::High }, MODULE, "NET-SNIFFER", format!("Program reads all network traffic: {name}"))
                     .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\nraw packet socket (all protocols), inode {inode}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300)))
@@ -274,7 +274,8 @@ fn check_outbound(ctx: &ScanCtx, col: &mut Collector, resolvers: &BTreeSet<Strin
         let Ok(remote) = c.remote_addr.parse::<IpAddr>() else { continue };
         let name = c.process.clone().unwrap_or_else(|| "unknown".into());
         if c.remote_port == 53 {
-            if !RESOLVERS.contains(&name.as_str()) && !resolvers.contains(&c.remote_addr) && !remote.is_loopback() {
+            let resolver = c.exe.as_deref().is_some_and(|e| ["/usr/", "/opt/", "/snap/"].iter().any(|d| e.starts_with(d)) && crate::procinfo::is_program_path(e, &RESOLVERS));
+            if !resolver && !resolvers.contains(&c.remote_addr) && !remote.is_loopback() {
                 dns.entry(name).or_default().push(c);
             }
             continue;

@@ -323,7 +323,9 @@ fn from_settings(ctx: &ScanCtx) -> Vec<String> {
     if enabled("nftables.service") && ctx.sys.read_string("/etc/nftables.conf").map(|t| read_ruleset(&t).protects || t.contains("include ")).unwrap_or(false) {
         on.push("nftables loads rules from /etc/nftables.conf".to_string());
     }
-    if enabled("firewalld.service") || ctx.processes.iter().any(|p| p.display_name() == "firewalld") {
+    // firewalld is a Python program, so its file says nothing; a process of root's by that name
+    // can only have been started by root
+    if enabled("firewalld.service") || ctx.processes.iter().any(|p| p.uid == 0 && p.comm == "firewalld") {
         on.push("firewalld is switched on".to_string());
     }
     on

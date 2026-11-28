@@ -6,7 +6,7 @@ use super::common::{analyze_command, clip, risky_home_place, shq};
 use super::{Collector, ScanCtx};
 use crate::config::Config;
 use crate::finding::{Finding, Severity};
-use crate::procinfo::ProcInfo;
+use crate::procinfo::{is_program_path, ProcInfo};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
 
@@ -15,9 +15,9 @@ use std::os::unix::fs::MetadataExt;
 const PROFILE_MARKS: [&str; 8] = ["/.mozilla/", "/.config/mozilla/", "/google-chrome", "/chromium/", "/BraveSoftware/", "/microsoft-edge", "/vivaldi", "/.thunderbird/"];
 const BROWSER_SECRETS: [&str; 7] = ["Cookies", "Login Data", "Web Data", "logins.json", "key4.db", "cookies.sqlite", "signons.sqlite"];
 
-const BROWSERS: [&str; 14] = [
+const BROWSERS: [&str; 12] = [
     "firefox", "firefox-esr", "chrome", "chromium", "brave", "msedge", "vivaldi-bin", "opera", "thunderbird", "firefox-bin",
-    "thunderbird-bin", "Isolated Web Co", "Socket Process", "chrome_crashpad_handler",
+    "thunderbird-bin", "chrome_crashpad_handler",
 ];
 const KEYRINGS: [&str; 5] = ["gnome-keyring-daemon", "kwalletd5", "kwalletd6", "ksecretd", "kwalletmanager5"];
 /// Backup, search and antivirus programs read every file.
@@ -34,14 +34,15 @@ pub fn secret_store(path: &str) -> Option<&'static str> {
     (BROWSER_SECRETS.contains(&name) && PROFILE_MARKS.iter().any(|m| path.contains(m))).then_some("browser passwords or cookies")
 }
 
-/// How worrying it is that this program has the store open. `None` for its rightful users.
-pub fn judge_reader(cfg: &Config, store: &str, names: &[String], exe: &str) -> Option<Severity> {
+/// How worrying it is that this program has the store open. `None` for its rightful users, who
+/// are known by their program file only: any process can call itself "firefox".
+pub fn judge_reader(cfg: &Config, store: &str, exe: &str) -> Option<Severity> {
     let system = ["/usr/", "/opt/", "/snap/", "/app/"].iter().any(|d| exe.starts_with(d)) && !exe.starts_with("/usr/local/");
     let rightful: &[&str] = if store == "password wallet" { &KEYRINGS } else { &BROWSERS };
-    if system && names.iter().any(|n| rightful.contains(&n.as_str())) {
+    if system && is_program_path(exe, rightful) {
         return None;
     }
-    if system && names.iter().any(|n| READS_EVERYTHING.contains(&n.as_str())) {
+    if system && is_program_path(exe, &READS_EVERYTHING) {
         return Some(Severity::Low);
     }
     Some(if cfg.is_temp_path(exe) || risky_home_place(exe, cfg).is_some() { Severity::Critical } else { Severity::High })
@@ -56,10 +57,9 @@ fn check_open_stores(ctx: &ScanCtx, col: &mut Collector) {
                 open.entry(store).or_default().insert(target);
             }
         }
-        let names = p.candidate_names();
         let exe = p.exe_path().unwrap_or("");
         for (store, files) in open {
-            let Some(severity) = judge_reader(ctx.cfg, store, &names, exe) else { continue };
+            let Some(severity) = judge_reader(ctx.cfg, store, exe) else { continue };
             col.push(
                 Finding::new(severity, super::proc_audit::MODULE, "PROC-SECRET-ACCESS", format!("{} has the {store} open", p.display_name()))
                     .evidence(format!("PID {} UID {} exe={}\ncmdline=\"{}\"\n{}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), clip(&files.into_iter().collect::<Vec<_>>().join("\n"), 600)))

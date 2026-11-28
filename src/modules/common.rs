@@ -426,6 +426,9 @@ pub fn clip(s: &str, max: usize) -> String {
 /// `$'…'` with escapes, so nothing in a copied command can end the terminal's protection of
 /// pasted text or look like something else. Otherwise single quotes, with quotes and
 /// backslashes outside them, which bash, zsh, dash and fish all read the same way.
+///
+/// fish does not know `$'…'`: there such a command (only for names with hidden characters)
+/// fails without running anything; run it in bash. There is no one form that every shell reads.
 pub fn shq(s: &str) -> String {
     if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+:@%".contains(c)) {
         return s.to_string();

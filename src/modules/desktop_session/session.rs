@@ -158,13 +158,13 @@ fn check_injection(ctx: &ScanCtx, col: &mut Collector) {
         let odd = ctx.cfg.is_temp_path(exe) || risky_home_place(exe, ctx.cfg).is_some();
         let typing = INJECTORS.contains(&name.as_str());
         let uinput = ctx.sys.dir_names(format!("/proc/{}/fd", p.pid)).iter().any(|fd| ctx.sys.read_link(format!("/proc/{}/fd/{fd}", p.pid)).as_deref() == Some("/dev/uinput"));
-        if !typing && !uinput || uinput && !typing && system && UINPUT_USERS.contains(&name.as_str()) {
+        if !typing && !uinput || uinput && !typing && system && p.is_program(&UINPUT_USERS) {
             continue;
         }
         let severity = if odd { Severity::High } else if !system || uinput { Severity::Medium } else { Severity::Low };
         finding(col, severity, "DESK-INPUT-INJECT", format!("A program can type and click for you: {name}"),
             format!("PID {} UID {} exe={}\ncmdline=\"{}\"{}", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 300), if uinput { "\nholds /dev/uinput (a virtual keyboard)" } else { "" }),
-            "It can send key presses and mouse clicks, also under Wayland. Automation and remote-control tools do this; a program you do not know could run commands as you.", &format!("ls -l /proc/{}/fd | grep uinput", p.pid));
+            "It can send key presses and mouse clicks, also under Wayland. Automation and remote-control tools do this; a program you do not know could run commands as you. A tool written in a script language runs as python3 or similar and cannot be recognised by its file: hide the finding if it is yours.",&format!("ls -l /proc/{}/fd | grep uinput", p.pid));
     }
     let people: Vec<String> = ctx
         .sys
