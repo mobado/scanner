@@ -171,7 +171,7 @@ fn offered(ctx: &ScanCtx, col: &mut Collector, wanted: &HashMap<&str, &str>) -> 
             continue;
         }
         if !compressed(&name) {
-            let Ok(file) = std::fs::File::open(&path) else { continue };
+            let Ok(file) = crate::sys::open_plain_file(&path) else { continue };
             read_list(&mut BufReader::new(file), wanted, &mut out);
         } else if let Err(why) = unpack(&path, |reader| read_list(reader, wanted, &mut out)) {
             col.note(format!("The compressed package list {name} could not be read: {why}"));

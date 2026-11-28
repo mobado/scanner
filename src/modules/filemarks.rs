@@ -174,7 +174,7 @@ fn foreign_mounts(ctx: &ScanCtx) -> HashSet<String> {
 /// "ELF program", "script" or `None` for ordinary data.
 pub(crate) fn program_kind(real: &Path) -> Option<&'static str> {
     let mut head = [0u8; 4];
-    let n = fs::File::open(real).ok()?.read(&mut head).ok()?;
+    let n = crate::sys::open_plain_file(real).ok()?.read(&mut head).ok()?;
     if n == 4 && head == *b"\x7fELF" {
         Some("ELF program")
     } else if n >= 2 && head.starts_with(b"#!") {

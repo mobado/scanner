@@ -6,7 +6,8 @@
 use crate::error::{Result, ScanError};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -66,14 +67,24 @@ impl SysRoot {
     }
 
     pub fn read_string(&self, abs: impl AsRef<Path>) -> Result<String> {
-        let p = self.path(abs);
-        let bytes = fs::read(&p).map_err(|e| ScanError::io(&p, e))?;
+        let bytes = self.read_bytes(abs)?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    /// The contents of a plain file (see [`open_plain_file`]); `/dev/null`, which people link
+    /// files to, reads as empty.
     pub fn read_bytes(&self, abs: impl AsRef<Path>) -> Result<Vec<u8>> {
         let p = self.path(abs);
-        fs::read(&p).map_err(|e| ScanError::io(&p, e))
+        let read = || -> io::Result<Vec<u8>> {
+            let found = find_file(&p)?;
+            if is_dev_null(&found.metadata()?) {
+                return Ok(Vec::new());
+            }
+            let mut data = Vec::new();
+            read_found(&found)?.read_to_end(&mut data)?;
+            Ok(data)
+        };
+        read().map_err(|e| ScanError::io(&p, e))
     }
 
     /// Read a symbolic link target as text (e.g. `/proc/<pid>/exe`).
@@ -114,10 +125,48 @@ impl SysRoot {
     }
 }
 
-/// SHA-256 of a file (up to `max_bytes`), as hex. `None` if it cannot be read.
+// Files the scanner reads may be anyone's, and whoever owns one can put something else in its
+// place at any moment: a pipe, which makes a reader wait for ever, or a link to a device, where
+// merely opening it can have an effect. So a file is first only found (`O_PATH`, which opens
+// nothing), looked at through that handle, and then that very file is opened.
+
+/// A handle on what lies at `path`, for looking at it. Links are followed.
+pub fn find_file(path: &Path) -> io::Result<fs::File> {
+    use rustix::fs::{Mode, OFlags};
+    Ok(fs::File::from(rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())?))
+}
+
+/// Open what `found` (from [`find_file`] or the like) points at for reading, if that is a plain
+/// file.
+pub fn read_found(found: &fs::File) -> io::Result<fs::File> {
+    use rustix::fs::{Mode, OFlags};
+    use std::os::fd::AsRawFd;
+    if !found.metadata()?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a plain file"));
+    }
+    // the kernel's own way back to exactly the file the handle is on
+    let same = format!("/proc/self/fd/{}", found.as_raw_fd());
+    Ok(fs::File::from(rustix::fs::open(same, OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty())?))
+}
+
+/// Open a file to read it, if it is a plain file.
+pub fn open_plain_file(path: &Path) -> io::Result<fs::File> {
+    read_found(&find_file(path)?)
+}
+
+/// Is this the null device (character device 1:3)?
+fn is_dev_null(meta: &fs::Metadata) -> bool {
+    meta.file_type().is_char_device() && meta.rdev() == rustix::fs::makedev(1, 3)
+}
+
+/// SHA-256 of a plain file (up to `max_bytes`), as hex. `None` if it cannot be read.
 pub fn sha256_file(path: &Path, max_bytes: u64) -> Option<String> {
-    let f = fs::File::open(path).ok()?;
-    let mut reader = f.take(max_bytes);
+    sha256_reader(open_plain_file(path).ok()?, max_bytes)
+}
+
+/// SHA-256 of what an open file holds (up to `max_bytes`), as hex.
+pub fn sha256_reader(file: fs::File, max_bytes: u64) -> Option<String> {
+    let mut reader = file.take(max_bytes);
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {

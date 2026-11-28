@@ -6,9 +6,9 @@ use super::common::{analyze_command, clip, risky_home_place, shq};
 use super::{Collector, ScanCtx};
 use crate::config::Config;
 use crate::finding::{Finding, Severity};
-use crate::mounts::{executable_mappings, Mapping};
+use crate::mounts::{executable_mappings, find_in_process_root, is_the_mapped_file, Mapping};
 use crate::procinfo::{browser_module_of, is_program_path, ProcInfo};
-use crate::sys::sha256_file;
+use crate::sys::{find_file, read_found, sha256_reader};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
 
@@ -65,18 +65,13 @@ pub(crate) fn without_exception(code: &Option<Vec<String>>, seen: Severity, unse
 }
 
 /// The SHA-256 of the file a process has loaded, which in a mount namespace of its own need not
-/// be the file at the same path here.
+/// be the file at the same path here. The process decides what lies there now, so only the file
+/// the mapping names is read, and only if it is a plain one.
 fn loaded_hash(ctx: &ScanCtx, pid: u32, m: &Mapping) -> Option<String> {
-    const LIMIT: u64 = 128 * 1024 * 1024;
-    // root may read the mapped file itself
-    let mapped = ctx.sys.path(format!("/proc/{pid}/map_files/{}", m.range));
-    sha256_file(&mapped, LIMIT).or_else(|| {
-        let seen = ctx.sys.path(format!("/proc/{pid}/root{}", m.path));
-        // a test folder has no /proc/<pid>/root
-        let seen = if ctx.sys.is_live() { seen } else { ctx.sys.path(m.path) };
-        let right = !ctx.sys.is_live() || std::fs::metadata(&seen).is_ok_and(|f| f.ino() == m.inode);
-        right.then(|| sha256_file(&seen, LIMIT)).flatten()
-    })
+    // root may ask for the mapped file itself
+    let mapped = find_file(&ctx.sys.path(format!("/proc/{pid}/map_files/{}", m.range))).ok();
+    let found = mapped.filter(|f| f.metadata().is_ok_and(|f| f.ino() == m.inode)).or_else(|| find_in_process_root(ctx.sys, pid, m.path).filter(|f| is_the_mapped_file(f, m)))?;
+    sha256_reader(read_found(&found).ok()?, 128 * 1024 * 1024)
 }
 
 /// Browsers running the video module from the person's profile: accepted, and shown, since any

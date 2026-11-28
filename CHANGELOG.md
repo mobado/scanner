@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.5
+* Fixed: a pipe or a link put where the scanner reads could make a scan (also the nightly one)
+  wait for ever or open a device. Every file is now found first, checked to be a plain file
+  through that handle, and then opened. Files in a process's own root are reached without
+  following links, and read only when they are the ones loaded.
+* Fixed: a control group name that a person chose themselves (under `user@….service`, or run by
+  `cron` or `atd`) no longer quiets or hides anything. Rootless containers' posing programs are
+  High; programs from home folders inside Flatpak apps (game launchers and the like) are High
+  in `PROC-NAMESPACE`; installed programs your systemd runs in their own namespaces are listed
+  as Low.
+* `PROC-NAMESPACE` lists the worst spaces first, and says when there are more than it lists.
+
 ## 0.19.4
 * Fixed: a program could be passed off as an installed one by mounting it at that path in a
   namespace of one's own (`bwrap`, no root needed), and so read saved passwords or answer as the

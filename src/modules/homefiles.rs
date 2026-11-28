@@ -7,8 +7,10 @@ use super::fs_perms::MODULE;
 use super::persistence::history::judge_command;
 use super::{Collector, ScanCtx};
 use crate::finding::{Finding, Severity};
+use crate::sys::open_plain_file;
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use walkdir::{DirEntry, WalkDir};
 
@@ -65,7 +67,8 @@ fn suspicious_line(ctx: &ScanCtx, entry: &DirEntry) -> Option<String> {
     if entry.metadata().ok()?.len() > SCRIPT_LIMIT {
         return None;
     }
-    let bytes = fs::read(entry.path()).ok()?;
+    let mut bytes = Vec::new();
+    open_plain_file(entry.path()).ok()?.take(SCRIPT_LIMIT).read_to_end(&mut bytes).ok()?;
     if bytes.contains(&0) {
         return None;
     }

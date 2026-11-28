@@ -9,7 +9,7 @@ use scanner::modules::ScanCtx;
 use scanner::procinfo::{is_program_path, runs_any_code, ProcInfo};
 use scanner::{run_scan, ModuleId, Report, ScanOptions, Severity, SysRoot};
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{symlink, MetadataExt};
 use std::path::Path;
 
 fn write(root: &Path, path: &str, text: &str) {
@@ -177,7 +177,16 @@ fn chromes_video_module_is_accepted_only_where_chrome_puts_it() {
     let process = |pid: u32, exe: &str, library: &str| {
         impostor(root, pid, exe, "chrome", "");
         link(root, &format!("/proc/{pid}/fd/3"), cookies);
-        write(root, &format!("/proc/{pid}/maps"), &(libc.clone() + &map("r-xp", library)));
+        let mut line = map("r-xp", library);
+        // the process holds the module itself: its file, seen from the process's root
+        if library == module {
+            let held = root.join(format!("proc/{pid}/root{module}"));
+            fs::create_dir_all(held.parent().expect("parent")).expect("mkdir");
+            fs::hard_link(root.join(module.trim_start_matches('/')), held).expect("hard link");
+            let m = fs::metadata(root.join(module.trim_start_matches('/'))).expect("metadata");
+            line = format!("7f0000000000-7f0000001000 r-xp 00000000 {:02x}:{:02x} {} {library}\n", rustix::fs::major(m.dev()), rustix::fs::minor(m.dev()), m.ino());
+        }
+        write(root, &format!("/proc/{pid}/maps"), &(libc.clone() + &line));
     };
     let chrome = "/opt/google/chrome/chrome";
     // the real case, also after an update removed the old file

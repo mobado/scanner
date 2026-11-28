@@ -9,11 +9,12 @@
 //! this system. A Flatpak's files lie elsewhere; they count when they are those of a Flatpak
 //! installed for the whole system, which only root can change.
 
-use crate::sys::SysRoot;
+use crate::sys::{read_found, SysRoot};
 use serde::{Deserialize, Serialize};
+use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Component, Path};
 
 /// Where Flatpaks installed for the whole system live.
 const SYSTEM_FLATPAK: &str = "/var/lib/flatpak";
@@ -35,7 +36,7 @@ pub struct FileId {
 
 impl FileId {
     pub fn of(path: &Path) -> Option<FileId> {
-        std::fs::metadata(path).ok().map(|m| FileId { dev: m.dev(), ino: m.ino(), uid: m.uid(), mode: m.mode() })
+        std::fs::metadata(path).ok().map(FileId::from)
     }
 
     pub fn same(self, other: FileId) -> bool {
@@ -51,6 +52,37 @@ impl FileId {
     fn on_device(self, device: (u32, u32)) -> bool {
         (rustix::fs::major(self.dev), rustix::fs::minor(self.dev)) == device
     }
+}
+
+impl From<std::fs::Metadata> for FileId {
+    fn from(m: std::fs::Metadata) -> FileId {
+        FileId { dev: m.dev(), ino: m.ino(), uid: m.uid(), mode: m.mode() }
+    }
+}
+
+/// A handle on what process `pid` has at `path`, for looking at it (`O_PATH`, which opens
+/// nothing). The process chooses what lies there, so the way is walked from its root one name at
+/// a time and no link is followed: an absolute link would lead out into the scanner's own files.
+/// The paths in `maps` hold no links. (`openat2` would do this in one call, but systemd's
+/// `RestrictSUIDSGID=`, which the nightly service sets, refuses it.)
+pub fn find_in_process_root(sys: &SysRoot, pid: u32, path: &str) -> Option<File> {
+    use rustix::fs::{Mode, OFlags};
+    let step = OFlags::PATH | OFlags::CLOEXEC;
+    let mut at = rustix::fs::open(sys.path(format!("/proc/{pid}/root")), step | OFlags::DIRECTORY, Mode::empty()).ok()?;
+    let mut names = Path::new(path).strip_prefix("/").ok()?.components().peekable();
+    while let Some(component) = names.next() {
+        let Component::Normal(name) = component else { return None };
+        let folder = if names.peek().is_some() { OFlags::DIRECTORY } else { OFlags::empty() };
+        at = rustix::fs::openat(&at, name, step | OFlags::NOFOLLOW | folder, Mode::empty()).ok()?;
+    }
+    Some(File::from(at))
+}
+
+/// Is the file `found` the one a mapping names? `maps` gives its device and inode.
+pub fn is_the_mapped_file(found: &File, m: &Mapping) -> bool {
+    let Some(file) = found.metadata().ok().map(FileId::from) else { return false };
+    let btrfs = || rustix::fs::fstatfs(found).is_ok_and(|s| s.f_type as u32 == BTRFS);
+    file.ino == m.inode && (file.on_device(m.device) || btrfs())
 }
 
 /// A process that has a mount namespace of its own.
@@ -143,23 +175,11 @@ pub fn judge_program(sys: &SysRoot, pid: u32, exe: &str, mounts: &mut Mounts) {
     }
 }
 
-/// A small file the sandbox wrote about itself. Only a plain file is read: the process chooses
-/// what lies there, and a link or a pipe must not lead the scanner elsewhere or make it wait.
-fn read_small_file(path: &Path) -> Option<String> {
-    use rustix::fs::{Mode, OFlags};
-    let file = std::fs::File::from(rustix::fs::open(path, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty()).ok()?);
-    if !file.metadata().ok()?.is_file() {
-        return None;
-    }
-    let mut text = String::new();
-    file.take(64 * 1024).read_to_string(&mut text).ok()?;
-    Some(text)
-}
-
 /// Where on this system lies the file a Flatpak shows at `path`, going by what the sandbox says
 /// about itself? Only an answer that is the very file that runs is given.
 fn flatpak_file(sys: &SysRoot, pid: u32, path: &str, real: FileId) -> Option<String> {
-    let info = read_small_file(&sys.path(format!("/proc/{pid}/root/.flatpak-info")))?;
+    let mut info = String::new();
+    read_found(&find_in_process_root(sys, pid, "/.flatpak-info")?).ok()?.take(64 * 1024).read_to_string(&mut info).ok()?;
     let (key, rest) = match path.strip_prefix("/app/") {
         Some(rest) => ("app-path=", rest),
         None => ("runtime-path=", path.strip_prefix("/usr/")?),
@@ -197,10 +217,8 @@ impl Mounts {
             return true;
         }
         // the file the process sees at that path, if that is the mapped one
-        let seen_at = sys.path(format!("/proc/{pid}/root{path}"));
-        let Some(seen) = FileId::of(&seen_at).filter(|f| f.ino == m.inode) else { return false };
-        let btrfs = || rustix::fs::statfs(&seen_at).is_ok_and(|s| s.f_type as u32 == BTRFS);
-        (seen.on_device(m.device) || btrfs()) && self.rightly_at(sys, path, seen, false)
+        let Some(seen) = find_in_process_root(sys, pid, path).filter(|f| is_the_mapped_file(f, m)) else { return false };
+        seen.metadata().is_ok_and(|f| self.rightly_at(sys, path, FileId::from(f), false))
     }
 
     /// May this file be the one at `path` for this process?

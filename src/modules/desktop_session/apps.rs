@@ -190,7 +190,7 @@ fn check_snaps(ctx: &ScanCtx, col: &mut Collector) {
 /// Does the file start like an AppImage (an ELF with "AI" and its type at byte 8)?
 fn is_appimage(ctx: &ScanCtx, path: &str) -> bool {
     let mut head = [0u8; 11];
-    std::fs::File::open(ctx.sys.path(path)).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head.starts_with(b"\x7fELF") && head[8] == b'A' && head[9] == b'I' && (head[10] == 1 || head[10] == 2)
+    crate::sys::open_plain_file(&ctx.sys.path(path)).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head.starts_with(b"\x7fELF") && head[8] == b'A' && head[9] == b'I' && (head[10] == 1 || head[10] == 2)
 }
 
 fn check_appimages(ctx: &ScanCtx, col: &mut Collector, user: &str, home: &str) {

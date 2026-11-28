@@ -64,9 +64,10 @@ pub(crate) fn check_fake_programs(ctx: &ScanCtx, col: &mut Collector) {
         let own_flatpak = first.mounts.as_ref().is_some_and(|m| m.own_flatpak);
         // containers and Steam's runtime bring their own copies of ordinary programs
         let of_steam = processes.iter().all(|p| p.uid != 0 && from_steam(p, &by_pid, &steam));
+        // only a container root runs counts: a person's own is theirs to fill, and to name
         let contained = processes.iter().all(|p| {
             let cgroup = ctx.sys.read_string(format!("/proc/{}/cgroup", p.pid)).unwrap_or_default();
-            ["libpod", "docker", "/lxc", "machine.slice"].iter().any(|m| cgroup.contains(m))
+            roots_cgroup(&cgroup) && ["libpod", "docker", "/lxc", "/machine.slice/"].iter().any(|m| cgroup.contains(m))
         });
         let (severity, title) = if own_flatpak {
             (Severity::Medium, format!("A Flatpak installed for one person runs its own {claimed}"))
@@ -162,14 +163,15 @@ fn is_chromium_sandbox(ctx: &ScanCtx, p: &ProcInfo) -> bool {
     installed && !by_hand && chromium && p.cmdline_str().contains(" --type=")
 }
 
-/// A packaged user service that systemd started with isolation settings.
-fn is_sandboxed_user_service(p: &ProcInfo, parent: Option<&ProcInfo>, cgroup: &str) -> bool {
+/// An installed program that the person's systemd started, as it starts packaged services with
+/// isolation settings. Anyone can have it start one, so this only makes the finding quieter.
+fn is_started_by_user_systemd(p: &ProcInfo, parent: Option<&ProcInfo>) -> bool {
     let exe = p.exe_path().unwrap_or("");
     let installed = exe.starts_with("/usr/") && !exe.starts_with("/usr/local/");
     let from_systemd = parent.is_some_and(|q| q.is_program(&["systemd"]) && q.exe_path().is_some_and(|e| e.starts_with("/usr/") || e.starts_with("/lib/")));
     let by_hand = p.candidate_names().iter().any(|n| n == "unshare" || n == "nsenter");
-    // anyone can start a service of their own, so an interpreter in one explains nothing
-    installed && p.program_name().is_some() && from_systemd && !by_hand && cgroup.contains("/user@") && cgroup.trim().ends_with(".service")
+    // an interpreter in a service explains nothing at all
+    installed && p.program_name().is_some() && from_systemd && !by_hand
 }
 
 fn is_odd_place(ctx: &ScanCtx, exe: &str) -> bool {
@@ -199,9 +201,16 @@ pub(crate) fn check_io_uring(ctx: &ScanCtx, col: &mut Collector) {
     }
 }
 
-/// Does systemd, a container engine or an app sandbox manage this control group?
+/// Could only root have chosen this control group's name? Under their own `user@….service` a
+/// person creates and names groups as they like (`systemd-run --user --unit=docker-x`), and the
+/// job runners' groups hold whatever people schedule.
+fn roots_cgroup(cgroup: &str) -> bool {
+    !["/user@", "/cron.service", "/atd.service"].iter().any(|theirs| cgroup.contains(theirs))
+}
+
+/// Does root's systemd or a container engine manage this control group?
 pub fn managed_cgroup(cgroup: &str) -> bool {
-    ["/system.slice/", "/machine.slice/", "docker", "libpod", "/lxc", "snap.", "app-flatpak-", "kubepods", "/init.scope"].iter().any(|m| cgroup.contains(m))
+    roots_cgroup(cgroup) && ["/system.slice/", "/machine.slice/", "docker", "libpod", "/lxc", "snap.", "kubepods", "/init.scope"].iter().any(|m| cgroup.contains(m))
 }
 
 pub(crate) fn check_namespaces(ctx: &ScanCtx, col: &mut Collector) {
@@ -214,7 +223,8 @@ pub(crate) fn check_namespaces(ctx: &ScanCtx, col: &mut Collector) {
     let by_pid: HashMap<u32, &ProcInfo> = ctx.processes.iter().map(|p| (p.pid, p)).collect();
     // the namespaces that differ → processes
     let mut odd: BTreeMap<String, Vec<&ProcInfo>> = BTreeMap::new();
-    let mut flatpak: BTreeSet<u32> = BTreeSet::new();
+    // processes only listed quietly: what the person's systemd started
+    let mut services: BTreeSet<u32> = BTreeSet::new();
     for p in ctx.processes.iter().filter(|p| !p.is_kernel_thread() && p.pid != 1) {
         let differing: Vec<(&str, String)> = host
             .iter()
@@ -247,23 +257,35 @@ pub(crate) fn check_namespaces(ctx: &ScanCtx, col: &mut Collector) {
             current.pid != 1 && !manager && (is_sandbox(current) || is_chromium_sandbox(ctx, current))
         });
         let cgroup = ctx.sys.read_string(format!("/proc/{}/cgroup", p.pid)).unwrap_or_default();
-        if !in_bubblewrap && (explained || managed_cgroup(&cgroup) || is_sandboxed_user_service(p, by_pid.get(&p.ppid).copied(), &cgroup)) {
+        if !in_bubblewrap && (explained || managed_cgroup(&cgroup)) {
             continue;
         }
-        // Flatpak apps such as game launchers keep programs of their own in the home folder
-        if in_bubblewrap && !poses(p) && cgroup.contains("app-flatpak-") {
-            flatpak.insert(p.pid);
+        if !strange && is_started_by_user_systemd(p, by_pid.get(&p.ppid).copied()) {
+            services.insert(p.pid);
         }
         let key = differing.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>().join(" ");
         odd.entry(key).or_default().push(p);
     }
     let steam = steam_roots(ctx.processes);
-    for (spaces, processes) in odd.into_iter().take(10) {
-        let strange = processes.iter().any(|p| is_odd_place(ctx, p.exe_path().unwrap_or("")) || poses(p));
-        // Steam and its games run in containers of Steam's own runtime
-        let of_steam = processes.iter().all(|p| p.uid != 0 && from_steam(p, &by_pid, &steam));
-        let of_flatpak = processes.iter().all(|p| flatpak.contains(&p.pid));
-        let severity = if of_steam || of_flatpak { Severity::Low } else if strange { Severity::High } else { Severity::Medium };
+    let mut judged: Vec<(Severity, bool, String, Vec<&ProcInfo>)> = odd
+        .into_iter()
+        .map(|(spaces, processes)| {
+            let strange = processes.iter().any(|p| is_odd_place(ctx, p.exe_path().unwrap_or("")) || poses(p));
+            // Steam and its games run in containers of Steam's own runtime
+            let of_steam = processes.iter().all(|p| p.uid != 0 && from_steam(p, &by_pid, &steam));
+            // programs that are files of a Flatpak installed for the whole system
+            let of_flatpak = processes.iter().all(|p| p.mounts.as_ref().is_some_and(|m| m.system_flatpak));
+            let of_services = processes.iter().all(|p| services.contains(&p.pid));
+            let severity = if of_steam || of_flatpak || of_services { Severity::Low } else if strange { Severity::High } else { Severity::Medium };
+            (severity, of_steam, spaces, processes)
+        })
+        .collect();
+    // the worst first: many harmless-looking spaces must not push one out of the list
+    judged.sort_by(|a, b| b.0.cmp(&a.0));
+    if judged.len() > 10 {
+        col.note(format!("Programs in spaces of their own: {} more spaces were found than the 10 listed", judged.len() - 10));
+    }
+    for (severity, of_steam, spaces, processes) in judged.into_iter().take(10) {
         let first = processes[0];
         let lines: Vec<String> = processes.iter().take(6).map(|p| format!("PID {} UID {} exe={} cmdline=\"{}\"", p.pid, p.uid, p.exe.as_deref().unwrap_or("?"), clip(&p.cmdline_str(), 160))).collect();
         let title = if of_steam { "Steam runs programs in a space of their own" } else { "Programs run in an isolated space of their own" };

@@ -55,7 +55,7 @@ fn check_web_roots(ctx: &ScanCtx, col: &mut Collector) {
                 continue;
             }
             let mut buf = Vec::new();
-            let Ok(file) = std::fs::File::open(entry.path()) else { continue };
+            let Ok(file) = crate::sys::open_plain_file(entry.path()) else { continue };
             if file.take(MAX_BYTES).read_to_end(&mut buf).is_err() {
                 continue;
             }

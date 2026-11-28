@@ -83,7 +83,7 @@ pub fn utmp_damage(data: &[u8]) -> (bool, usize) {
 /// The last `max` bytes of a file (rounded to start on a multiple of `align`), and its size.
 /// Logs on a server under attack can be gigabytes, so they are never read whole.
 fn read_tail(ctx: &ScanCtx, path: &str, max: u64, align: u64) -> Option<(Vec<u8>, u64)> {
-    let mut f = std::fs::File::open(ctx.sys.path(path)).ok()?;
+    let mut f = crate::sys::open_plain_file(&ctx.sys.path(path)).ok()?;
     let len = f.metadata().ok()?.len();
     let mut start = len.saturating_sub(max);
     start -= start % align.max(1);

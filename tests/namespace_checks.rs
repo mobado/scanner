@@ -6,8 +6,9 @@ use scanner::config::Config;
 use scanner::modules::secrets::judge_reader;
 use scanner::modules::wallet::judge_holder;
 use scanner::modules::{proc_audit, Collector, ScanCtx};
-use scanner::mounts::{examine, executable_mappings, Mounts};
+use scanner::mounts::{examine, executable_mappings, find_in_process_root, Mounts};
 use scanner::procinfo::{browser_module_of, Account, ProcInfo};
+use scanner::sys::{read_found, sha256_reader};
 use scanner::{Finding, Severity, SysRoot};
 use std::fs;
 use std::os::unix::fs::{symlink, MetadataExt};
@@ -237,19 +238,29 @@ fn posing_programs_are_reported_and_bubblewrap_does_not_explain_them() {
         // an honest installed program under bubblewrap, and one from a home folder
         under_bwrap(ProcInfo { pid: 72, uid: 1000, state: 'S', exe: Some("/usr/bin/yes".into()), ..ProcInfo::default() }),
         under_bwrap(ProcInfo { pid: 73, uid: 1000, state: 'S', exe: Some("/home/anna/x/miner".into()), ..ProcInfo::default() }),
-        // a rootless container, Flatpaks of one person, and a container made by root
+        // containers (the person's own and root's), Flatpaks of one person, a container made by
+        // root without a user namespace
         posing(80, "/usr/bin/ls", true, false),
+        posing(84, "/usr/bin/ls", true, false),
+        posing(85, "/usr/bin/ls", true, false),
         posing(81, "/app/bin/firefox", true, true),
         posing(82, "/app/bin/some-game", true, true),
         posing(83, "/usr/bin/ssh-agent", false, false),
     ];
-    write(root, "/proc/80/cgroup", "0::/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-1.scope\n");
+    let own = "0::/user.slice/user-1000.slice/user@1000.service/app.slice";
+    write(root, "/proc/80/cgroup", &format!("{own}/libpod-1.scope\n"));
+    // `systemd-run --user --scope --unit=docker-x`
+    write(root, "/proc/84/cgroup", &format!("{own}/docker-x.scope\n"));
+    write(root, "/proc/85/cgroup", "0::/system.slice/docker-abc.scope\n");
     link(root, "/proc/70/fd/3", cookies);
     let found = audit(root, &processes);
     let of = |rule: &str, pid: u32| found.iter().find(|f| f.rule == rule && f.evidence.contains(&format!("PID {pid} "))).map(|f| f.severity);
     assert_eq!(of("PROC-FAKE-PROGRAM", 70), Some(Severity::High));
     assert_eq!(of("PROC-FAKE-PROGRAM", 71), Some(Severity::High));
-    assert_eq!(of("PROC-FAKE-PROGRAM", 80), Some(Severity::Low));
+    // only a group root made quiets it
+    assert_eq!(of("PROC-FAKE-PROGRAM", 80), Some(Severity::High));
+    assert_eq!(of("PROC-FAKE-PROGRAM", 84), Some(Severity::High));
+    assert_eq!(of("PROC-FAKE-PROGRAM", 85), Some(Severity::Low));
     assert_eq!(of("PROC-FAKE-PROGRAM", 81), Some(Severity::Medium));
     for pid in [72, 73, 82, 83] {
         assert_eq!(of("PROC-FAKE-PROGRAM", pid), None, "{pid}");
@@ -261,4 +272,62 @@ fn posing_programs_are_reported_and_bubblewrap_does_not_explain_them() {
         assert!(spaces.contains(&format!("PID {pid} ")), "{pid}: {spaces}");
     }
     assert!(!spaces.contains("PID 72 "), "{spaces}");
+}
+
+/// A pipe, which makes whoever opens it for reading wait for a writer.
+fn pipe(root: &Path, path: &str) {
+    let full = root.join(path.trim_start_matches('/'));
+    fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+    assert!(std::process::Command::new("mkfifo").arg(full).status().expect("mkfifo").success());
+}
+
+/// Run `work` and fail, rather than hang, if it waits on something.
+fn finishes<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || send.send(work()));
+    receive.recv_timeout(std::time::Duration::from_secs(20)).expect("the scanner waits for ever")
+}
+
+#[test]
+fn what_lies_in_a_processs_root_cannot_lead_the_scanner_away_or_make_it_wait() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root, "/usr/lib/real.so", "the library");
+    write(root, "/proc/90/root/usr/lib/real.so", "the library the process has");
+    // a link out of the process's root, a link inside it, a linked folder, a pipe, a folder
+    link(root, "/proc/90/root/usr/lib/out.so", root.join("usr/lib/real.so").to_str().expect("path"));
+    link(root, "/proc/90/root/usr/lib/in.so", "real.so");
+    link(root, "/proc/90/root/opt", root.join("usr").to_str().expect("path"));
+    pipe(root, "/proc/90/root/usr/lib/pipe.so");
+    let sys = SysRoot::new(root);
+    let hash = |path: &str| find_in_process_root(&sys, 90, path).and_then(|found| read_found(&found).ok()).and_then(|file| sha256_reader(file, 1 << 20));
+    assert_eq!(hash("/usr/lib/real.so"), Some(scanner::sys::sha256_bytes(b"the library the process has")));
+    for path in ["/usr/lib/out.so", "/usr/lib/in.so", "/opt/lib/real.so", "/usr/lib", "/usr/lib/../lib/real.so", "usr/lib/real.so", "/usr/lib/gone.so"] {
+        assert_eq!(hash(path), None, "{path}");
+    }
+    let sys = SysRoot::new(root);
+    assert_eq!(finishes(move || find_in_process_root(&sys, 90, "/usr/lib/pipe.so").map(|found| read_found(&found).is_ok())), Some(false));
+}
+
+#[test]
+fn a_pipe_in_place_of_a_file_does_not_stop_a_scan() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    write(&root, "/etc/passwd", "anna:x:1000:1000::/home/anna:/bin/bash\n");
+    // pipes where anyone may put them, also behind a link
+    for path in ["/home/anna/.bashrc", "/home/anna/.ssh/authorized_keys", "/home/anna/.config/autostart/x.desktop", "/tmp/.hidden", "/home/anna/pipe"] {
+        pipe(&root, path);
+    }
+    link(&root, "/home/anna/.profile", root.join("home/anna/pipe").to_str().expect("path"));
+    link(&root, "/home/anna/.bash_history", "/dev/null");
+    let sys = SysRoot::new(&root);
+    assert!(sys.read_string("/home/anna/pipe").is_err() && scanner::sys::sha256_file(&root.join("home/anna/pipe"), 100).is_none());
+    // the null device reads as empty, as people expect of a linked history
+    assert_eq!(SysRoot::live().read_string("/dev/null").expect("null"), "");
+    assert!(SysRoot::live().read_string("/dev/zero").is_err());
+    let scanned = root.clone();
+    finishes(move || {
+        let options = scanner::ScanOptions::default();
+        scanner::run_scan(&SysRoot::new(scanned), &Config::default(), &options, &|_| {})
+    });
 }

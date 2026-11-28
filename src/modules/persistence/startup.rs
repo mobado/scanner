@@ -224,7 +224,7 @@ fn listed_paths(ctx: &ScanCtx) -> HashSet<String> {
 
 fn checksum(ctx: &ScanCtx, path: &str) -> Option<String> {
     let mut data = Vec::new();
-    std::fs::File::open(ctx.sys.path(path)).ok()?.take(64 * 1024 * 1024).read_to_end(&mut data).ok()?;
+    crate::sys::open_plain_file(&ctx.sys.path(path)).ok()?.take(64 * 1024 * 1024).read_to_end(&mut data).ok()?;
     Some(Md5::digest(&data).iter().map(|b| format!("{b:02x}")).collect())
 }
 
@@ -248,7 +248,7 @@ fn without_copies(ctx: &ScanCtx, candidates: Vec<String>) -> Vec<String> {
 fn is_program(ctx: &ScanCtx, path: &str, mode: u32) -> bool {
     let name = crate::procinfo::basename(path);
     let mut head = [0u8; 4];
-    mode & 0o111 != 0 || name.ends_with(".so") || name.contains(".so.") || std::fs::File::open(ctx.sys.path(path)).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head == *b"\x7fELF"
+    mode & 0o111 != 0 || name.ends_with(".so") || name.contains(".so.") || crate::sys::open_plain_file(&ctx.sys.path(path)).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head == *b"\x7fELF"
 }
 
 fn check_unowned(ctx: &ScanCtx, col: &mut Collector) {

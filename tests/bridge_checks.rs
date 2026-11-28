@@ -168,6 +168,12 @@ fn a_browser_helper_script_that_opens_a_back_door_is_critical() {
 fn io_uring_and_unexplained_namespaces() {
     assert!(managed_cgroup("0::/system.slice/x.service"));
     assert!(!managed_cgroup("0::/user.slice/user-1000.slice/session-2.scope"));
+    assert!(managed_cgroup("0::/system.slice/docker-abc.scope") && managed_cgroup("0::/machine.slice/libpod-abc.scope"));
+    // names a person can choose under their own user@ service, and what they schedule
+    for theirs in ["app.slice/docker-x.scope", "app.slice/app-flatpak-x.scope", "app.slice/snap.x.y.scope", "app.slice/libpod-1.scope", "machine.slice/x.scope", "init.scope", "app.slice/lxc.scope"] {
+        assert!(!managed_cgroup(&format!("0::/user.slice/user-1000.slice/user@1000.service/{theirs}")), "{theirs}");
+    }
+    assert!(!managed_cgroup("0::/system.slice/cron.service") && !managed_cgroup("0::/system.slice/atd.service"));
 
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -207,9 +213,12 @@ fn io_uring_and_unexplained_namespaces() {
     let report = scan(root, &[ModuleId::ProcAudit]);
     assert_eq!(levels(&report, "PROC-IO-URING"), vec![Severity::High]);
     let odd = of(&report, "PROC-NAMESPACE");
-    assert_eq!(odd.len(), 1, "{:?}", odd.iter().map(|f| &f.evidence).collect::<Vec<_>>());
+    assert_eq!(odd.len(), 2, "{:?}", odd.iter().map(|f| &f.evidence).collect::<Vec<_>>());
     assert_eq!(odd[0].severity, Severity::High);
     assert!(odd[0].evidence.contains("/tmp/miner"));
+    // anyone can have their systemd start such a service: listed, quietly
+    assert_eq!(odd[1].severity, Severity::Low);
+    assert!(odd[1].evidence.contains("/usr/libexec/quietd"));
 
     // typed in a terminal: that every program descends from the user's systemd explains nothing
     fake_process(root, 22, 20, "/usr/bin/konsole", "konsole");
